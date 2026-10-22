@@ -1,4 +1,10 @@
 2026-10-22
+- 新增任务完成通知：复用当前中继，原生后台监测服务可手动开启或停止。
+- Codex 明确工作到空闲状态时提醒；启动、回放和断线不误报，通知可点击返回终端。
+- 兼容桥保留 Windows 现有终端；通知连接断线重连并按事件游标补收、去重。
+- 编辑按钮打开浮动输入窗口，保留草稿并显示目标电脑与终端。
+- 增加“提交 GitHub”快捷指令与 F2 辅助键。
+- 发送后验证终端输入回显，再按一次回车；未确认时保留文本并阻止重复发送。
 - Keep saved computers connected independently; show project, computer, group and session directories.
 - Render and subscribe only the visible terminal; preserve per-computer drafts and input modes.
 - Pause every connection in the background and restore every directory on return.

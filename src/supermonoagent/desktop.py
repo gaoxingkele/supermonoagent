@@ -6,15 +6,119 @@ import json
 import os
 from pathlib import Path
 import socket
+import secrets
 import subprocess
 import sys
 import time
+import threading
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 import webbrowser
 
 HOST = "127.0.0.1"
 PORT = 6769
+
+
+class NativeUpdateRecovery:
+    """Observe the loopback store from Python, even when the renderer JS is hung."""
+    def __init__(self, window, url: str, *, interval: float = .5, fetch=None):
+        parsed = urlsplit(url)
+        query = dict(parse_qsl(parsed.query))
+        self.window = window
+        self.window_id = query.get("native_window", "")
+        query.pop("token", None)
+        self.reload_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), ""))
+        self.health_url = urlunsplit((parsed.scheme, parsed.netloc, "/__updates/health", urlencode({"window": self.window_id}), ""))
+        self.interval, self.fetch = interval, fetch or self._fetch
+        self.closed = threading.Event()
+        self.thread = None
+        self.recoveries = 0
+        self.interruptions = 0
+        self.interruption_error = None
+        self.runtime_armed = False
+        self.arm_thread = None
+        self._arming = threading.Lock()
+        self._recovered = set()
+        window.events.shown += self.start
+        window.events.before_load += self._enable_runtime
+        window.events.loaded += self._enable_runtime
+        window.events.closed += self.stop
+
+    @staticmethod
+    def _fetch(url):
+        with build_opener(ProxyHandler({})).open(Request(url, headers={"Cache-Control": "no-store"}), timeout=2) as response:
+            return json.load(response)
+
+    def start(self, *_):
+        if self.thread is None and self.window_id:
+            self._enable_runtime()
+            self.thread = threading.Thread(target=self._run, name="native-ui-recovery", daemon=True)
+            self.thread.start()
+
+    def _enable_runtime(self, *_):
+        # before_load may run on WinForms' UI thread. Never wait there for async CDP.
+        if self.runtime_armed or self.closed.is_set() or (self.arm_thread is not None and self.arm_thread.is_alive()):
+            return
+        self.arm_thread = threading.Thread(target=self._arm_runtime, name="native-ui-runtime", daemon=True)
+        self.arm_thread.start()
+
+    def _arm_runtime(self):
+        if self.runtime_armed or sys.platform != "win32" or getattr(self.window, "native", None) is None or not self._arming.acquire(False):
+            return
+        try:
+            from System import Action
+            pending = []
+            control = self.window.native.webview
+            control.Invoke(Action(lambda: pending.append(control.CoreWebView2.CallDevToolsProtocolMethodAsync("Runtime.enable", "{}"))))
+            self.runtime_armed = bool(pending and pending[0].Wait(2000) and not pending[0].IsFaulted)
+        except Exception:
+            pass
+        finally:
+            self._arming.release()
+
+    def _run(self):
+        while not self.closed.is_set():
+            try:
+                status = self.fetch(self.health_url)
+                sequence = status.get("document_sequence")
+                revision = status.get("document_revision")
+                recovery = (sequence, revision)
+                if (status.get("ok") is True and status.get("role") == "frontend-ui" and sequence in status.get("failed_sequences", [])
+                        and revision != status.get("active_revision") and recovery not in self._recovered):
+                    # Native navigation interrupts a wedged renderer; never call evaluate_js here.
+                    parsed = urlsplit(self.reload_url)
+                    query = dict(parse_qsl(parsed.query))
+                    query["ui_recovery"] = secrets.token_hex(8)
+                    self._interrupt_renderer()
+                    self.window.load_url(urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), "")))
+                    self._recovered.add(recovery)
+                    self.recoveries += 1
+            except (OSError, ValueError, TypeError, AttributeError):
+                pass
+            if self.closed.wait(self.interval):
+                return
+
+    def _interrupt_renderer(self):
+        """Terminate a failed UI's current JS execution through WebView2, not eval."""
+        if sys.platform != "win32" or getattr(self.window, "native", None) is None:
+            return
+        try:
+            from System import Action
+            pending = []
+            control = self.window.native.webview
+            control.Invoke(Action(lambda: pending.append(control.CoreWebView2.CallDevToolsProtocolMethodAsync("Runtime.terminateExecution", "{}"))))
+            if pending and pending[0].Wait(2000) and not pending[0].IsFaulted:
+                self.interruptions += 1
+        except Exception as error:
+            # Navigation remains a safe fallback on older native runtimes.
+            self.interruption_error = type(error).__name__ + ": " + str(error)[:240]
+
+    def stop(self, *_):
+        self.closed.set()
+        if self.thread is not None and threading.current_thread() is not self.thread:
+            self.thread.join(timeout=3)
+        if self.arm_thread is not None and threading.current_thread() is not self.arm_thread:
+            self.arm_thread.join(timeout=3)
 
 
 def port_open(host: str = HOST, port: int = PORT) -> bool:
@@ -90,6 +194,8 @@ def argument_parser() -> argparse.ArgumentParser:
     page_choice.add_argument("--legacy", action="store_true", help="Open the original terminal page")
     page_choice.add_argument("--workspace", action="store_true", help="Open the workspace page in browser mode")
     parser.add_argument("--renderer", choices=["auto", "dom", "webgl"], default="auto")
+    parser.add_argument("--update-feed", default=None, help="Independent HTTPS signed UI update manifest")
+    parser.add_argument("--ui-update-dir", default=None, help="Verified UI snapshots and rollback state")
     parser.add_argument("--no-start", action="store_true", help="Require an already running daemon")
     parser.add_argument("--print-url", action="store_true", help="Print the connection URL without opening a window (may include local token)")
     parser.add_argument("--smoke-test", action="store_true", help="Load and close a hidden WebView2 window to validate the desktop runtime")
@@ -126,7 +232,12 @@ def main(argv: list[str] | None = None, *, browser: bool = False) -> None:
         url = connection_url(args, browser=browser)
         if not args.url:
             from .frontend import local_page_url
-            url = local_page_url(url)
+            options = {}
+            if args.update_feed is not None:
+                options["update_feed"] = args.update_feed
+            if args.ui_update_dir is not None:
+                options["update_root"] = args.ui_update_dir
+            url = local_page_url(url, **options)
     except (ValueError, OSError) as exc:
         raise SystemExit(str(exc)) from None
     if args.print_url:
@@ -143,28 +254,49 @@ def main(argv: list[str] | None = None, *, browser: bool = False) -> None:
     except ImportError:
         raise SystemExit('pywebview is missing; install the desktop extra: pip install -e ".[desktop]"') from None
     options = {"hidden": True, "focus": False} if args.smoke_test else {}
+    icon = Path(__file__).parent / "static" / "app-icon.ico"
+    native_icon = str(icon) if icon.is_file() else None
+    if sys.platform == "win32":
+        import ctypes
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("SuperMonoAgent.Workspace")
+        except (AttributeError, OSError):
+            pass
+    if not args.url and urlsplit(url).path.rstrip("/") == "/workspace":
+        parsed = urlsplit(url)
+        url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode({**dict(parse_qsl(parsed.query)), "native_window": secrets.token_hex(16)}), parsed.fragment))
     window = webview.create_window("SuperMonoAgent Workspace", url, width=1440, height=900,
                                    min_size=(800, 560), background_color="#12161f", **options)
+    recovery = NativeUpdateRecovery(window, url) if not args.url and urlsplit(url).path.rstrip("/") == "/workspace" else None
     if args.smoke_test:
         result = {}
 
         def verify() -> None:
             try:
+                if recovery:
+                    recovery.start()
                 if not window.events.loaded.wait(25):
                     raise TimeoutError("WebView2 did not load the page")
-                result.update(window.evaluate_js("({ready:document.readyState,workspace:!!document.querySelector('#app')})"))
+                state = window.run_js("({ready:document.readyState,workspace:!!document.querySelector('#app')})")
+                if isinstance(state, str):
+                    state = json.loads(state)
+                if not isinstance(state, dict):
+                    raise ValueError("WebView2 did not return its native document state")
+                result.update(state)
             except Exception as exc:
                 result["error"] = str(exc)
             finally:
+                if recovery:
+                    recovery.stop()
                 window.destroy()
 
-        webview.start(verify, gui="edgechromium")
+        webview.start(verify, gui="edgechromium", icon=native_icon)
         print(json.dumps(result))
         if result.get("ready") != "complete" or (not args.legacy and not result.get("workspace")):
             raise SystemExit("Hidden WebView2 smoke test failed")
     else:
         # Hidden console launchers can also hide the first native window.
-        webview.start(window.show, gui="edgechromium")
+        webview.start(window.show, gui="edgechromium", icon=native_icon)
 
 
 if __name__ == "__main__":

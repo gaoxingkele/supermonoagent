@@ -100,6 +100,18 @@ test('a stalled application must echo the paste before the single Enter is armed
   enter.fn();enter.fn();assert.deepEqual(events,['/quit','\r']);
 });
 
+test('verified submission reports completion once, only after Enter was transmitted',()=>{
+  for(const sent of [true,false]){
+    const events=[],timers=[];
+    const sender=M.createComposerSubmitter({schedule:fn=>{timers.push(fn);return 1;},cancel:()=>{}});
+    sender.submit('checked command',{paste:()=>events.push('paste'),echo:()=>true,isCurrent:()=>true,
+      enter:()=>{events.push('enter');return sent;},onSent:()=>events.push('confirmed')});
+    assert.deepEqual(events,['paste']);
+    timers.at(-1)();timers.at(-1)();
+    assert.deepEqual(events,sent?['paste','enter','confirmed']:['paste','enter']);
+  }
+});
+
 test('echo matching uses newly rendered editor text and recognizes collapsed large pastes',()=>{
   let lines=['old /quit','prompt '],cursorX=7,cursorY=1;
   const term={rows:30,buffer:{get active(){return {baseY:0,cursorY,cursorX,getLine:i=>lines[i]===undefined?null:{translateToString:(trim,start=0,end)=>lines[i].slice(start,end)}};}}};

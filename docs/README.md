@@ -1,5 +1,9 @@
 # 项目文档索引
 
+- [免费任务完成通知](task-notifications.md)：现有中继、原生后台通知、保留 Windows 会话的兼容桥与送达边界。
+
+- [桌面与手机界面热更新](ui-hot-updates.md)：检查、签名包、一条命令发布、实体备份及启动失败恢复。
+
 - [统一中继账号与自动选择电脑](relay-account-setup.md)：默认地址、登录、自动填充、授权绑定和 HTTPS/WSS 部署。
 
 - [Windows 左栏状态灯](sidebar-activity.md)：窗口状态颜色、分组缩进、验证与最新 Windows 包。

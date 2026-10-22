@@ -109,7 +109,9 @@ async def check_mobile(playwright,intercepted):
                         await page.locator('#options').tap();await page.locator('#renderer').select_option('webgl');await page.locator('#settings-close').tap()
                         artifacts=ROOT/'.omx/artifacts/android-v021';artifacts.mkdir(parents=True,exist_ok=True)
                         # Preserve the actual document/session/draft through fold and rotation.
+                        await page.locator('#mode').tap()
                         await page.locator('#draft').fill('unsent fold draft')
+                        await page.locator('#composer-close').tap()
                         await page.evaluate('window.layoutDocument = document')
                         connections = await page.evaluate('MobileTerminal.metrics.connections')
                         geometry_reports=[]

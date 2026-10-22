@@ -14,6 +14,7 @@ MODES = {
     "workspace": "supermonoagent.desktop",
     "microsoft": "supermonoagent.microsoft",
     "native-attach": "supermonoagent.native_attach",
+    "notifications": "supermonoagent.notification_bridge",
 }
 
 

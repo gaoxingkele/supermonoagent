@@ -15,6 +15,16 @@ from supermonoagent.protocol import CAPABILITIES, OP_GROUP, OP_SESSIONS, pack_js
 from test_client_integration import isolated_host, subscribed, receive_op, barrier
 
 
+async def wait_ui(page, expression, *, arg=None, timeout=30000):
+    # Playwright's in-page RAF poll uses eval, which the production CSP forbids.
+    deadline=asyncio.get_running_loop().time()+timeout/1000
+    while asyncio.get_running_loop().time()<deadline:
+        if await page.evaluate(expression,arg):
+            return
+        await asyncio.sleep(.02)
+    raise AssertionError("UI condition timed out: "+expression)
+
+
 @pytest.mark.parametrize("modern", [True, False])
 def test_facade_preserves_existing_sessions_and_theme_support(modern):
     asyncio.run(_check_facade(modern))
@@ -76,7 +86,7 @@ def test_current_ui_automatically_opens_existing_windows():
 
 
 async def _check_browser(playwright, edge):
-    with tempfile.TemporaryDirectory() as directory:
+    with tempfile.TemporaryDirectory() as directory, patch("supermonoagent.ui_updates.fetch_manifest", side_effect=OSError("Isolated update feed offline")):
         async with isolated_host() as (daemon, _direct, _relay):
             sessions = []
             for title in ("Existing Kimi", "Existing Codex"):
@@ -94,14 +104,14 @@ async def _check_browser(playwright, edge):
                         try:
                             page = await browser.new_page()
                             await page.goto(f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/workspace?direct=1#token={daemon.token}")
-                            await page.wait_for_function("window.smaWorkspace?.connected && smaWorkspace.panes.size === 2")
+                            await wait_ui(page,"window.smaWorkspace?.connected && smaWorkspace.panes.size === 2")
                             assert await page.locator(".tab").count() == 2
                             assert json.loads(await page.evaluate("smaWorkspace.activeSession")) == ["local", sessions[0].id]
                             assert {tuple(json.loads(key)) for key in await page.evaluate("[...smaWorkspace.panes.keys()]")} == {("local", session.id) for session in sessions}
                             await page.evaluate("id=>smaWorkspace.openSession(id)", sessions[1].id)
-                            await page.wait_for_function("smaWorkspace.controls[smaWorkspace.activeSession]?.owner === true", timeout=2000)
+                            await wait_ui(page,"smaWorkspace.controls[smaWorkspace.activeSession]?.owner === true", timeout=2000)
                             await page.set_viewport_size({"width": 1440, "height": 900})
-                            await page.wait_for_function("""() => {
+                            await wait_ui(page,"""() => {
                                 const term=smaWorkspace.terminal, size=smaWorkspace.controls[smaWorkspace.activeSession],pane=smaWorkspace.panes.get(smaWorkspace.activeSession),desired=pane.fit.proposeDimensions();
                                 return innerWidth===1440 && !pane.resizeRequest && size?.owner && term.cols===size.cols && term.rows===size.rows && term.cols===desired.cols && term.rows===desired.rows;
                             }""", timeout=2000)
@@ -121,21 +131,21 @@ async def _check_browser(playwright, edge):
                                     while len(resizes) < count:
                                         await asyncio.sleep(0.01)
 
-                            await page.wait_for_function("(()=>{const p=smaWorkspace.panes.get(smaWorkspace.activeSession);return !p.redrawTimer&&!p.resizeRequest&&!p.redrawAfterReplay;})()")
+                            await wait_ui(page,"(()=>{const p=smaWorkspace.panes.get(smaWorkspace.activeSession);return !p.redrawTimer&&!p.resizeRequest&&!p.redrawAfterReplay;})()")
                             before = len(resizes)
                             pane = page.locator(".pane").filter(has=page.locator(".pane-title", has_text="Existing Codex"))
                             await pane.locator(".pane-header button").nth(1).click()
                             await wait_for_resize_count(before + 2)
-                            await page.wait_for_function("!smaWorkspace.panes.get(smaWorkspace.activeSession)?.resizeRequest")
+                            await wait_ui(page,"!smaWorkspace.panes.get(smaWorkspace.activeSession)?.resizeRequest")
                             assert len(resizes[before:]) <= 3
                             assert_size_bounce(resizes[before:][-2:])
 
-                            await page.wait_for_function("(()=>{const p=smaWorkspace.panes.get(smaWorkspace.activeSession);return !p.redrawTimer&&!p.resizeRequest&&!p.redrawAfterReplay;})()")
+                            await wait_ui(page,"(()=>{const p=smaWorkspace.panes.get(smaWorkspace.activeSession);return !p.redrawTimer&&!p.resizeRequest&&!p.redrawAfterReplay;})()")
                             await page.evaluate("id=>smaWorkspace.closeView(id)", sessions[1].id)
                             before = len(resizes)
                             await page.evaluate("id=>smaWorkspace.openSession(id)", sessions[1].id)
                             await wait_for_resize_count(before + 2)
-                            await page.wait_for_function("!smaWorkspace.panes.get(smaWorkspace.activeSession)?.resizeRequest")
+                            await wait_ui(page,"!smaWorkspace.panes.get(smaWorkspace.activeSession)?.resizeRequest")
                             assert len(resizes[before:]) <= 3
                             assert_size_bounce(resizes[before:][-2:])
                             await page.close()

@@ -216,7 +216,7 @@ async def toggle_mode_without_focus(page):
       const draft=document.getElementById('draft'),term=MobileTerminal.terminal;
       const draftFocus=draft.focus,termFocus=term?.focus;
       draft.focus=()=>{};if(term)term.focus=()=>{};
-      try{document.getElementById('mode').click();document.activeElement?.blur();}
+      try{const editor=document.getElementById('composer');document.getElementById(editor.tagName==='DIALOG'&&editor.open?'composer-close':'mode').click();document.activeElement?.blur();}
       finally{draft.focus=draftFocus;if(term)term.focus=termFocus;}
     }""")
 
@@ -279,7 +279,7 @@ async def probe(args):
                 page.on("pageerror", lambda error: report["errors"].append(safe_error(error)))
                 page.on("console", lambda message: report["errors"].append(safe_error(message.text)) if message.type == "error" else None)
                 original_dialogs = await page.evaluate("[...document.querySelectorAll('dialog[open]')].map(d=>d.id)")
-                original_composer_hidden = await page.locator("#composer").evaluate("e=>e.hidden")
+                original_composer_hidden = await page.locator("#composer").evaluate("e=>e.tagName==='DIALOG'?!e.open:e.hidden")
                 if args.keyboard and 'mInputShown=true' in device.run('shell','dumpsys','input_method'):
                     device.run('shell','am','start','-f','0x20000000','-n',args.package+'/.MainActivity','--ez','ui_probe','true','--ez','hide_keyboard','true')
                     await page.evaluate('document.activeElement?.blur()')
@@ -302,7 +302,7 @@ async def probe(args):
                     baseline = await stable_geometry(page)
                     keyboard = {"opened": False, "terminal_input_sent": False}
                     try:
-                        if await page.locator("#composer").evaluate("e=>e.hidden"):
+                        if await page.locator("#composer").evaluate("e=>e.tagName==='DIALOG'?!e.open:e.hidden"):
                             await tap("#mode")
                         # Renderer-only CDP touch does not restore native WebView focus
                         # after hide_keyboard cleared it. Tap the actual Android field.
@@ -342,11 +342,11 @@ async def probe(args):
                                 if any(n.get('text') == '留在终端' for n in nodes):
                                     device.native_tap(nodes, '留在终端')
                         await page.locator("#draft").evaluate("e=>e.blur()")
-                        if not await page.locator("#composer").evaluate("e=>e.hidden"):
+                        if not await page.locator("#composer").evaluate("e=>e.tagName==='DIALOG'?!e.open:e.hidden"):
                             await toggle_mode_without_focus(page)
                         await page.evaluate("document.activeElement?.blur()")
                         await capture("keyboard-hidden-direct")
-                        hidden = await page.locator("#composer").evaluate("e=>e.hidden")
+                        hidden = await page.locator("#composer").evaluate("e=>e.tagName==='DIALOG'?!e.open:e.hidden")
                         if hidden != original_composer_hidden:
                             await toggle_mode_without_focus(page)
                     report["keyboard"] = keyboard

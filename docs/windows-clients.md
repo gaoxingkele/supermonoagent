@@ -1,5 +1,9 @@
 # Three Windows clients, one daemon
 
+The current Windows release is **0.2.14**, matching Android, in `dist/windows/0.2.14/`. Windows releases use the same numeric version as Android, never feature-based names. The build reads Android's manifest version and embeds it in EXE FileVersion/ProductVersion, `version.txt` and `build-manifest.json`; the default output is `dist/windows/<version>/`. When building both platforms, build Android first because its existing build advances the release version, then build Windows. Older named folders below are historical artifacts.
+
+This release includes the unified-account and sidebar features below, signed UI-update checks and the same icon as Android in the executable, window and taskbar. Run `create-desktop-shortcuts.vbs` in the extracted package to create matching desktop shortcuts; keep the package together and rerun the helper if you move it. See [UI updates and deployment limits](ui-hot-updates.md).
+
 The unified-account build is `dist/windows-relay-accounts/`. It includes selectable/manual default relay addresses, relay account login and authorized-computer discovery with automatic endpoint/room/session filling. Public login requires the new HTTPS/WSS relay and explicit room grants/local host bindings; the old public service has not been automatically migrated. See [setup and current deployment state](relay-account-setup.md).
 
 The latest sidebar-lamp build is `dist/windows-sidebar-status/`, including the global workspace features below. Its window rows use red/yellow/pulsing green status dots and deeper group indentation. See [status meanings and verification](sidebar-activity.md).

@@ -4,7 +4,7 @@
   const $=id=>document.getElementById(id),C=TerminalClient,M=MobileCore;
   const encoder=new TextEncoder(),decoder=new TextDecoder();
   let config;
-  try{config=JSON.parse(decodeURIComponent(location.hash.slice(1)));history.replaceState(null,'',location.pathname);}
+  try{config=JSON.parse(decodeURIComponent(location.hash.slice(1)));history.replaceState(null,'',location.pathname+location.search);}
   catch{ $('status').textContent='连接配置缺失，请返回连接设置';$('notice').hidden=false;$('notice').textContent='请从安卓应用打开此页面';return; }
   $('ui-revision').textContent='界面版本：'+(config.uiRevision||'bundled');
   const home={id:'home',name:'默认电脑',endpoint:config.endpoint,code:config.code||''};
@@ -14,11 +14,17 @@
   const connections=new Map(),watchers=new Map();
   const sessionKey=(id=active,hid=hostId)=>JSON.stringify([hid,id]);
   const targetKey=h=>JSON.stringify([new URL(h.endpoint).toString().replace(/\/+$/,''),h.code||'']);
+  // Page-private session credentials survive an update navigation, never UI-state export.
+  function saveSessionCredentials(){try{sessionStorage.setItem('sma.mobile.credentials',JSON.stringify([home,...hosts].filter(h=>hostTokens.has(h.id)).map(h=>[h.id,targetKey(h),hostTokens.get(h.id)])));}catch{}}
+  try{for(const row of JSON.parse(sessionStorage.getItem('sma.mobile.credentials')||'[]')){const h=[home,...hosts].find(h=>h.id===row[0]);if(h&&row.length===3&&row[1]===targetKey(h)&&typeof row[2]==='string'&&h.id!=='home')hostTokens.set(h.id,row[2]);}}catch{}
+  let restoringUI=null;
+
   function connection(h){let c=connections.get(h.id);if(!c){c={host:h,socket:null,generation:0,retry:0,retryTimer:null,pingTimer:null,lastPing:0,connected:false,inventory:[],groups:[],activity:new Map(),controls:{},machine:'',project:'',subscription:'',status:'等待连接',createPending:false,beforeCreate:new Set()};connections.set(h.id,c);}return c;}
   let paused=false,connected=false;
   let inventory=[],active='',term=null,fit=null,writer=null,webgl=null,renderer=config.renderer||'auto';
   let ready=false,replaying=0,fitFrame=null,lastSize='',control=false,ctrl=false,composing=false,pendingKeys=[];
-  const composerSubmit=M.createComposerSubmitter({onPending:pending=>{$('send').disabled=pending;$('send').textContent=pending?'提交中…':'发送';$('send').setAttribute('aria-busy',String(pending));}});
+  const uncertainDrafts=new Map();
+  const composerSubmit=M.createComposerSubmitter({onPending:pending=>{updateComposer(pending);$('draft').readOnly=pending;$('composer-close').disabled=pending;}});
   let controls={};
   let waitingFeeds=[],waitingBytes=0;
   let sizing=localStorage.getItem('sma.mobile.sizing')==='shared'?'shared':'phone';
@@ -39,7 +45,7 @@
       b.textContent=[c.project,c.machine||h.name,c.status].filter(Boolean).join(' · ');b.onclick=()=>chooseHost(h.id);row.append(b);
       const edit=document.createElement('button');edit.textContent='设置';edit.onclick=()=>editHost(h);row.append(edit);
       const retryButton=document.createElement('button');retryButton.textContent='重连';retryButton.onclick=()=>connect(c);row.append(retryButton);
-      if(h.id!=='home'){const remove=document.createElement('button');remove.className='host-remove';remove.textContent='移除';remove.setAttribute('aria-label','移除电脑 '+h.name);remove.onclick=()=>{stopSocket(c);connections.delete(h.id);hosts=hosts.filter(x=>x.id!==h.id);hostTokens.delete(h.id);for(const key of [...drafts.keys()])if(JSON.parse(key)[0]===h.id)drafts.delete(key);for(const key of [...modes.keys()])if(JSON.parse(key)[0]===h.id)modes.delete(key);if(h.id===hostId)chooseHost('home');saveHosts();refreshWatchers();renderHosts();renderList();};row.append(remove);}
+      if(h.id!=='home'){const remove=document.createElement('button');remove.className='host-remove';remove.textContent='移除';remove.setAttribute('aria-label','移除电脑 '+h.name);remove.onclick=()=>{stopSocket(c);connections.delete(h.id);hosts=hosts.filter(x=>x.id!==h.id);hostTokens.delete(h.id);saveSessionCredentials();for(const key of [...drafts.keys()])if(JSON.parse(key)[0]===h.id)drafts.delete(key);for(const key of [...modes.keys()])if(JSON.parse(key)[0]===h.id)modes.delete(key);if(h.id===hostId)chooseHost('home');saveHosts();refreshWatchers();renderHosts();renderList();};row.append(remove);}
       $('host-list').append(row);
     }
     $('host-identity').textContent=[machine||selected().host.name,project].filter(Boolean).join(' · ');
@@ -126,6 +132,7 @@
     if(c!==selected()){renderHosts();renderList();return;}
     loadSelected();renderHosts();renderList();
     if(c.createPending){const created=inventory.find(s=>!c.beforeCreate.has(s.id));if(created){c.createPending=false;createPending=false;activate(created.id);}}
+    if(restoringUI&&restoringUI.hostId===hostId&&inventory.some(s=>s.id===restoringUI.activeSid)){const sid=restoringUI.activeSid;restoringUI=null;activate(sid);}
     if(!inventory.some(s=>s.id===active)){if(inventory.length)activate(inventory[0].id);else{disposeTerminal();active='';}}
     if(controls[active]){const size=controls[active];control=!!size.owner;$('control').textContent=control?'主控':'接管';if(term&&(term.cols!==size.cols||term.rows!==size.rows))writer?.push(new Uint8Array(),false,scheduleFit,size);scheduleFit();}
     if(controls[active]&&waitingFeeds.length){const feeds=waitingFeeds;waitingFeeds=[];waitingBytes=0;for(const feed of feeds)consumeFeed(feed.sid,feed.bytes,feed.replay);}
@@ -189,7 +196,7 @@
     if(connected)subscribeSessions(selected(),active);
     // Deliberately do not focus: switching sessions must not pop the keyboard.
   }
-  function input(text){if(!text||!ready||paused||!connected)return;selected().socket.send(C.targetFrame(17,active,text));}
+  function input(text){if(!text||!ready||paused||!connected||selected().socket?.readyState!==1)return false;selected().socket.send(C.targetFrame(17,active,text));return true;}
   function key(text){if(composing){pendingKeys.push({sid:sessionKey(),text});return;}input(text);}
   function flushKeys(){const keys=pendingKeys;pendingKeys=[];for(const k of keys)if(k.sid===sessionKey())input(k.text);}
   function desiredSize(){
@@ -220,15 +227,32 @@
     $('render-status').textContent='实际渲染：'+effective.toUpperCase();$('renderer').value=C.rendererName(renderer);scheduleFit();
   }
   function setCtrl(value){ctrl=value;$('ctrl').setAttribute('aria-pressed',String(ctrl));}
-  function setMode(focus){const buffered=modes.get(sessionKey())==='buffered';$('composer').hidden=!buffered;$('mode').textContent=buffered?'直输':'编辑';if(focus){if(buffered)$('draft').focus();else term?.focus();}scheduleFit();}
+  function updateComposer(pending=composerSubmit.pending){
+    const uncertain=!!$('draft').value&&uncertainDrafts.get(sessionKey())===$('draft').value;
+    $('send').disabled=pending||uncertain;$('send').textContent=pending?'验证输入中…':uncertain?'请先检查终端':'发送';$('send').setAttribute('aria-busy',String(pending));
+  }
+  function setMode(focus){
+    const editor=$('composer');
+    if(focus&&modes.get(sessionKey())==='buffered'){
+      $('composer-target').textContent=[machine||selected().host.name,$('title').textContent].filter(Boolean).join(' · ');
+      $('composer-status').textContent=uncertainDrafts.get(sessionKey())===$('draft').value&&$('draft').value?'未收到输入回显，尚未按回车。请关闭窗口检查终端，避免重复粘贴。':'收到终端回显后自动按一次回车。';
+      if(!editor.open)editor.showModal();$('draft').focus();
+    }else if(editor.open)editor.close();
+    $('mode').setAttribute('aria-expanded',String(editor.open));updateComposer();
+  }
+  function closeComposer(){if(composerSubmit.pending)return;modes.set(sessionKey(),'direct');$('draft').blur();setMode(false);}
   function submit(){
-    if(composing||!ready||!$('draft').value)return;
+    if(composing||composerSubmit.pending)return;
+    if(!ready||!connected){$('composer-status').textContent='终端未连接，指令尚未发送；文本已保留。';return;}
+    if(!$('draft').value.trim()){$('composer-status').textContent='请先输入指令。';return;}
+    if(uncertainDrafts.get(sessionKey())===$('draft').value)return;
     const current=term,c=selected(),socket=c.socket,generation=c.generation,sid=sessionKey(),text=$('draft').value;
+    $('composer-status').textContent='正在验证终端输入回显…';drafts.set(sid,text);
     if(!composerSubmit.submit(text,{paste:value=>current.paste(value),enter:()=>input('\r'),
       echo:M.createComposerEcho(current,text),
-      onTimeout:()=>notice('未收到输入回显，尚未按回车；无回显输入请用直输。'),
+      onTimeout:()=>{uncertainDrafts.set(sid,text);$('composer-status').textContent='未收到输入回显，尚未按回车。请关闭窗口检查终端，避免重复粘贴。';updateComposer();},
+      onSent:()=>{$('draft').value='';drafts.delete(sid);uncertainDrafts.delete(sid);closeComposer();notice('输入回显已确认，已发送回车。');},
       isCurrent:()=>!paused&&ready&&connected&&term===current&&selected()===c&&c.socket===socket&&c.generation===generation&&sessionKey()===sid}))return;
-    $('draft').value='';drafts.delete(sid);
   }
   function historyStatus(){if(!term)return;const b=term.buffer.active;$('resume').hidden=b.type!=='normal'||b.viewportY>=b.baseY;}
   let gesture=M.createGesture(),scrollRows=0,scrollFrame=null;
@@ -236,7 +260,7 @@
     if(term.buffer.active.type==='alternate'){for(let i=0;i<Math.min(12,Math.abs(n));i++)key(M.alternateScroll(n,!!term.modes?.applicationCursorKeysMode));}else term.scrollLines(n);historyStatus();});}
   $('screen').addEventListener('touchstart',e=>{if(e.touches.length!==1)return;gesture.start(e.touches[0].clientX,e.touches[0].clientY);e.preventDefault();},{passive:false});
   $('screen').addEventListener('touchmove',e=>{if(e.touches.length!==1)return;const cell=term?._core?._renderService?.dimensions?.css?.cell;const line=(cell?.height||17)*(Number($('screen').dataset.scale)||1);const move=gesture.move(e.touches[0].clientX,e.touches[0].clientY,line);if(move.drag)scroll(move.rows);e.preventDefault();},{passive:false});
-  $('screen').addEventListener('touchend',e=>{if(gesture.end()){if(modes.get(sessionKey())==='buffered')$('draft').focus();else term?.focus();}e.preventDefault();},{passive:false});
+  $('screen').addEventListener('touchend',e=>{if(gesture.end()){if(modes.get(sessionKey())==='buffered')setMode(true);else term?.focus();}e.preventDefault();},{passive:false});
   $('screen').addEventListener('wheel',e=>{e.preventDefault();scroll(Math.sign(e.deltaY)*3);},{passive:false});
   $('sessions').onclick=()=>{renderHosts();renderList();$('session-dialog').showModal();};$('sessions-close').onclick=()=>$('session-dialog').close();
   $('session-search').oninput=renderList;
@@ -258,7 +282,7 @@
       for(const key of [...modes.keys()])if(JSON.parse(key)[0]===h.id)modes.delete(key);
       if(h.id===hostId){disposeTerminal();active='';$('draft').value='';loadSelected();}
     }
-    hostTokens.set(h.id,$('host-token').value);if(!editingHost)hosts.push(h);saveHosts();$('host-token').value='';editingHost=null;$('host-dialog').close();connect(connection(h));chooseHost(h.id);refreshWatchers();renderHosts();renderList();
+    hostTokens.set(h.id,$('host-token').value);if(!editingHost)hosts.push(h);saveSessionCredentials();saveHosts();$('host-token').value='';editingHost=null;$('host-dialog').close();connect(connection(h));chooseHost(h.id);refreshWatchers();renderHosts();renderList();
   }catch(error){$('host-error').textContent=error.message;$('host-error').hidden=false;}};
   $('new').onclick=()=>{if(!connected)return;const c=selected();c.beforeCreate=new Set(inventory.map(s=>s.id));c.createPending=createPending=send(6,{shell:$('shell').value});$('session-dialog').close();};
   $('control').onclick=()=>requestSize(true);
@@ -268,9 +292,13 @@
   $('font').oninput=()=>{localStorage.setItem('sma.mobile.font',$('font').value);if(term)term.options.fontSize=Number($('font').value);scheduleFit();};
   $('renderer').onchange=()=>{renderer=C.rendererName($('renderer').value);if(term)setRenderer();};
   $('ctrl').onpointerdown=e=>e.preventDefault();$('ctrl').onclick=()=>setCtrl(!ctrl);
-  const keys={escape:'\x1b',tab:'\t',up:'\x1b[A',down:'\x1b[B',left:'\x1b[D',right:'\x1b[C'};
+  const keys={escape:'\x1b',tab:'\t',f2:'\x1bOQ',up:'\x1b[A',down:'\x1b[B',left:'\x1b[D',right:'\x1b[C'};
   for(const b of document.querySelectorAll('[data-key]')){b.onpointerdown=e=>e.preventDefault();b.onclick=()=>key(keys[b.dataset.key]);}
-  $('mode').onclick=()=>{modes.set(sessionKey(),modes.get(sessionKey())==='buffered'?'direct':'buffered');setMode(true);};
+  $('mode').onclick=()=>{modes.set(sessionKey(),'buffered');setMode(true);};
+  $('github').onclick=()=>{modes.set(sessionKey(),'buffered');setMode(true);if(!$('draft').value){$('draft').value='提交全部文件到 GitHub';drafts.set(sessionKey(),$('draft').value);updateComposer();}else $('composer-status').textContent='已保留现有草稿；清空后可再次选择“提交 GitHub”。';};
+  $('composer-close').onclick=closeComposer;
+  $('composer').addEventListener('cancel',e=>{e.preventDefault();closeComposer();});
+  $('draft').addEventListener('input',()=>{drafts.set(sessionKey(),$('draft').value);updateComposer();});
   $('draft').addEventListener('compositionstart',()=>composing=true);$('draft').addEventListener('compositionend',()=>{composing=false;setTimeout(flushKeys,0);});
   let composerNewline=false;
   $('draft').onkeydown=e=>{const action=M.composerAction(e,composing);composerNewline=action==='newline';if(action==='send'){e.preventDefault();submit();}};
@@ -284,8 +312,31 @@
   function resume(){if(!paused)return;paused=false;startActivityTimer();for(const c of connections.values())connect(c);refreshWatchers();}
   document.addEventListener('visibilitychange',()=>document.hidden?pause():resume());
   window.addEventListener('pagehide',pause);
-  window.MobileTerminal={pause,resume,reconnect:()=>{if(paused)resume();else{connect();refreshWatchers();}},chooseHost,get hosts(){return [...connections.values()].map(c=>({id:c.host.id,connected:c.connected,status:c.status,sessions:c.inventory.map(s=>s.id),subscription:c.subscription}));},get terminal(){return term;},get active(){return active;},get activeKey(){return sessionKey();},get connected(){return connected;},get ready(){return ready;},get controls(){return controls[active]||null;},revision:config.uiRevision||'bundled',metrics};
-  startActivityTimer();
+  function captureUIState(){
+    if(composing||composerSubmit.pending)return null;
+    if(active)drafts.set(sessionKey(),$('draft').value);saveSessionCredentials();
+    return {version:1,hostId,activeSid:active,drafts:[...drafts],modes:[...modes],uncertainDrafts:[...uncertainDrafts]};
+  }
+  function prepareUIReload(){const state=captureUIState();if(!state)return null;pause();$('draft').disabled=true;return state;}
+  function cancelUIReload(){$('draft').disabled=false;resume();}
+  function openNotification(value){
+    if(!value||typeof value.session!=='string')return false;
+    let wanted;try{wanted=targetKey({endpoint:value.endpoint,code:value.code||''});}catch{return false;}
+    const host=[home,...hosts].find(h=>targetKey(h)===wanted),c=host&&connection(host);
+    if(!c||!c.inventory.some(s=>s.id===value.session))return false;
+    document.querySelectorAll('dialog[open]').forEach(d=>d.close());chooseHost(host.id);activate(value.session);return true;
+  }
+  function restoreUIState(value){
+    if(!value||value.version!==1)return;
+    const h=[home,...hosts].find(h=>h.id===value.hostId);if(!h)return;
+    restoringUI={hostId:h.id,activeSid:value.activeSid};chooseHost(h.id);
+    for(const [key,text] of value.drafts||[])drafts.set(key,text);
+    for(const [key,mode] of value.modes||[])modes.set(key,mode);
+    for(const [key,text] of value.uncertainDrafts||[])uncertainDrafts.set(key,text);
+    if(inventory.some(s=>s.id===value.activeSid)){restoringUI=null;activate(value.activeSid);$('draft').value=drafts.get(sessionKey())||'';setMode(false);}
+  }
+  window.MobileTerminal={pause,resume,captureUIState,restoreUIState,prepareUIReload,cancelUIReload,openNotification,reconnect:()=>{if(paused)resume();else{connect();refreshWatchers();}},chooseHost,get hosts(){return [...connections.values()].map(c=>({id:c.host.id,connected:c.connected,status:c.status,sessions:c.inventory.map(s=>s.id),subscription:c.subscription}));},get terminal(){return term;},get active(){return active;},get activeKey(){return sessionKey();},get connected(){return connected;},get ready(){return ready;},get controls(){return controls[active]||null;},revision:config.uiRevision||'bundled',metrics};
   for(const h of [home,...hosts])connection(h);
-  for(const c of connections.values())connect(c);refreshWatchers();
+  if(document.hidden){paused=true;state('Background UI paused');renderHosts();renderList();}
+  else{startActivityTimer();for(const c of connections.values())connect(c);refreshWatchers();}
 })();

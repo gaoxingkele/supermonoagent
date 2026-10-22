@@ -18,6 +18,7 @@ from .protocol import (
     OP_OUTPUT,
     OP_SESSIONS,
     OP_SNAPSHOT,
+    OP_TASK_EVENT,
     fit_payload,
     pack,
     pack_feed,
@@ -25,6 +26,7 @@ from .protocol import (
 )
 from .pty import PtyClosed, WinPty, default_cwd, shell_command
 from .pump import OutputPump
+from .task_events import DEFAULT_SUMMARY, TaskEventStore, TaskStateDetector
 
 
 @dataclass
@@ -40,6 +42,7 @@ class Session:
     cols: int = 100
     rows: int = 28
     io_lock: threading.Lock = field(default_factory=threading.Lock)
+    task_detector: TaskStateDetector = field(default_factory=TaskStateDetector)
 
 
 @dataclass
@@ -75,6 +78,7 @@ class Client:
     feed_offsets: dict[str, int] = field(default_factory=dict)
     delegated: bool = False
     authorize: Callable[[], bool] | None = field(default=None, repr=False)
+    task_subscribed: bool = False
 
 
 DEFAULT_PRESETS = (
@@ -133,6 +137,7 @@ class Hub:
         self.presets: list[dict] = [dict(item) for item in DEFAULT_PRESETS]
         self.persist = False
         self._window_no = 0
+        self.task_events = TaskEventStore()
         self.loop: asyncio.AbstractEventLoop | None = None
         self._lock = threading.Lock()
         self._seq = 0
@@ -655,6 +660,9 @@ class Hub:
                 break
             if not chunk:
                 break
+            # Observe fresh bytes before overflow/history coalescing, even when
+            # no terminal viewer has subscribed to this session.
+            self.loop.call_soon_threadsafe(self._task_output, session.id, chunk)
             session.pump.remember(chunk)
             session.pump.stage(
                 chunk,
@@ -662,6 +670,37 @@ class Hub:
                 lambda data, overflow, sid=session.id: self._flushed(sid, data, overflow),
             )
         self.loop.call_soon_threadsafe(self.close_session, session.id)
+
+    def subscribe_task_events(self, client: Client, after: str = "", replay: bool = True) -> list[bytes]:
+        if (self.clients.get(client.key) is not client or client.failure
+                or (client.authorize is not None and not client.authorize())):
+            return []
+        client.task_subscribed = True
+        channel = client.channel if client.key.startswith("relay-") else ""
+        events = self.task_events.replay(client.token, after if replay else "", channel)
+        if not replay:
+            return [pack_json(OP_TASK_EVENT, {"type": "cursor", "cursor": events[-1]["event_id"] if events else ""})]
+        return [pack_json(OP_TASK_EVENT, event) for event in events]
+
+    def _task_output(self, session_id: str, data: bytes) -> None:
+        session = self.sessions.get(session_id)
+        if session is None:
+            return
+        completed = session.task_detector.feed(data)
+        window = self.windows.get(session.window_id)
+        group = self.groups.get(window.group_id) if window is not None else None
+        if group is None:
+            return
+        for _ in range(completed):
+            event = self.task_events.append(group.owner, {
+                "session": session.id, "window": window.id, "title": window.title,
+                "machine": self.machine, "project": self.project,
+                "status": "completed", "summary": DEFAULT_SUMMARY,
+                "agent": session.task_detector.app,
+            }, group.channel)
+            for client in list(self.clients.values()):
+                if client.task_subscribed and self._channel_ok(client, session):
+                    self._send(client, pack_json(OP_TASK_EVENT, event))
 
     def _feed_frame(self, client: Client, op: int, session_id: str, data: bytes) -> bytes:
         # The session id is only for a relay client that receives every window.

@@ -93,8 +93,6 @@ async def exercise(page, device, daemon, first, second, window, output, report):
         device.screenshot(output / "fake-stream-device.png")
 
         # Composer events exercise UTF-8 transport; this memory object is the only recipient.
-        if await page.locator("#composer").evaluate("e=>e.hidden"):
-            await page.locator("#mode").click()
         expected = "USB_ASCII_123 中文输入验证"
         first.pty.inbox.put(('\r\n'.join(f'USB-HISTORY-{i:04}' for i in range(6500))+'\r\n').encode())
         await page.wait_for_function('MobileTerminal.terminal.buffer.normal.baseY>6000')
@@ -121,6 +119,7 @@ async def exercise(page, device, daemon, first, second, window, output, report):
         device.screenshot(output/'history-touch-device.png')
         await page.locator('#bottom').click()
         before = bytes(first.pty.written)
+        await page.locator("#mode").click()
         await page.locator("#draft").fill(expected)
         if bytes(first.pty.written) != before:
             raise AssertionError("Composer sent its unfinished draft")
@@ -130,7 +129,7 @@ async def exercise(page, device, daemon, first, second, window, output, report):
             raise AssertionError("Composer output was duplicated or corrupted")
         if await page.locator("#draft").input_value():
             raise AssertionError("Composer did not clear the submitted draft")
-        await page.locator("#mode").click()  # Direct mode focuses only the fake terminal.
+        await page.locator("#screen").tap()  # Focus only the fake terminal after the editor closes.
         await page.locator("#ctrl").click()
         await page.keyboard.press("c")
         await wait_bytes(first.pty, b"\x03")
@@ -218,7 +217,7 @@ async def probe(args):
                       sizing:localStorage.getItem('sma.mobile.sizing'),
                       effectiveSizing:document.getElementById('sizing').value,
                       draft:document.getElementById('draft').value,
-                      composerHidden:document.getElementById('composer').hidden,
+                      composerHidden:document.getElementById('composer').tagName==='DIALOG'?!document.getElementById('composer').open:document.getElementById('composer').hidden,
                       dialogs:[...document.querySelectorAll('dialog[open]')].map(d=>d.id)
                     })""")
                     try:
@@ -266,7 +265,7 @@ async def probe(args):
                                 report["cleanup"]["temporary_profile_removed"] = True
                                 await page.wait_for_function("MobileTerminal.connected", timeout=15000)
                                 report["cleanup"]["home_reconnected"] = True
-                                if not saved["composerHidden"] and await page.locator("#composer").evaluate("e=>e.hidden"):
+                                if not saved["composerHidden"] and await page.locator("#composer").evaluate("e=>e.tagName==='DIALOG'?!e.open:e.hidden"):
                                     await UI.toggle_mode_without_focus(page)
                                 await page.evaluate("draft=>{document.getElementById('draft').value=draft}", saved["draft"])
                         except Exception as error:

@@ -1,0 +1,33 @@
+SuperMonoAgent 三套 Windows 客户端
+
+请先完整解压压缩包，再启动入口；不要只复制 EXE 或 CMD。
+
+01-Browser.cmd              原浏览器网页 + 共享后台
+02-Orca-Workspace.cmd       参考 Orca 的 WebView2 工作区（侧栏、标签、分屏）
+03-Intelligent-Terminal.cmd 微软 Intelligent Terminal + 共享会话适配器
+
+三套入口共用本机 127.0.0.1:6769 的后台。关闭显示窗口不会结束后台终端。
+第二套需要系统 WebView2 Runtime；第三套需要另行安装 Microsoft Intelligent Terminal：
+winget install --id Microsoft.IntelligentTerminal -e
+
+第二套可通过命令参数对比：
+02-Orca-Workspace.cmd --renderer dom
+02-Orca-Workspace.cmd --renderer webgl
+
+重要：已有旧版后台或公网中继不会被本程序自动重启/升级。
+若 6769 已运行旧后台，请先保存任务后自行升级，或者在独立端口试用：
+SuperMonoAgent\SuperMonoAgent.exe host --port 6779 --state-dir .\trial-state --no-relay
+01-Browser.cmd --port 6779 --no-start
+02-Orca-Workspace.cmd --port 6779 --no-start
+03-Intelligent-Terminal.cmd --url ws://127.0.0.1:6779/ws --token-file .\trial-state\token --list
+03-Intelligent-Terminal.cmd --url ws://127.0.0.1:6779/ws --token-file .\trial-state\token --session 会话ID
+
+手机 APK 直接访问配置的中继/主机。远端必须先升级到提供 /workspace 的本轮版本。
+内置系统 WebView，不捆绑整个 Chromium 引擎；同一页面支持 DOM/WebGL 对比。
+
+试用边界：EXE 未签名；Android APK 是本地调试签名。
+已验证真实 CMD/PowerShell、共享会话、中继、冻结包与隐藏 WebView2；
+未验证实体 Android 输入法/触控、微软应用可见窗口体验、生产公网延迟及 CPU。
+有界历史重放不等于任意全屏程序的完整状态恢复。
+
+完整说明见随包 README.md，源码仓库 docs/implementation-status.md。

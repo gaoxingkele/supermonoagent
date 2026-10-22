@@ -11,10 +11,13 @@ def package(root, destination):
     for directory in ('src/supermonoagent', 'deploy/relay'):
         for path in (root / directory).rglob('*'):
             if path.is_file() and '__pycache__' not in path.parts:
-                if directory == 'src/supermonoagent' and path.suffix not in {'.py', '.js', '.css'}:
+                if directory == 'src/supermonoagent' and path.suffix not in {'.py', '.js', '.css', '.json', '.ico', '.png'}:
                     continue
                 files.add(path)
-    for name in ('pyproject.toml', 'scripts/check-relay-tls.py', 'docs/relay-account-setup.md', 'docs/protocol.md', 'docs/architecture.md'):
+    for name in ('pyproject.toml', 'scripts/check-relay-tls.py',
+                 'scripts/package-ui-update.py', 'scripts/publish-ui-update.py',
+                 'scripts/ui_update_release.py', 'docs/ui-hot-updates.md',
+                 'docs/relay-account-setup.md', 'docs/protocol.md', 'docs/architecture.md'):
         files.add(root / name)
     if (root / 'LICENSE').is_file():
         files.add(root / 'LICENSE')

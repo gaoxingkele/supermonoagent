@@ -19,6 +19,21 @@
   let renameWindow = null, terminateSession = null, connectionOwner = null;
   let homeConfig={...config}, savedHosts=loadHosts(), selectedHost='local', editingHost='', homeRelays=[];
   const hosts=new Map(), directories=new Map(), relayAccounts=new Map();
+  let restoredUI=null;
+  try{const raw=read(sessionStorage,'sma.workspace.ui-state');if(raw.length<=65536){const value=JSON.parse(raw||'null');if(value&&Array.isArray(value.tabs))restoredUI=value;}}catch{}
+  const restoringKeys=new Set(restoredUI?.tabs.filter(value=>{try{const pair=JSON.parse(value);return pair.length===2&&pair.every(item=>typeof item==='string');}catch{return false;}})||[]);
+  function restorePaneViews(host){
+    if(!restoredUI)return;
+    const ids=catalog.filter(win=>win.host===host).flatMap(win=>win.sessions.map(session=>session.id));
+    for(const id of ids)if(restoringKeys.has(id)){openView(id,false);restoringKeys.delete(id);}
+    if(restoredUI.active&&panes.has(restoredUI.active))openView(restoredUI.active,false);
+    if(!restoringKeys.size){
+      const tree=(value,depth=0)=>{if(depth>16)return null;if(typeof value==='string')return panes.has(value)?value:null;
+        if(!value||!['horizontal','vertical'].includes(value.direction))return null;const a=tree(value.a,depth+1),b=tree(value.b,depth+1);
+        return a&&b?{direction:value.direction,ratio:Math.max(15,Math.min(85,Number(value.ratio)||50)),a,b}:a||b;};
+      layout=tree(restoredUI.layout)||layout;restoredUI=null;save(sessionStorage,'sma.workspace.ui-state','');renderLayout();subscribe();
+    }
+  }
   let accountLogin=null,accountLoginGeneration=0,workspaceAuthorization=null,connectionAuthorization=null;
   const mobile = () => matchMedia('(max-width:600px)').matches;
   const metrics = {socketsOpened:0, receivedBytes:0, transmittedBytes:0, outputFrames:0, snapshots:0,
@@ -152,6 +167,7 @@
     for(const field of ['machine','project'])if(typeof info[field]==='string')host.identity[field]=info[field].slice(0,40);
     if(info.controls){host.controls=info.controls;for(const pane of panes.values())if(pane.host===host){acceptResize(pane,info,greeting);if(pane.resumeControl&&host.controls[pane.raw]){pane.resumeControl=false;pane.redrawAfterReplay=true;pane.wantControl=host.controls[pane.raw].owner===true||host.controls[pane.raw].busy===false;}}}
     if(info.windows){host.catalog=info.windows;const sessions=new Set(host.catalog.flatMap(win=>(win.sessions||[]).map(session=>session.id)));for(const id of host.activity.keys())if(!sessions.has(id))host.activity.delete(id);}if(info.groups)host.groups=info.groups;aggregateCatalog();
+    restorePaneViews(host);
     const valid=new Set(host.catalog.flatMap(win=>(win.sessions||[]).map(session=>key(host,session.id))));
     let layoutChanged=false;
     for(const [id,pane] of panes)if(pane.host===host&&!valid.has(id)){removeView(id,false);layoutChanged=true;}
@@ -864,6 +880,13 @@
   }
   window.smaWorkspace={get activeSession(){return active;},get terminal(){return panes.get(active)?.term;},get panes(){return panes;},metrics,
     get activePane(){return panes.get(active);},get activeHost(){return currentHost();},get connections(){return hosts;},get directories(){return directories;},get relayAccounts(){return relayAccounts;},
+    get isComposing(){return [...panes.values()].some(pane=>pane.composing);},
+    captureUIState:()=>({selectedHost,active,tabs:[...openTabs],layout,renderer}),
+    pauseForUIUpdate:()=>{
+      const states=[...panes.values()].map(pane=>({pane,disabled:pane.term.options.disableStdin,readonly:pane.term.textarea.readOnly}));
+      for(const {pane} of states){pane.term.options.disableStdin=true;pane.term.textarea.readOnly=true;}
+      return ()=>{for(const {pane,disabled,readonly} of states)if(livePane(pane)){pane.term.options.disableStdin=disabled;pane.term.textarea.readOnly=readonly;}};
+    },
     get effectiveRenderer(){return panes.get(active)?.renderer;},get connected(){return !!currentHost()?.connected;},get layout(){return layout;},
     openSession:(id,takeover=true)=>openView(sessionInfo(id)?id:key(currentHost(),id),takeover),openHostSession:(hostID,id,takeover=true)=>{const host=hosts.get(hostID);if(host)openView(key(host,id),takeover);},switchHost,split,
     closeView:id=>removeView(panes.has(id)?id:key(currentHost(),id)),takeControl,redraw:()=>redrawPane(panes.get(active)),setRenderer:value=>{$('renderer').value=C.rendererName(value);$('renderer').onchange();},
@@ -878,9 +901,10 @@
     else save(sessionStorage,'sma.workspace.token.target',endpoint(homeConfig));
     const home=new HostConnection('local',homeConfig.code?'当前连接':'本机',homeConfig);hosts.set(home.id,home);
     for(const saved of savedHosts)hosts.set(saved.id,new HostConnection(saved.id,saved.name,{relay:saved.relay,code:saved.code,token:saved.authMode==='account'?'':boundToken(saved.id,saved),authMode:saved.authMode}));
-    const selected=read(sessionStorage,'sma.workspace.activeHost');selectedHost=hosts.has(selected)?selected:'local';
+    const selected=restoredUI?.selectedHost||read(sessionStorage,'sma.workspace.activeHost');selectedHost=hosts.has(selected)?selected:'local';
     for(const host of hosts.values())connect(host);for(const account of relayAccounts.values())connectAccountDirectory(account);refreshDirectories();renderTree();updateFooter();
     if(!config.token&&!config.code)setTimeout(()=>{if(!userConnectedOnce)showConnection();},1500);
   }
   bootstrap();
+  window.NativeUpdates?.uiReady();
 })();

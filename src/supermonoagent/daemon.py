@@ -22,6 +22,7 @@ from . import web
 from .security import request_allowed, tls_context, transport_options, loopback, FIRST_FRAME_S
 from .accounts import Accounts
 from .hub import Hub
+from .task_events import TaskEventStore
 from .protocol import (
     OP_CLOSE,
     OP_FOCUS,
@@ -36,6 +37,7 @@ from .protocol import (
     OP_RESIZE,
     OP_SELECT,
     OP_SUBSCRIBE,
+    OP_TASK_SUBSCRIBE,
     OP_WINDOW,
     ProtocolError,
     pack,
@@ -185,6 +187,7 @@ class Daemon:
         self.token = token
         self.accounts = Accounts(STATE / "accounts.json")
         self.hub = Hub()
+        self.hub.task_events = TaskEventStore(STATE / "task-events.json")
         self.hub.default_owner = token
         self.hub.load_desktop()
         ident = load_identity()
@@ -366,6 +369,12 @@ class Daemon:
             if chosen in self.hub.windows and self.hub.owns(client.token, str(chosen)):
                 self.hub.select(client, chosen)
             return [self._state(client)], None
+        if op == OP_TASK_SUBSCRIBE:
+            body = unpack_json(payload) if payload else {}
+            after = body.get("after", "")
+            if not isinstance(after, str) or len(after) > 128:
+                raise ProtocolError("Invalid task event cursor")
+            return self.hub.subscribe_task_events(client, after, body.get("replay") is not False), None
         if op == OP_SUBSCRIBE:
             body = unpack_json(payload)
             sessions = body.get("sessions")

@@ -41,16 +41,16 @@
       if(pending!==job||job.timer!==null)return;
       if(!job.isCurrent()){clear();return;}
       if(job.timeout!==null){cancel(job.timeout);job.timeout=null;}
-      job.timer=schedule(()=>{if(pending!==job)return;clear();if(job.isCurrent())job.enter();},200);
+      job.timer=schedule(()=>{if(pending!==job)return;clear();if(job.isCurrent()){if(job.enter()!==false)job.onSent();}},200);
     }
     function output(){
       const job=pending;if(!job||!job.echo||job.timer!==null)return;
       if(!job.isCurrent()){clear();return;}
       if(job.echo())arm(job);
     }
-    return {submit(text,{paste,enter,isCurrent,echo=null,onTimeout=()=>{}}){
+    return {submit(text,{paste,enter,isCurrent,echo=null,onTimeout=()=>{},onSent=()=>{}}){
       if(!text||pending)return false;
-      const job={timer:null,timeout:null,enter,isCurrent,echo};pending=job;onPending(true);
+      const job={timer:null,timeout:null,enter,isCurrent,echo,onSent};pending=job;onPending(true);
       try{paste(text);}catch(error){clear();throw error;}
       // ConPTY removes paste markers. A stalled TUI can consume spaced writes
       // together, so editor submissions must confirm remote echo before Enter.

@@ -1,16 +1,42 @@
-param([string]$Python = "", [string]$OutputDir = "dist/windows")
+param([string]$Python = "", [string]$OutputDir = "")
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
 if (!$Python) { $Python = Join-Path $repoRoot '.venv/Scripts/python.exe' }
 if (!(Test-Path $Python)) { throw 'Create .venv and install .[desktop] plus pyinstaller before building.' }
+[xml]$releaseManifest = Get-Content -LiteralPath "$repoRoot/android/AndroidManifest.xml" -Raw
+$releaseVersion = $releaseManifest.manifest.GetAttribute('versionName', 'http://schemas.android.com/apk/res/android')
+if ($releaseVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Android release version must be major.minor.patch.' }
+if (!$OutputDir) { $OutputDir = "dist/windows/$releaseVersion" }
 $dist = [IO.Path]::GetFullPath((Join-Path $repoRoot $OutputDir))
 $work = Join-Path $repoRoot '.omx/pyinstaller'
+$appIcon = Join-Path $repoRoot 'src/supermonoagent/static/app-icon.ico'
+if (!(Test-Path $appIcon)) { throw 'The shared mobile/desktop app icon is missing.' }
 New-Item -ItemType Directory -Force $dist, $work | Out-Null
+$versionParts = $releaseVersion.Split('.')
+$versionTuple = ($versionParts + '0') -join ', '
+$versionFile = Join-Path $work 'windows-version.txt'
+$versionResource = @"
+VSVersionInfo(
+  ffi=FixedFileInfo(filevers=($versionTuple), prodvers=($versionTuple), mask=0x3f,
+                   flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
+  kids=[StringFileInfo([StringTable('040904B0', [
+    StringStruct('CompanyName', 'SuperMonoAgent'),
+    StringStruct('FileDescription', 'SuperMonoAgent'),
+    StringStruct('FileVersion', '$releaseVersion'),
+    StringStruct('InternalName', 'SuperMonoAgent'),
+    StringStruct('OriginalFilename', 'SuperMonoAgent.exe'),
+    StringStruct('ProductName', 'SuperMonoAgent'),
+    StringStruct('ProductVersion', '$releaseVersion')
+  ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])]
+)
+"@
+[IO.File]::WriteAllText($versionFile, $versionResource, [Text.Encoding]::ASCII)
 $buildArgs = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--console',
-    '--name', 'SuperMonoAgent', '--distpath', $dist, '--workpath', "$work/build", '--specpath', $work,
+    '--name', 'SuperMonoAgent', '--icon', $appIcon, '--version-file', $versionFile, '--distpath', $dist, '--workpath', "$work/build", '--specpath', $work,
     '--paths', "$repoRoot/src", '--add-data', "$repoRoot/src/supermonoagent/static:supermonoagent/static",
     '--hidden-import', 'supermonoagent.daemon', '--hidden-import', 'supermonoagent.relay',
     '--hidden-import', 'supermonoagent.frontend',
+    '--hidden-import', 'supermonoagent.notification_bridge',
     '--hidden-import', 'supermonoagent.desktop', '--hidden-import', 'supermonoagent.microsoft',
     '--hidden-import', 'supermonoagent.native_attach', '--hidden-import', 'webview.platforms.winforms',
     '--hidden-import', 'webview.platforms.edgechromium', '--hidden-import', 'clr',
@@ -44,12 +70,14 @@ foreach ($entry in $entries.GetEnumerator()) {
     }
 }
 Copy-Item "$repoRoot/scripts/launch-hidden.vbs" "$dist/launch-hidden.vbs" -Force
+Copy-Item "$repoRoot/scripts/create-desktop-shortcuts.vbs" "$dist/create-desktop-shortcuts.vbs" -Force
 Copy-Item "$repoRoot/docs/windows-clients.md" "$dist/README.md" -Force
 $exe = Join-Path $dist 'SuperMonoAgent/SuperMonoAgent.exe'
 $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
 "$sha  SuperMonoAgent/SuperMonoAgent.exe" | Set-Content "$dist/SuperMonoAgent.exe.sha256" -Encoding ascii
-$sources = @(Get-ChildItem "$repoRoot/src/supermonoagent" -File -Recurse | Where-Object { $_.Extension -in '.py', '.js', '.css' } | ForEach-Object {
+$sources = @(Get-ChildItem "$repoRoot/src/supermonoagent" -File -Recurse | Where-Object { $_.Extension -in '.py', '.js', '.css', '.json', '.ico', '.png' } | ForEach-Object {
     @{ path = $_.FullName.Substring($repoRoot.Length + 1).Replace('\', '/'); sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() }
 })
-@{ built_at = [DateTime]::UtcNow.ToString('o'); exe_sha256 = $sha; sources = $sources } | ConvertTo-Json -Depth 4 | Set-Content "$dist/build-manifest.json" -Encoding UTF8
+[IO.File]::WriteAllText((Join-Path $dist 'version.txt'), $releaseVersion + "`n", [Text.Encoding]::ASCII)
+@{ version = $releaseVersion; built_at = [DateTime]::UtcNow.ToString('o'); exe_sha256 = $sha; sources = $sources } | ConvertTo-Json -Depth 4 | Set-Content "$dist/build-manifest.json" -Encoding UTF8
 Write-Host "Windows clients ready: $dist"

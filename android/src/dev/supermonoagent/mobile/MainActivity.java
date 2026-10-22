@@ -35,7 +35,7 @@ import java.io.IOException;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 
-/** Packaged mobile document, system WebView, and no native JavaScript bridge. */
+/** Verified local documents; updater commands use ticketed main-frame navigation only. */
 public final class MainActivity extends Activity {
     private SharedPreferences preferences;
     private JSONObject defaults = new JSONObject();
@@ -46,7 +46,25 @@ public final class MainActivity extends Activity {
     private int connectionFormGeneration;
     private HotAssets hotAssets;
     private boolean keyboardVisible;
+    private RemoteUpdates.Store updateStore;
+    private byte[] updateTrust;
+    private String updateBridge="";
+    private RemoteUpdates.Candidate updateCandidate,downloadedCandidate;
+    private byte[] downloadedArchive;
+    private final android.os.Handler updateHandler=new android.os.Handler(android.os.Looper.getMainLooper());
+    private volatile long documentGeneration;
+    private String documentRevision="bundled",documentTicket="";
+    private RemoteUpdates.Boot updateBoot;
+    private boolean documentReady,documentInitializing,foreground,updatesBusy,waitingForComposition,restoreNavigationState,restoreRecoveredUI,skipNextUIRestore;
+    private final Runnable foregroundUpdateCheck=new Runnable(){public void run(){if(foreground){checkUpdates(false);updateHandler.postDelayed(this,6*60*60*1000L);}}};
+    private java.util.Map<String,byte[]> currentSnapshot;
+    private java.nio.file.Path navigationState;
+    private final java.net.URI updateFeed=java.net.URI.create(RemoteUpdates.DEFAULT_FEED);
+
     private final String[] renderers = {"auto", "dom", "webgl"};
+    private static JSONObject notificationConnection;
+    private JSONObject pendingNotificationStart, pendingNotificationRoute;
+    private int notificationRouteAttempts;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -87,9 +105,11 @@ public final class MainActivity extends Activity {
             }
         });
         setContentView(root);
+        initializeUpdates();
         if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                 android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::handleBack);
         showConnection();
+        receiveTaskNotification(getIntent());
     }
 
     private EditText input(LinearLayout form, String hint, String value, boolean secret) {
@@ -121,6 +141,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showConnection() {
+        invalidateDocument();
         final int formGeneration = ++connectionFormGeneration;
         destroyTerminal();
         connection = null;
@@ -151,9 +172,14 @@ public final class MainActivity extends Activity {
         form.addView(version);
         hotAssets = HotAssets.load(getExternalFilesDir(null));
         TextView uiVersion = new TextView(this);
-        uiVersion.setText("界面版本：" + (hotAssets.getRevision().isEmpty() ? "随安装包" : hotAssets.getRevision()));
+        String selectedUI=preferences.getBoolean("ui-bundled-only",false)?"bundled":hotAssets.getRevision().isEmpty()?"bundled":hotAssets.getRevision();
+        try{if(!preferences.getBoolean("ui-bundled-only",false)&&updateStore!=null&&updateStore.active()!=null)selectedUI=updateStore.active();}catch(Exception ignored){}
+        uiVersion.setText("UI revision: "+selectedUI);
         uiVersion.setTextColor(Color.LTGRAY);
         form.addView(uiVersion);
+        button(form,"Check UI updates",view->checkUpdates(true));
+        button(form,"Restore previous UI",view->rollbackUpdate());
+        button(form,"Use bundled UI",view->confirmBundledUI());
         EditText url = input(form, "服务地址 https://relay.example.com", preferences.getString("url", defaults.optString("endpoint")), false);
         EditText code = input(form, "连接码（中继模式）", preferences.getString("code", defaults.optString("code")), false);
         EditText token = input(form, "访问令牌（仅本次连接保留）", defaults.optString("token"), true);
@@ -221,6 +247,58 @@ public final class MainActivity extends Activity {
             changes.setText("最近更新：适配手机与折叠屏，改善连接和终端显示。");
         }
         form.addView(changes);
+        button(form, "任务完成通知", view -> {
+            try {
+                JSONObject target=new JSONObject();target.put("endpoint",validEndpoint(url.getText().toString().trim()).toString());
+                target.put("code",code.getText().toString().trim());target.put("token",token.getText().toString());
+                target.put("renderer",renderers[renderer.getSelectedItemPosition()]);showTaskNotifications(target);
+            } catch(Exception error) { url.setError("请先填写有效的连接参数"); }
+        });
+    }
+
+    private void showTaskNotifications(JSONObject target) {
+        if(target==null){new AlertDialog.Builder(this).setMessage("请先连接一台电脑，再启用任务通知。").setPositiveButton("确定",null).show();return;}
+        LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);content.setPadding(24,12,24,12);
+        TextView info=new TextView(this);info.setText(TaskNotifications.status(this)+"\n\n复用当前中继，不需要付费推送。启用后显示常驻连接通知；系统省电、强制停止或断网可能延迟提醒。只检测明确的任务状态，不把停止刷屏当作完成。");content.addView(info);
+        android.widget.CheckBox legacy=new android.widget.CheckBox(this);legacy.setText("兼容旧版 Windows 后台（保留现有终端）");legacy.setChecked(preferences.getBoolean("task-notification-legacy",true));content.addView(legacy);
+        new AlertDialog.Builder(this).setTitle("任务完成通知").setView(content)
+            .setPositiveButton("启用通知",(dialog,which)->{
+                try{JSONObject config=new JSONObject(target.toString());preferences.edit().putBoolean("task-notification-legacy",legacy.isChecked()).apply();
+                    if(legacy.isChecked()&&!config.optString("code").isEmpty())config.put("notificationCode",config.optString("code")+"-events");
+                    requestTaskNotifications(config);
+                }catch(Exception error){android.widget.Toast.makeText(this,"通知配置无效",android.widget.Toast.LENGTH_LONG).show();}
+            }).setNeutralButton("停止通知",(dialog,which)->{TaskNotifications.stop(this);notificationConnection=null;})
+            .setNegativeButton("取消",null).show();
+    }
+    private void requestTaskNotifications(JSONObject config) {
+        if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED){pendingNotificationStart=config;requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},72);return;}
+        try{TaskNotifications.start(this,config);notificationConnection=new JSONObject(config.toString());android.widget.Toast.makeText(this,"通知连接已启动，可在通知栏查看状态",android.widget.Toast.LENGTH_LONG).show();}
+        catch(Exception error){android.widget.Toast.makeText(this,"无法启动通知连接，请重新打开应用后重试",android.widget.Toast.LENGTH_LONG).show();}
+    }
+    @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] grants) {
+        super.onRequestPermissionsResult(request,permissions,grants);
+        if(request!=72)return;JSONObject config=pendingNotificationStart;pendingNotificationStart=null;
+        if(grants.length>0&&grants[0]==android.content.pm.PackageManager.PERMISSION_GRANTED&&config!=null)requestTaskNotifications(config);
+        else android.widget.Toast.makeText(this,"未授予通知权限，终端仍可正常使用",android.widget.Toast.LENGTH_LONG).show();
+    }
+    private void receiveTaskNotification(Intent intent) {
+        if(intent==null||intent.getStringExtra("task_session")==null)return;
+        try{
+            String endpoint=intent.getStringExtra("task_endpoint"),code=intent.getStringExtra("task_code");
+            if(connection==null&&notificationConnection!=null)connection=new JSONObject(notificationConnection.toString());
+            if(connection==null||!connection.optString("endpoint").equals(endpoint)||!connection.optString("code").equals(code==null?"":code)){
+                new AlertDialog.Builder(this).setTitle("任务通知").setMessage("请先连接通知对应的电脑。不会自动创建终端或发送指令。").setPositiveButton("确定",null).show();return;
+            }
+            pendingNotificationRoute=new JSONObject();pendingNotificationRoute.put("endpoint",endpoint);pendingNotificationRoute.put("code",code);pendingNotificationRoute.put("session",intent.getStringExtra("task_session"));notificationRouteAttempts=0;
+            if(terminal==null){localBase=LocalAssets.originForEndpoint(endpoint);openTerminal();}else deliverTaskNotification();
+        }catch(Exception ignored){}
+    }
+    private void deliverTaskNotification() {
+        if(pendingNotificationRoute==null||!foreground)return;
+        if(++notificationRouteAttempts>15){pendingNotificationRoute=null;new AlertDialog.Builder(this).setTitle("任务已结束").setMessage("对应终端已关闭或暂不可用。不会创建新会话，请在终端列表中检查。").setPositiveButton("确定",null).show();return;}
+        if(!trustedDocument()||!documentReady){updateHandler.postDelayed(this::deliverTaskNotification,1000);return;}
+        final JSONObject route=pendingNotificationRoute;
+        terminal.evaluateJavascript("!!window.MobileTerminal?.openNotification?.("+route.toString()+")",result->{if(pendingNotificationRoute!=route)return;if("true".equals(result))pendingNotificationRoute=null;else updateHandler.postDelayed(this::deliverTaskNotification,1000);});
     }
 
     static Uri validEndpoint(String value) {
@@ -230,89 +308,180 @@ public final class MainActivity extends Activity {
 
     private boolean trustedDocument() {
         return terminal != null && terminal.getUrl() != null && localBase != null
-                && LocalAssets.isDocument(localBase, terminal.getUrl());
+                && UpdateDocument.document(localBase, terminal.getUrl(),documentRevision);
     }
 
     private boolean navigation(Uri target) {
         if (localBase == null || !(localBase.equals(target.getScheme() + "://" + target.getAuthority()))) return true;
         if ("/settings".equals(target.getPath())) { showConnection(); return true; }
         if ("/reload".equals(target.getPath())) { openTerminal(); return true; }
-        return !LocalAssets.isDocument(localBase, target.toString());
+        if ("/notifications".equals(target.getPath())) { showTaskNotifications(connection); return true; }
+        return !UpdateDocument.document(localBase, target.toString(),documentRevision);
     }
 
     private WebResourceResponse blocked() {
         return new WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", null, new ByteArrayInputStream(new byte[0]));
     }
 
-    private void openTerminal() {
-        if (connection == null) { showConnection(); return; }
+    private void openTerminal() { openTerminal(false); }
+    private void openTerminal(boolean updating) {
+        if(connection==null&&!updating){showConnection();return;}
         connectionFormGeneration++;
-        hotAssets = HotAssets.load(getExternalFilesDir(null));
-        connection.remove("uiRevision");
-        try { connection.put("uiRevision", hotAssets.getRevision().isEmpty() ? "bundled" : hotAssets.getRevision()); }
-        catch (JSONException error) { throw new IllegalStateException(error); }
-        destroyTerminal();
-        root.removeAllViews();
-        terminal = new WebView(this);
-        terminal.setBackgroundColor(Color.rgb(12, 16, 23));
-        WebSettings settings = terminal.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setTextZoom(100);
-        settings.setSupportZoom(false);
-        settings.setBuiltInZoomControls(false);
-        settings.setDisplayZoomControls(false);
-        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
-        settings.setAllowFileAccess(false);
-        settings.setAllowContentAccess(false);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        settings.setSupportMultipleWindows(false);
-        settings.setMediaPlaybackRequiresUserGesture(true);
-        CookieManager.getInstance().setAcceptThirdPartyCookies(terminal, false);
-        terminal.setWebViewClient(new WebViewClient() {
-            @Override public WebResourceResponse shouldInterceptRequest(WebView web, WebResourceRequest request) {
-                String url = request.getUrl().toString();
-                String base = localBase;
-                if (base == null || !url.startsWith(base + "/") || !"GET".equals(request.getMethod())) return blocked();
-                String asset = LocalAssets.assetPath(base, url);
-                if (asset == null) {
-                    android.util.Log.w("SuperMonoAgent", "Blocked local path " + request.getUrl().getPath());
-                    return blocked();
+        try{
+            hotAssets=HotAssets.load(getExternalFilesDir(null));
+            final java.util.Map<String,byte[]> snapshot=effectiveSnapshot();currentSnapshot=snapshot;
+            String active=updateStore==null||preferences.getBoolean("ui-bundled-only",false)?null:updateStore.active();
+            documentRevision=active==null?(hotAssets.getRevision().isEmpty()?"bundled":hotAssets.getRevision()):active;
+            if(preferences.getBoolean("ui-bundled-only",false)||updateStore!=null&&active==null&&updateStore.highest()>0)documentRevision="bundled";
+            updateBoot=updateStore==null?null:updateStore.beginBoot();
+            documentTicket=java.util.UUID.randomUUID().toString();documentReady=false;documentInitializing=false;
+            restoreNavigationState=!skipNextUIRestore&&(updating||restoreRecoveredUI);skipNextUIRestore=false;
+            final long generation=++documentGeneration;
+            final String revision=documentRevision,ticket=documentTicket;
+            final RemoteUpdates.Boot boot=updateBoot;
+            JSONObject pageConnection=connection==null?new JSONObject():new JSONObject(connection.toString());
+            if(connection==null){String endpoint=preferences.getString("url","https://ui.supermono.local");try{ConnectionEndpoint.validate(endpoint);}catch(Exception invalid){endpoint="https://ui.supermono.local";}pageConnection.put("endpoint",endpoint);pageConnection.put("code",preferences.getString("code",""));pageConnection.put("token","");pageConnection.put("renderer","dom");}
+            pageConnection.put("uiRevision",revision);localBase=LocalAssets.originForEndpoint(pageConnection.getString("endpoint"));
+            navigationState=getFilesDir().toPath().resolve("remote-ui").resolve("navigation-"+RemoteUpdates.hash((pageConnection.optString("endpoint")+"\n"+pageConnection.optString("code")).getBytes("UTF-8"))+".json");
+            if(!updating||terminal==null){destroyTerminal();root.removeAllViews();terminal=new WebView(this);root.addView(terminal,new LinearLayout.LayoutParams(-1,-1));}
+            final WebView view=terminal;
+            terminal.setBackgroundColor(Color.rgb(12,16,23));WebSettings settings=terminal.getSettings();
+            settings.setJavaScriptEnabled(true);settings.setDomStorageEnabled(true);settings.setTextZoom(100);settings.setSupportZoom(false);settings.setBuiltInZoomControls(false);settings.setDisplayZoomControls(false);settings.setCacheMode(WebSettings.LOAD_NO_CACHE);settings.setAllowFileAccess(false);settings.setAllowContentAccess(false);settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);settings.setSupportMultipleWindows(false);settings.setMediaPlaybackRequiresUserGesture(true);CookieManager.getInstance().setAcceptThirdPartyCookies(terminal,false);
+            final String base=localBase;
+            terminal.setWebViewClient(new WebViewClient(){
+                @Override public WebResourceResponse shouldInterceptRequest(WebView web,WebResourceRequest request){
+                    String asset=UpdateDocument.asset(base,request.getUrl().toString(),revision);
+                    if(asset==null||!"GET".equals(request.getMethod())||(asset.endsWith(".html")&&!request.isForMainFrame()))return blocked();
+                    try{byte[] bytes=snapshot.get(asset);if(bytes==null)return blocked();
+                        if(asset.equals("mobile/index.html"))bytes=UpdateDocument.html(bytes,updateBridge,ticket,revision,generation,base).getBytes("UTF-8");
+                        java.util.Map<String,String> headers=new java.util.HashMap<>();headers.put("Cache-Control","no-store");headers.put("X-Content-Type-Options","nosniff");headers.put("X-Frame-Options","DENY");
+                        return new WebResourceResponse(LocalAssets.mime(asset),"UTF-8",200,"OK",headers,new ByteArrayInputStream(bytes));
+                    }catch(Exception error){return blocked();}
                 }
-                try {
-                    java.util.Map<String, String> headers = new java.util.HashMap<String, String>();
-                    headers.put("Cache-Control", "no-store");
-                    headers.put("X-Content-Type-Options", "nosniff");
-                    java.io.InputStream stream = hotAssets == null ? null : hotAssets.open(asset);
-                    if (stream == null) stream = getAssets().open(asset);
-                    return new WebResourceResponse(LocalAssets.mime(asset), "UTF-8", 200, "OK", headers, stream);
-                } catch (IOException error) {
-                    android.util.Log.w("SuperMonoAgent", "Missing packaged asset " + asset, error);
-                    return blocked();
+                @Override public boolean shouldOverrideUrlLoading(WebView web,WebResourceRequest request){
+                    if("sma-update".equals(request.getUrl().getScheme())){
+                        String action=UpdateDocument.action(base,web.getUrl(),request.getUrl().toString(),request.isForMainFrame(),ticket,revision,generation);
+                        if(web==terminal&&generation==documentGeneration&&action!=null)updateAction(action,generation,boot);return true;
+                    }
+                    return !request.isForMainFrame()||navigation(request.getUrl());
                 }
-            }
-            @Override public boolean shouldOverrideUrlLoading(WebView web, WebResourceRequest request) {
-                return !request.isForMainFrame() || navigation(request.getUrl());
-            }
-            @Override public boolean shouldOverrideUrlLoading(WebView web, String url) { return navigation(Uri.parse(url)); }
-            @Override public void onReceivedError(WebView web, WebResourceRequest request, WebResourceError error) {
-                if (web == terminal && request.isForMainFrame()) showLoadError("终端界面加载失败，请重试。");
-            }
-            @Override public void onReceivedHttpError(WebView web, WebResourceRequest request, WebResourceResponse response) {
-                android.util.Log.w("SuperMonoAgent", "Resource HTTP " + response.getStatusCode()
-                        + " path=" + request.getUrl().getPath() + " main=" + request.isForMainFrame());
-                if (web == terminal && request.isForMainFrame()) showLoadError("终端资源加载失败（" + response.getStatusCode() + "）。");
-            }
-            @Override public boolean onRenderProcessGone(WebView web, RenderProcessGoneDetail detail) {
-                if (web == terminal) showLoadError("终端渲染进程已退出，后台会话仍在运行。");
-                return true;
-            }
-        });
-        root.addView(terminal, new LinearLayout.LayoutParams(-1, -1));
-        terminal.loadUrl(localBase + "/mobile/index.html#" + Uri.encode(connection.toString()));
+                @Override public boolean shouldOverrideUrlLoading(WebView web,String url){return true;}
+                @Override public void onReceivedError(WebView web,WebResourceRequest request,WebResourceError error){
+                    if(web==terminal&&request.isForMainFrame()&&generation==documentGeneration)startupFailure(generation,boot,"UI document failed to load");
+                }
+                @Override public void onReceivedHttpError(WebView web,WebResourceRequest request,WebResourceResponse response){
+                    if(web==terminal&&request.isForMainFrame()&&generation==documentGeneration)startupFailure(generation,boot,"UI document failed to load");
+                }
+                @Override public boolean onRenderProcessGone(WebView web,RenderProcessGoneDetail detail){
+                    if(web==terminal&&generation==documentGeneration){destroyTerminal();if(boot!=null&&!boot.ticket.isEmpty())startupFailure(generation,boot,"UI renderer stopped");else{try{if(updateStore!=null&&updateStore.active()!=null){updateStore.rollback();openTerminal(true);}else showLoadError("UI renderer stopped; terminal processes continue running.");}catch(Exception error){showLoadError("UI renderer stopped; use bundled UI.");}}}return true;
+                }
+            });
+            terminal.loadUrl(base+"/mobile/index.html?ui_revision="+revision+"#"+Uri.encode(pageConnection.toString()));
+            if(!foreground)terminal.onPause();
+            if(boot!=null&&!boot.ticket.isEmpty())updateHandler.postDelayed(()->{if(generation==documentGeneration&&!documentReady)startupFailure(generation,boot,"UI startup deadline exceeded");},20000);
+        }catch(Exception error){try{if(updateStore!=null&&updateStore.active()!=null){updateStore.rollback();openTerminal(true);return;}}catch(Exception ignored){}showLoadError("Unable to load verified UI. Restore the previous UI or use bundled assets.");}
     }
 
+    private void initializeUpdates(){
+        try{updateTrust=RemoteUpdates.read(getAssets().open("update-trust.json"),RemoteUpdates.MANIFEST_LIMIT);updateBridge=new String(RemoteUpdates.read(getAssets().open("update-bridge.js"),128*1024),"UTF-8");
+            updateStore=new RemoteUpdates.Store(getFilesDir().toPath().resolve("remote-ui"),updateTrust,updateFeed);restoreRecoveredUI=updateStore.recoveredOnStart();
+        }catch(Exception error){updateStore=null;}
+    }
+    private java.util.Map<String,byte[]> effectiveSnapshot() throws Exception {
+        boolean forced=preferences.getBoolean("ui-bundled-only",false);
+        if(!forced&&updateStore!=null&&updateStore.active()!=null)return updateStore.snapshot(updateStore.active());
+        boolean bundled=forced||updateStore!=null&&updateStore.highest()>0;
+        java.util.Map<String,byte[]> files=new java.util.LinkedHashMap<>();
+        for(String asset:RemoteUpdates.FILES){java.io.InputStream stream=!bundled&&hotAssets!=null?hotAssets.open(asset):null;if(stream==null)stream=getAssets().open(asset);files.put(asset,RemoteUpdates.read(stream,RemoteUpdates.FILE_LIMIT));}return files;
+    }
+    private void updateAction(String action,long generation,RemoteUpdates.Boot boot){
+        if(action.equals("check")){checkUpdates(true);return;}if(action.equals("install")){confirmUpdate();return;}if(action.equals("rollback")){rollbackUpdate();return;}
+        if(action.equals("fail")){if(!documentReady)startupFailure(generation,boot,"UI script startup failed");return;}
+        if(action.equals("ready")&&!documentReady&&!documentInitializing){documentInitializing=true;
+            String state="null";try{if(restoreNavigationState&&navigationState!=null&&java.nio.file.Files.exists(navigationState))state=new String(UpdateDocument.state(RemoteUpdates.read(java.nio.file.Files.newInputStream(navigationState),512*1024)),"UTF-8");}catch(Exception ignored){}
+            final String restore=state;terminal.evaluateJavascript("(()=>{try{if(window.NativeUpdates){NativeUpdates.restore("+restore+");NativeUpdates.uiReady();}return true;}catch(e){return false;}})()",result->{
+                if(generation!=documentGeneration)return;if(!"true".equals(result)){documentReady=false;documentInitializing=false;startupFailure(generation,boot,"UI state restore failed");return;}
+                try{if(boot!=null&&!boot.ticket.isEmpty()&&!updateStore.acknowledge(boot.ticket,boot.revision,boot.generation))throw new IOException("Stale startup ticket");documentReady=true;documentInitializing=false;restoreRecoveredUI=false;if(!foreground){lifecycle("pause");if(terminal!=null)terminal.onPause();}}catch(Exception error){documentReady=false;documentInitializing=false;startupFailure(generation,boot,"Unable to commit UI startup");}
+            });
+        }
+    }
+    private void startupFailure(long generation,RemoteUpdates.Boot boot,String reason){
+        if(generation!=documentGeneration)return;
+        try{if(boot!=null&&!boot.ticket.isEmpty()&&updateStore.fail(boot.ticket)){documentGeneration++;retireFailedRenderer();openTerminal(true);return;}}catch(Exception ignored){}
+        showLoadError(reason+". Server terminal processes continue running.");
+    }
+    private void retireFailedRenderer(){
+        // API29+: terminate the app's sandboxed renderer; callbacks for retired views are ignored.
+        // API26-28 has no platform termination handle: recreation is best-effort, not proven hard-kill.
+        if(terminal!=null&&Build.VERSION.SDK_INT>=29){try{android.webkit.WebViewRenderProcess process=terminal.getWebViewRenderProcess();if(process!=null)process.terminate();}catch(RuntimeException ignored){}}
+        destroyTerminal();
+    }
+    private void checkUpdates(boolean manual){
+        if(updateStore==null){if(manual)updateMessage("UI updates unavailable: install a bootstrap APK with its public trust anchor.");return;}
+        if(updatesBusy)return;long now=System.currentTimeMillis();if(!manual&&now-preferences.getLong("ui-update-check",0)<6*60*60*1000L)return;
+        preferences.edit().putLong("ui-update-check",now).apply();updatesBusy=true;
+        new Thread(()->{try{byte[] envelope=RemoteUpdates.download(updateFeed,RemoteUpdates.MANIFEST_LIMIT);RemoteUpdates.Candidate candidate=updateStore.observe(envelope,System.currentTimeMillis()/1000);
+            runOnUiThread(()->{updatesBusy=false;updateCandidate=candidate;if(!foreground)return;try{if(updateStore.available(candidate)){if(manual)confirmUpdate();else android.widget.Toast.makeText(this,"UI update available. Open Update to review it.",android.widget.Toast.LENGTH_LONG).show();}else if(manual)updateMessage("UI is current. Highest signed release is "+candidate.sequence+".");}catch(Exception error){if(manual)updateMessage("Release cannot be offered.");}});
+        }catch(Exception error){runOnUiThread(()->{updatesBusy=false;if(manual&&foreground)updateMessage("Unable to check UI updates. HTTPS and signature verification remain enabled.");});}},"ui-update-check").start();
+    }
+    private void confirmUpdate(){
+        final RemoteUpdates.Candidate candidate=updateCandidate;if(candidate==null)return;
+        if(candidate.nativeApi!=RemoteUpdates.NATIVE_API){updateMessage("This UI requires a newer native app. Install a compatible APK first.");return;}
+        new AlertDialog.Builder(this).setTitle("UI update available").setMessage("Release "+candidate.revision+". Your terminal processes keep running. Apply when your input is ready.")
+            .setPositiveButton("Download and update",(dialog,which)->downloadUpdate(candidate)).setNegativeButton("Later",null).show();
+    }
+    private void downloadUpdate(RemoteUpdates.Candidate candidate){
+        if(updatesBusy)return;updatesBusy=true;final long downloadGeneration=documentGeneration;
+        if(downloadedArchive!=null&&downloadedCandidate!=null&&candidate.payloadHash.equals(downloadedCandidate.payloadHash)){showDownloadedUpdate(candidate,downloadedArchive,downloadGeneration);return;}
+        new Thread(()->{try{byte[] archive=RemoteUpdates.download(candidate.url,RemoteUpdates.ARCHIVE_LIMIT);RemoteUpdates.unpack(candidate,archive);runOnUiThread(()->{downloadedCandidate=candidate;downloadedArchive=archive;showDownloadedUpdate(candidate,archive,downloadGeneration);});}
+            catch(Exception error){runOnUiThread(()->{updatesBusy=false;updateMessage("Update rejected. Current UI is unchanged.");});}},"ui-update-download").start();
+    }
+    private void showDownloadedUpdate(RemoteUpdates.Candidate candidate,byte[] archive,long generation){
+        if(isFinishing()||isDestroyed()||generation!=documentGeneration){updatesBusy=false;return;}
+        new AlertDialog.Builder(this).setTitle("UI download verified").setMessage("Reload the UI now? Unsent drafts will be saved first; server terminals continue running.").setPositiveButton("Save drafts and reload",(dialog,which)->prepareUpdate(candidate,archive)).setNegativeButton("Later",(dialog,which)->updatesBusy=false).show();
+    }
+    private void confirmBundledUI(){
+        new AlertDialog.Builder(this).setTitle("Use UI bundled with this APK?")
+            .setMessage("First save the old developer UI drafts from EVERY window somewhere else. Its private draft maps cannot be migrated automatically. Confirming switches to the packaged UI; unsaved old drafts may be lost. USB snapshot files and their active pointer stay unchanged, so a developer can restore them later. The downloaded update remains unactivated.")
+            .setPositiveButton("I saved drafts; use bundled UI",(dialog,which)->{try{invalidateDocument();if(updateStore!=null)updateStore.useBundled();preferences.edit().putBoolean("ui-bundled-only",true).commit();restoreRecoveredUI=false;skipNextUIRestore=true;openTerminal(true);}catch(Exception error){updateMessage("Unable to select the bundled UI. USB files are unchanged.");}})
+            .setNegativeButton("Keep current UI",null).show();
+    }
+    private interface UpdateMutation {void run() throws Exception;}
+    private void prepareUpdate(RemoteUpdates.Candidate candidate,byte[] archive){
+        prepareNavigation(()->{updateStore.install(candidate.envelope,archive,currentSnapshot==null?effectiveSnapshot():currentSnapshot,System.currentTimeMillis()/1000);preferences.edit().putBoolean("ui-bundled-only",false).commit();},documentGeneration);
+    }
+    private void prepareNavigation(UpdateMutation mutation,long expectedGeneration){
+        if(expectedGeneration!=documentGeneration||isFinishing()||isDestroyed()){updatesBusy=false;return;}
+        if(!foreground){updateHandler.postDelayed(()->prepareNavigation(mutation,expectedGeneration),300);return;}
+        final long generation=documentGeneration;
+        android.webkit.ValueCallback<String> captured=value->{
+            if(generation!=documentGeneration){updatesBusy=false;return;}
+            if("\"unsupported\"".equals(value)){updatesBusy=false;new AlertDialog.Builder(this).setTitle("Developer UI cannot safely migrate drafts").setMessage("The downloaded update has NOT been activated. This older USB UI cannot export all window drafts. You can explicitly switch to the bundled UI after saving them elsewhere.").setPositiveButton("Review bundled recovery",(dialog,which)->confirmBundledUI()).setNegativeButton("Keep current UI",null).show();return;}
+            if(value==null||value.equals("null")){if(!waitingForComposition){waitingForComposition=true;android.widget.Toast.makeText(this,"Finish composition or the pending send before updating.",android.widget.Toast.LENGTH_LONG).show();}updateHandler.postDelayed(()->prepareNavigation(mutation,expectedGeneration),300);return;}
+            try{waitingForComposition=false;byte[] safe=UpdateDocument.state(value.getBytes("UTF-8"));
+                final java.nio.file.Path statePath=navigationState==null?getFilesDir().toPath().resolve("remote-ui/navigation-empty.json"):navigationState;
+                new Thread(()->{try{java.nio.file.Files.createDirectories(statePath.getParent());java.nio.file.Path temp=statePath.resolveSibling(statePath.getFileName()+".tmp");try(java.io.FileOutputStream stream=new java.io.FileOutputStream(temp.toFile())){stream.write(safe);stream.getFD().sync();}java.nio.file.Files.move(temp,statePath,java.nio.file.StandardCopyOption.REPLACE_EXISTING,java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+                    if(isFinishing()||isDestroyed()||generation!=documentGeneration)throw new IOException("Obsolete UI activation");mutation.run();runOnUiThread(()->{updatesBusy=false;if(!isFinishing()&&!isDestroyed()&&generation==documentGeneration)openTerminal(true);});
+                }catch(Exception error){runOnUiThread(()->{updatesBusy=false;if(terminal!=null&&generation==documentGeneration)terminal.evaluateJavascript("MobileTerminal?.cancelUIReload?.()",null);updateMessage("Update activation rejected. Current UI is unchanged.");});}},"ui-update-install").start();
+            }catch(Exception error){updatesBusy=false;if(terminal!=null)terminal.evaluateJavascript("MobileTerminal?.cancelUIReload?.()",null);updateMessage("UI state could not be safely saved. Update postponed.");}
+        };
+        if(terminal!=null&&trustedDocument())terminal.evaluateJavascript("window.MobileTerminal?.prepareUIReload ? MobileTerminal.prepareUIReload() : 'unsupported'",captured);
+        else captured.onReceiveValue("{\"version\":1,\"hostId\":\"home\",\"activeSid\":\"\",\"drafts\":[],\"modes\":[]}");
+    }
+    private void rollbackUpdate(){
+        if(updateStore==null)return;
+        new AlertDialog.Builder(this).setMessage("Restore the previous local UI? Terminal processes keep running.")
+            .setPositiveButton("Restore",(dialog,which)->{if(!updatesBusy){updatesBusy=true;prepareNavigation(()->updateStore.rollback(),documentGeneration);}}).setNegativeButton("Cancel",null).show();
+    }
+    private void invalidateDocument(){
+        documentGeneration++;documentReady=false;documentInitializing=false;
+        try{if(updateStore!=null&&updateBoot!=null&&!updateBoot.ticket.isEmpty())updateStore.fail(updateBoot.ticket);}catch(Exception ignored){}
+        updateBoot=null;
+    }
+    private void updateMessage(String message){if(!isFinishing()&&!isDestroyed())new AlertDialog.Builder(this).setMessage(message).setPositiveButton("OK",null).show();}
+
     private void showLoadError(String message) {
+        invalidateDocument();
         destroyTerminal();
         root.removeAllViews();
         TextView text = new TextView(this);
@@ -332,6 +501,7 @@ public final class MainActivity extends Activity {
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        if(intent.getStringExtra("task_session")!=null){receiveTaskNotification(intent);return;}
         if (intent.getBooleanExtra("ui_probe", false)) WebView.setWebContentsDebuggingEnabled(true);
         if (intent.getBooleanExtra("ui_probe", false) && intent.getBooleanExtra("hide_keyboard", false)) {
             if (terminal != null) terminal.clearFocus();
@@ -342,19 +512,26 @@ public final class MainActivity extends Activity {
             return;
         }
         if (intent.getBooleanExtra("reload_ui", false)) {
+            preferences.edit().putBoolean("ui-bundled-only",false).apply();
             if (connection != null) openTerminal(); else showConnection();
         }
     }
 
     @Override protected void onPause() {
+        foreground=false;
+        updateHandler.removeCallbacks(foregroundUpdateCheck);
         lifecycle("pause");
         if (terminal != null) terminal.onPause();
         super.onPause();
     }
     @Override protected void onResume() {
         super.onResume();
+        foreground=true;
+        updateHandler.removeCallbacks(foregroundUpdateCheck);
+        foregroundUpdateCheck.run();
         if (terminal != null) terminal.onResume();
         lifecycle("resume");
+        deliverTaskNotification();
     }
     @Override public void onBackPressed() { handleBack(); }
     private void handleBack() {
@@ -367,6 +544,8 @@ public final class MainActivity extends Activity {
                 .setPositiveButton("连接设置", (dialog, which) -> showConnection()).setNegativeButton("留在终端", null).show();
     }
     @Override protected void onDestroy() {
+        invalidateDocument();foreground=false;
+        updateHandler.removeCallbacksAndMessages(null);
         destroyTerminal();
         connection = null;
         localBase = null;

@@ -11,8 +11,20 @@ http://117.50.48.22 {
 https://117.50.48.22 {
     # IP certificates need explicit public ACME issuance; do not use a local CA.
     tls /etc/supermono-relay/tls/current/fullchain.pem /etc/supermono-relay/tls/current/privkey.pem
-    reverse_proxy 127.0.0.1:8818 {
-        # Reloads can still disconnect streams; clients must recover without ending PTYs.
-        stream_close_delay 5m
+    handle_path /updates/* {
+        root * /var/lib/supermono-updates
+        @private path_regexp private (^|/)\.
+        respond @private 404
+        @mutable not path /stable/releases/*
+        header @mutable Cache-Control "no-cache"
+        @immutable path /stable/releases/*
+        header @immutable Cache-Control "public, max-age=31536000, immutable"
+        file_server
+    }
+    handle {
+        reverse_proxy 127.0.0.1:8818 {
+            # Reloads can still disconnect streams; clients must recover without ending PTYs.
+            stream_close_delay 5m
+        }
     }
 }

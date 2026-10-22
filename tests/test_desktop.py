@@ -55,10 +55,16 @@ class DesktopTest(unittest.TestCase):
         import sys
         from unittest.mock import Mock
         webview = SimpleNamespace(create_window=Mock(), start=Mock())
-        with patch.dict(sys.modules, {"webview": webview}), patch.object(desktop, "connection_url", return_value="http://localhost:6769/workspace"), patch("supermonoagent.frontend.local_page_url", return_value="http://127.0.0.1:6771/workspace"), patch.object(desktop.sys, "platform", "win32"):
+        with patch.dict(sys.modules, {"webview": webview}), patch.object(desktop, "connection_url", return_value="http://localhost:6769/workspace"), patch("supermonoagent.frontend.local_page_url", return_value="http://127.0.0.1:6771/workspace"), patch.object(desktop, "NativeUpdateRecovery") as recovery, patch.object(desktop.sys, "platform", "win32"):
             desktop.main([])
-        webview.start.assert_called_once_with(webview.create_window.return_value.show, gui="edgechromium")
-        self.assertEqual(webview.create_window.call_args.args[1], "http://127.0.0.1:6771/workspace")
+        from pathlib import Path
+        icon = Path(desktop.__file__).parent / "static" / "app-icon.ico"
+        self.assertTrue(icon.is_file())
+        webview.start.assert_called_once_with(webview.create_window.return_value.show, gui="edgechromium", icon=str(icon))
+        url = webview.create_window.call_args.args[1]
+        self.assertEqual(urlsplit(url)._replace(query="").geturl(), "http://127.0.0.1:6771/workspace")
+        self.assertEqual(len(parse_qs(urlsplit(url).query)["native_window"][0]), 32)
+        recovery.assert_called_once_with(webview.create_window.return_value, url)
 
 
 if __name__ == "__main__":

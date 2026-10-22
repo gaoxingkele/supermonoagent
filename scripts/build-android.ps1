@@ -47,6 +47,9 @@ if ($ConnectionDefaults) {
 foreach ($name in @('index.html', 'app.js', 'app.css', 'mobile-core.js')) {
     Copy-Item -LiteralPath "$repoRoot/android/assets/mobile/$name" -Destination $mobileAssets
 }
+Copy-Item -LiteralPath "$repoRoot/src/supermonoagent/static/update-trust.json" -Destination (Join-Path $stagedAssets 'update-trust.json')
+Copy-Item -LiteralPath "$repoRoot/android/assets/update-bridge.js" -Destination (Join-Path $stagedAssets 'update-bridge.js')
+Copy-Item -LiteralPath "$repoRoot/android/assets/update-api.json" -Destination (Join-Path $stagedAssets 'update-api.json')
 $changesPath = Join-Path $repoRoot 'android/CHANGELOG.txt'
 if (Test-Path -LiteralPath $changesPath) { Copy-Item -LiteralPath $changesPath -Destination (Join-Path $stagedAssets 'CHANGELOG.txt') }
 foreach ($name in @('xterm.js', 'xterm.css', 'xterm-fit.js', 'xterm-unicode11.js', 'xterm-webgl.js', 'terminal-client.js')) {

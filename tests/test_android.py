@@ -48,7 +48,8 @@ class AndroidEndpointTest(unittest.TestCase):
         for expected in ("setTextZoom(100)", "setSupportZoom(false)", "setAllowFileAccess(false)",
                          "setAllowContentAccess(false)", "MIXED_CONTENT_NEVER_ALLOW", "WindowInsets.Type.ime()",
                          "setDecorFitsSystemWindows(false)", 'lifecycle("pause")', 'lifecycle("resume")',
-                         "onRenderProcessGone", "Uri.encode(connection.toString())", "LocalAssets.assetPath(base, url)"):
+                         "onRenderProcessGone", "Uri.encode(pageConnection.toString())", "UpdateDocument.asset(base,request.getUrl().toString(),revision)",
+                         "request.isForMainFrame()", "UpdateDocument.action(base,web.getUrl()", "generation==documentGeneration"):
             self.assertIn(expected, activity)
         for unsafe in ("addJavascriptInterface(", ".proceed()", 'putString("token"', "setAllowUniversalAccessFromFileURLs(true)"):
             self.assertNotIn(unsafe, activity)

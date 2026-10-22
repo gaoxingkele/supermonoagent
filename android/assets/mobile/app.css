@@ -31,3 +31,16 @@ dialog input,dialog select{min-width:0;max-width:100%}
 .session[data-state=disconnected] .session-dot{background:#ed6b68}
 @keyframes session-pulse{50%{opacity:.25}}
 @media(prefers-reduced-motion:reduce){.session[data-state=refreshing] .session-dot{animation:none}}
+
+/* The editor floats over the terminal without changing its canonical grid. */
+#composer{display:none;width:min(94vw,560px);padding:16px;max-height:calc(100dvh - 16px);overflow:auto;box-shadow:0 18px 60px #0008}
+#composer[open]{display:block}
+#composer .dialog-heading{margin-bottom:12px}
+#composer #draft{display:block;width:100%;max-height:32dvh;min-height:72px;margin-bottom:10px}
+#composer-status{min-height:2.8em}
+#composer .form-actions{margin-top:10px}
+#composer #send{min-width:108px;background:#d8eadf;color:#11261a;border-color:#b5d6c1}
+#keys{display:grid;grid-template-columns:repeat(8,minmax(0,1fr))}
+#keys #mode,#keys #github{grid-column:span 4}
+@media(min-width:600px){#keys{display:flex}#keys #github{flex:2}}
+@media(max-height:430px){#composer{padding:10px}#composer .dialog-heading{margin-bottom:6px}#composer #draft{min-height:52px;max-height:25dvh}#composer-status{min-height:0}#composer .form-actions{margin-top:6px}}

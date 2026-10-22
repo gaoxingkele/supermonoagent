@@ -1,5 +1,11 @@
 # First run: serve HTTP-01 challenges before a trusted certificate exists.
 http://117.50.48.22 {
-    root * /var/lib/supermono-acme
-    file_server
+    # Public updates are intentionally unavailable until the trusted HTTPS site exists.
+    handle /.well-known/acme-challenge/* {
+        root * /var/lib/supermono-acme
+        file_server
+    }
+    handle {
+        respond 503
+    }
 }

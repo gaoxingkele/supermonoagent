@@ -6,35 +6,56 @@ import argparse
 import asyncio
 import codecs
 import hashlib
+import hmac
+from html import escape
 import json
 from pathlib import Path
+import re
+import secrets
 import subprocess
 import sys
 import time
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
 from . import web
+from .defaults import default_update_feed
 from .security import request_allowed, tls_context, transport_options, FIRST_FRAME_S
 from .desktop import health, port_open
 from .hub import TAB_THEMES
 from .protocol import ProtocolError, OP_HELLO, OP_GROUP, OP_SESSIONS, OP_INPUT_SESSION, pack, pack_json, unpack, unpack_json
 from .pty import ConptyInputFilter
 
+NATIVE_UPDATE_API = 1
+UPDATE_CHECK_SECONDS = 6 * 60 * 60
+UI_FILES = ("workspace.html", "workspace.js", "workspace.css", "terminal-client.js", "tab-themes.js", "tab-themes.css",
+            "xterm.js", "xterm.css", "xterm-fit.js", "xterm-unicode11.js", "xterm-webgl.js")
+STATIC_ROOT = Path(__file__).parent / "static"
+WORKSPACE_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; base-uri 'none'; frame-src 'none'; frame-ancestors 'none'; object-src 'none'"
+
+
+def bundled_ui_files() -> dict[str, bytes]:
+    from .workspace import PAGE
+    return {name: PAGE.encode("utf-8") if name == "workspace.html" else (STATIC_ROOT / name).read_bytes() for name in UI_FILES}
+
 
 def revision() -> str:
     from .workspace import PAGE
-    digest = hashlib.sha256(("frontend-v1" + web.PAGE + PAGE).encode())
+    digest = hashlib.sha256(("frontend-v2-updates" + web.PAGE + PAGE).encode())
     for name, _content_type in web.STATIC.values():
         digest.update(web.static_text(name).encode())
+    for path in [Path(__file__), STATIC_ROOT / "native-updates.js", STATIC_ROOT / "update-trust.json", Path(__file__).with_name("ui_updates.py")]:
+        if path.exists():
+            digest.update(path.read_bytes())
     return digest.hexdigest()[:16]
 
 
 class Frontend:
-    def __init__(self, backend: str, theme_file: Path | None = None):
+    def __init__(self, backend: str, theme_file: Path | None = None, *, update_root: Path | None = None,
+                 update_feed: str | None = None, update_trust: dict | None = None):
         parsed = urlsplit(backend)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
             raise ValueError("The local frontend requires a loopback HTTP daemon URL")
@@ -48,17 +69,280 @@ class Frontend:
             saved = {}
         self.themes = {key: value for key, value in saved.items() if isinstance(value, str) and value in TAB_THEMES} if isinstance(saved, dict) else {}
         self.views: dict = {}
+        from .ui_updates import UpdateStore
+        self.update_root = Path(update_root) if update_root is not None else (theme_file.parent / "ui-updates" if theme_file is not None else Path.home() / ".supermonoagent" / "ui-updates" / "desktop")
+        self.update_feed = update_feed if update_feed is not None else default_update_feed()
+        self.update_store = UpdateStore(self.update_root, "desktop", bundled_ui_files(), update_trust, native_api=NATIVE_UPDATE_API)
+        self.update_store.recover_pending()
+        self.update_nonce = secrets.token_urlsafe(32)
+        self.update_bridge = (STATIC_ROOT / "native-updates.js").read_bytes()
+        self.update_candidate = None
+        self.update_envelope = None
+        self.update_prepared = None
+        self.update_phase = "current"
+        self.update_message = "界面已是当前版本。"
+        self.update_last_check = 0.0
+        self.update_lock = asyncio.Lock()
+        self.update_clients = set()
+        self.update_windows = {}
+        self.update_watchdog = None
+
+    @staticmethod
+    def _response(connection, status, body, content_type, *, immutable=False):
+        response = connection.respond(status, "")
+        response.body = body if isinstance(body, bytes) else body.encode("utf-8")
+        for header in ("Content-Length", "Content-Type", "Cache-Control"):
+            if header in response.headers:
+                del response.headers[header]
+        response.headers["Content-Length"] = str(len(response.body))
+        response.headers["Content-Type"] = content_type
+        response.headers["Cache-Control"] = "public,max-age=31536000,immutable" if immutable else "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @staticmethod
+    def _native_origin_allowed(connection, request):
+        try:
+            if not request_allowed(connection, request):
+                return False
+            authority = request.headers.get("Host", "")
+            parsed = urlsplit("http://" + authority)
+            if parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+                return False
+            scheme = "https" if connection.transport.get_extra_info("ssl_object") else "http"
+            return request.headers.get("Origin") == scheme + "://" + authority
+        except (ValueError, AttributeError, LookupError):
+            return False
+
+    def update_status(self):
+        status = self.update_store.status()
+        candidate = self.update_candidate
+        return {**status, "native_api": NATIVE_UPDATE_API, "phase": self.update_phase, "message": self.update_message,
+                "available": {"revision": candidate["revision"], "sequence": candidate["sequence"]} if candidate else None}
+
+    def _start_update_watchdog(self):
+        if self.update_watchdog is None or self.update_watchdog.done():
+            self.update_watchdog = asyncio.create_task(self._watch_update_boot())
+
+    async def _watch_update_boot(self):
+        while True:
+            await asyncio.sleep(.25)
+            before = await asyncio.to_thread(self.update_store.status)
+            if not before.get("pending"):
+                continue
+            boot = await asyncio.to_thread(self.update_store.begin_boot)
+            if boot and time.time() >= boot["deadline"]:
+                await asyncio.to_thread(self.update_store.fail, boot["ticket"], "UI startup readiness deadline exceeded")
+            after = await asyncio.to_thread(self.update_store.status)
+            if before["active_revision"] != after["active_revision"]:
+                self.update_phase = "rolled-back"
+                self.update_message = "新界面未能启动，已恢复上一版本。"
+                await self._update_broadcast({"event": "rollback", "failed_revision": before["active_revision"], **self.update_status()})
+
+    async def close_updates(self):
+        if self.update_watchdog is not None:
+            self.update_watchdog.cancel()
+            await asyncio.gather(self.update_watchdog, return_exceptions=True)
+
+    async def _update_broadcast(self, message):
+        if self.update_clients:
+            await asyncio.gather(*(client.send(json.dumps(message, ensure_ascii=False)) for client in tuple(self.update_clients)), return_exceptions=True)
+
+    def _workspace_document(self, revision=None, window_id=None):
+        from .ui_updates import UpdateError
+        requested_revision = revision
+        status = self.update_store.status()
+        revision = revision or status["active_revision"]
+        try:
+            snapshot = self.update_store.snapshot(revision)
+        except (OSError, UpdateError):
+            if requested_revision is not None:
+                raise
+            self.update_store.recover_pending()
+            status = self.update_store.status()
+            revision = status["active_revision"]
+            snapshot = self.update_store.snapshot(revision)
+        boot = self.update_store.begin_boot() if revision == status["active_revision"] else None
+        if requested_revision is None and self.update_store.status()["active_revision"] != revision:
+            return self._workspace_document(window_id=window_id)
+        if boot and boot["revision"] != revision:
+            boot = None
+        try:
+            html = snapshot["workspace.html"].decode("utf-8")
+        except UnicodeDecodeError:
+            if not boot:
+                raise
+            self.update_store.fail(boot["ticket"], "Invalid UTF-8 workspace HTML")
+            return self._workspace_document(window_id=window_id)
+        assets = "|".join(re.escape(name) for name in UI_FILES if name != "workspace.html")
+        html = re.sub(r'((?:src|href)\s*=\s*["\'])/?(?:__ui/[A-Za-z0-9._-]+/)?(' + assets + r')((?:[?#][^"\']*)?)(["\'])',
+                      lambda match: match[1] + "/__ui/" + revision + "/" + match[2] + match[3] + match[4], html)
+        sequence = status.get("active_sequence", 0) if revision == status["active_revision"] else status.get("previous_sequence", 0) if revision == status.get("previous_revision") else 0
+        values = {"nonce": self.update_nonce, "revision": revision, "sequence": sequence,
+                  "ticket": boot["ticket"] if boot else "", "generation": boot.get("generation", 0) if boot else 0}
+        if window_id and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", window_id):
+            if window_id not in self.update_windows and len(self.update_windows) >= 128:
+                self.update_windows.pop(next(iter(self.update_windows)))
+            self.update_windows[window_id] = {"revision": revision, "sequence": values["sequence"], "generation": values["generation"]}
+        attributes = " ".join('data-' + name + '="' + escape(str(value), quote=True) + '"' for name, value in values.items())
+        bridge = '<script src="/__updates/native-updates.js" ' + attributes + '></script>'
+        html = re.sub(r'^\s*<!doctype[^>]*>', '', html, count=1, flags=re.IGNORECASE)
+        return "<!doctype html>" + bridge + html
+
+    async def _check_update(self, automatic=False):
+        from . import ui_updates
+        async with self.update_lock:
+            if automatic and self.update_last_check and time.monotonic() - self.update_last_check < UPDATE_CHECK_SECONDS:
+                return self.update_status()
+            self.update_last_check = time.monotonic()
+            self.update_phase = "checking"
+            self.update_message = "正在检查界面更新…"
+            try:
+                raw = await asyncio.to_thread(ui_updates.fetch_manifest, self.update_feed)
+                candidate = await asyncio.to_thread(ui_updates.verify_envelope, raw, self.update_store.trust, "desktop", native_api=NATIVE_UPDATE_API)
+                status = self.update_store.status()
+                if candidate["sequence"] in status.get("failed_sequences", []):
+                    self.update_candidate = self.update_envelope = None
+                    self.update_phase, self.update_message = "current", "失败的界面版本已隔离，等待后续更新。"
+                else:
+                    candidate = await asyncio.to_thread(self.update_store.observe, raw)
+                    if candidate["sequence"] <= status.get("active_sequence", 0):
+                        self.update_candidate = self.update_envelope = None
+                        self.update_phase, self.update_message = "current", "界面已是当前版本。"
+                    else:
+                        self.update_candidate, self.update_envelope = candidate, raw
+                        self.update_phase, self.update_message = "available", "发现界面更新 " + candidate["revision"] + "；可在方便时下载并更新。"
+            except ui_updates.UpdateIncompatible:
+                self.update_candidate = self.update_envelope = None
+                self.update_phase, self.update_message = "incompatible", "此更新需要新版原生外壳，请先更新 Windows 安装包。"
+            except Exception as error:
+                self.update_candidate = self.update_envelope = None
+                self.update_phase, self.update_message = "offline", "检查更新失败：" + str(error)[:240]
+            return self.update_status()
+
+    async def _update_operation(self, message):
+        from . import ui_updates
+        op = message.get("op")
+        if op == "status":
+            return self.update_status()
+        if op == "check":
+            return await self._check_update(message.get("automatic") is True)
+        if op == "download":
+            async with self.update_lock:
+                if not self.update_envelope or not self.update_candidate:
+                    raise ValueError("No verified update is available")
+                raw, candidate = self.update_envelope, self.update_candidate
+                archive = await asyncio.to_thread(ui_updates.fetch_archive, candidate, self.update_feed, "desktop")
+                payload = await asyncio.to_thread(ui_updates.verify_envelope, raw, self.update_store.trust, "desktop", native_api=NATIVE_UPDATE_API)
+                await asyncio.to_thread(ui_updates.verify_archive, payload, archive, "desktop")
+                identifier = secrets.token_urlsafe(24)
+                self.update_prepared = {"id": identifier, "envelope": raw, "archive": archive, "revision": candidate["revision"]}
+                self.update_phase, self.update_message = "prepared", "更新已验证，等待输入法完成后应用。"
+                return {**self.update_status(), "prepared": identifier}
+        if op == "activate":
+            async with self.update_lock:
+                prepared = self.update_prepared
+                if not prepared or not hmac.compare_digest(str(message.get("prepared") or ""), prepared["id"]):
+                    raise ValueError("Prepared update is no longer available")
+                self.update_prepared = None
+                await asyncio.to_thread(self.update_store.install, prepared["envelope"], prepared["archive"])
+                await asyncio.to_thread(self.update_store.begin_boot)
+                self._start_update_watchdog()
+                self.update_candidate = self.update_envelope = None
+                self.update_phase, self.update_message = "installed", "更新已安装，正在重新加载界面。"
+                return {**self.update_status(), "reload": True}
+        if op in {"ready", "fail"}:
+            boot = await asyncio.to_thread(self.update_store.begin_boot)
+            if not boot or boot["ticket"] != message.get("ticket") or boot["revision"] != message.get("revision") or boot.get("generation", 0) != message.get("generation") or time.time() >= boot["deadline"]:
+                raise ValueError("Stale UI startup ticket")
+            if op == "ready":
+                await asyncio.to_thread(self.update_store.acknowledge, boot["ticket"])
+                self.update_phase, self.update_message = "current", "界面启动已确认。"
+            else:
+                await asyncio.to_thread(self.update_store.fail, boot["ticket"], "UI startup failed")
+                self.update_phase, self.update_message = "rolled-back", "新界面启动失败，已恢复上一版本。"
+                await self._update_broadcast({"event": "rollback", "failed_revision": boot["revision"], **self.update_status()})
+            return self.update_status()
+        if op == "rollback":
+            await asyncio.to_thread(self.update_store.rollback)
+            self.update_phase, self.update_message = "rolled-back", "已恢复上一界面版本。"
+            return {**self.update_status(), "reload": True}
+        raise ValueError("Unknown update operation")
+
+    async def update_handler(self, client):
+        self._start_update_watchdog()
+        if not self._native_origin_allowed(client, client.request):
+            await client.close(code=4001)
+            return
+        authenticated = False
+        try:
+            while True:
+                raw = await (client.recv() if authenticated else asyncio.wait_for(client.recv(), FIRST_FRAME_S))
+                if not isinstance(raw, str) or len(raw) > 16384:
+                    await client.close(code=4001)
+                    return
+                message = json.loads(raw)
+                if not isinstance(message, dict) or not hmac.compare_digest(str(message.get("nonce") or ""), self.update_nonce):
+                    await client.close(code=4001)
+                    return
+                authenticated = True
+                self.update_clients.add(client)
+                try:
+                    result = await self._update_operation(message)
+                    await client.send(json.dumps({"id": message.get("id"), "ok": True, **result}, ensure_ascii=False))
+                except Exception as error:
+                    await client.send(json.dumps({"id": message.get("id"), "ok": False, "error": str(error)[:240], **self.update_status()}, ensure_ascii=False))
+        except (ConnectionClosed, asyncio.TimeoutError, ValueError, TypeError):
+            pass
+        finally:
+            self.update_clients.discard(client)
 
     async def serve_http(self, connection, request):
         if not request_allowed(connection, request, getattr(self, 'allowed_origins', ())):
             return web.text_response(connection, 403, 'Forbidden', 'text/plain')
         path = request.path.split("?", 1)[0]
+        if path == "/__updates/health":
+            state = self.update_store.status()
+            window_id = parse_qs(urlsplit(request.path).query).get("window", [""])[0]
+            document = self.update_windows.get(window_id, {})
+            return self._response(connection, 200, json.dumps({"ok": True, "role": "frontend-ui", "active_revision": state["active_revision"],
+                "generation": state.get("generation", 0), "recovery_generation": len(state.get("failed_sequences", [])),
+                "failed_sequences": state.get("failed_sequences", []), "document_revision": document.get("revision"), "document_sequence": document.get("sequence")}), "application/json")
+        if path == "/__updates/ws":
+            if "?" in request.path or not self._native_origin_allowed(connection, request):
+                return self._response(connection, 403, "Forbidden", "text/plain")
+            return None
+        if path == "/__updates/native-updates.js":
+            return self._response(connection, 200, self.update_bridge, "text/javascript; charset=utf-8")
+        if path in {"/workspace", "/workspace/"}:
+            self._start_update_watchdog()
+            window_id = parse_qs(urlsplit(request.path).query).get("native_window", [None])[0]
+            response = self._response(connection, 200, self._workspace_document(window_id=window_id), "text/html; charset=utf-8")
+            response.headers["Content-Security-Policy"] = WORKSPACE_CSP
+            return response
+        if path.startswith("/__ui/"):
+            parts = path.split("/")
+            if len(parts) != 4 or not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", parts[2]) or parts[3] not in UI_FILES:
+                return self._response(connection, 404, "Unknown UI asset", "text/plain")
+            try:
+                if parts[3] == "workspace.html":
+                    body = self._workspace_document(parts[2])
+                else:
+                    body = self.update_store.snapshot(parts[2])[parts[3]]
+            except (KeyError, ValueError, OSError):
+                return self._response(connection, 404, "Unknown UI revision", "text/plain")
+            content_type = "text/javascript; charset=utf-8" if parts[3].endswith(".js") else "text/css; charset=utf-8" if parts[3].endswith(".css") else "text/html; charset=utf-8"
+            response = self._response(connection, 200, body, content_type, immutable=parts[3] != "workspace.html")
+            if parts[3] == "workspace.html":
+                response.headers["Content-Security-Policy"] = WORKSPACE_CSP
+            return response
         if path == "/health":
             try:
                 status = await asyncio.to_thread(health, self.backend)
             except (OSError, ValueError):
                 return web.text_response(connection, 503, '{"ok":false}', "application/json")
-            status = {"ok": bool(status.get("ok")), "role": "frontend", "backend": self.backend, "revision": self.version}
+            status = {"ok": bool(status.get("ok")), "role": "frontend", "backend": self.backend, "revision": self.version,
+                      "update_feed": self.update_feed, "update_root_id": hashlib.sha256(str(self.update_root.resolve()).encode()).hexdigest()[:16]}
             return web.text_response(connection, 200, json.dumps(status), "application/json")
         content = web.page_content(path)
         if content:
@@ -76,6 +360,9 @@ class Frontend:
                                      for window in state.get("windows", [])]}
 
     async def handler(self, client):
+        if client.request.path == "/__updates/ws":
+            await self.update_handler(client)
+            return
         parsed = urlsplit(self.backend)
         url = urlunsplit(('ws', parsed.netloc, '/ws', '', ''))
         try:
@@ -189,11 +476,13 @@ class Frontend:
             self.views.pop(client, None)
 
 
-def local_page_url(url: str) -> str:
+def local_page_url(url: str, *, update_feed: str | None = None, update_root: str | None = None) -> str:
     """Reuse a matching local UI service; never replace an existing terminal daemon."""
     parsed = urlsplit(url)
     backend = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
-    Frontend(backend)  # Validate before launching a helper process.
+    parsed_backend = urlsplit(backend)
+    if parsed_backend.scheme != "http" or parsed_backend.hostname not in {"127.0.0.1", "localhost", "::1"} or parsed_backend.username or parsed_backend.password:
+        raise ValueError("The local frontend requires a loopback HTTP daemon URL")
     version = revision()
     available = None
     for port in range(6771, 6789):
@@ -203,7 +492,9 @@ def local_page_url(url: str) -> str:
             continue
         try:
             info = health(f"http://127.0.0.1:{port}")
-            if info.get("role") == "frontend" and info.get("backend") == backend and info.get("revision") == version:
+            if (info.get("role") == "frontend" and info.get("backend") == backend and info.get("revision") == version
+                    and (update_feed is None or info.get("update_feed") == update_feed)
+                    and (update_root is None or info.get("update_root_id") == hashlib.sha256(str(Path(update_root).resolve()).encode()).hexdigest()[:16])):
                 return urlunsplit(("http", f"127.0.0.1:{port}", parsed.path, urlencode({**dict(parse_qsl(parsed.query)), "direct": "1"}), parsed.fragment))
         except (OSError, ValueError):
             continue
@@ -211,7 +502,12 @@ def local_page_url(url: str) -> str:
         raise ValueError("No local UI port is available in 6771–6788")
     entry = ["frontend"] if getattr(sys, "frozen", False) else ["-m", "supermonoagent.frontend"]
     flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-    process = subprocess.Popen([sys.executable, *entry, "--backend", backend, "--port", str(available)],
+    command = [sys.executable, *entry, "--backend", backend, "--port", str(available)]
+    if update_feed is not None:
+        command.extend(["--update-feed", update_feed])
+    if update_root is not None:
+        command.extend(["--ui-update-dir", update_root])
+    process = subprocess.Popen(command,
                                creationflags=flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(75):
         if port_open("127.0.0.1", available):
@@ -228,15 +524,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", required=True)
     parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--update-feed", default=None, help="Independent HTTPS signed UI update manifest")
+    parser.add_argument("--ui-update-dir", default=None, help="Verified UI snapshots and rollback state")
     transport_options(parser)
     args = parser.parse_args()
-    frontend = Frontend(args.backend)
+    frontend = Frontend(args.backend, update_root=Path(args.ui_update_dir) if args.ui_update_dir else None, update_feed=args.update_feed)
     frontend.allowed_origins = args.allowed_origin
     context = tls_context(args.tls_cert, args.tls_key)
 
     async def run():
-        async with serve(frontend.handler, "127.0.0.1", args.port, process_request=frontend.serve_http, ssl=context, max_size=1024 * 1024):
-            await asyncio.Future()
+        try:
+            async with serve(frontend.handler, "127.0.0.1", args.port, process_request=frontend.serve_http, ssl=context, max_size=1024 * 1024):
+                await asyncio.Future()
+        finally:
+            await frontend.close_updates()
     asyncio.run(run())
 
 

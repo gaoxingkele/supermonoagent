@@ -17,7 +17,7 @@ supermono-relay = "supermonoagent.relay:main"
 supermono-client = "supermonoagent.launcher:main"
 
 [tool.setuptools.package-data]
-supermonoagent = ["static/*.js", "static/*.css"]
+supermonoagent = ["static/*.js", "static/*.css", "static/*.json", "static/*.ico", "static/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

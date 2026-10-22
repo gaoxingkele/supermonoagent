@@ -74,6 +74,8 @@ async def check_composer(playwright, action):
                 self.write(b"\x1b[?1;2c")
             if b"\x1b[6n" in data:
                 self.write(b"\x1b[1;1R")
+            if b"Continue anyway? [y/N]:" in data:
+                self.write(b"y\r")
             return data
 
         def close(self):
@@ -159,14 +161,37 @@ async def check_composer(playwright, action):
                             await page.locator("#draft").dispatch_event("keydown", {"key": "Enter", "keyCode": 229, "isComposing": False})
                         else:
                             await page.locator("#draft").evaluate("e=>e.dispatchEvent(new InputEvent('beforeinput',{inputType:'insertLineBreak',isComposing:false,bubbles:true,cancelable:true}))")
+                        def shutdown_acknowledged():
+                            output = session.pump.snapshot()
+                            return b"Shutting down..." in output or b"]7501;state=clear" in output
+
+                        async def failure(reason):
+                            inputs = session.pty.test_inputs[-5:]
+                            baseline = inputs[0][0] if inputs else 0
+                            return AssertionError({"reason": reason, "shutdown_acknowledged": shutdown_acknowledged(),
+                                "process_alive": session.pty.alive(),
+                                "input_writes": [(round(at-baseline, 3), repr(data)) for at, data in inputs],
+                                "editor": await page.evaluate("""() => {
+                                    const b=MobileTerminal.terminal.buffer.active;
+                                    return {draft:document.getElementById('draft').value,ready:MobileTerminal.ready,
+                                      sendDisabled:document.getElementById('send').disabled,cursor:[b.cursorX,b.cursorY],
+                                      lines:Array.from({length:b.length},(_,i)=>b.getLine(i)?.translateToString()||'')};
+                                }""")})
+
+                        # The local command must be consumed promptly. Process
+                        # shutdown (including MCP cleanup) has a separate bound;
+                        # alive() alone does not mean the editor ignored Enter.
                         deadline = asyncio.get_running_loop().time() + 5
+                        while not shutdown_acknowledged() and asyncio.get_running_loop().time() < deadline:
+                            await asyncio.sleep(.03)
+                        if not shutdown_acknowledged():
+                            raise await failure("No shutdown acknowledgement; isolated Codex did not consume /quit")
+                        shutdown_confirmed = asyncio.get_running_loop().time()
+                        deadline = shutdown_confirmed + 15
                         while session.pty.alive() and asyncio.get_running_loop().time() < deadline:
                             await asyncio.sleep(.03)
                         if session.pty.alive():
-                            inputs = session.pty.test_inputs[-5:]
-                            baseline = inputs[0][0] if inputs else 0
-                            raise AssertionError({"reason": "Isolated Codex remains editing", "input_writes": [(round(at-baseline, 3), repr(data)) for at, data in inputs],
-                                                  "editor": await page.evaluate("({draft:document.getElementById('draft').value,ready:MobileTerminal.ready,sendDisabled:document.getElementById('send').disabled})")})
+                            raise await failure("Shutdown acknowledged but isolated Codex process cleanup exceeded 15 seconds")
                         assert not errors, errors
                         paste = next((at for at, data in session.pty.test_inputs if b"/quit" in data), None)
                         enters = [(at, data) for at, data in session.pty.test_inputs if paste is not None and at >= paste and data == b"\r"]
@@ -183,6 +208,7 @@ async def check_composer(playwright, action):
                             "frontend_errors": [], "real_user_session_touched": False,
                             "enter_count": len(enters), "paste_to_enter_ms": round((enters[0][0] - paste) * 1000),
                             "opaque_title": "手机端", "shell_metadata": "powershell", "explicit_idle_wait": True,
+                            "explicit_shutdown_ack": True, "command_ack_timeout_s": 5, "process_cleanup_timeout_s": 15,
                         }, indent=2), encoding="utf-8")
                     finally:
                         await browser.close()
@@ -190,4 +216,8 @@ async def check_composer(playwright, action):
             daemon.hub.close_window(window.id)
             reader = getattr(session.pty, "reader", None)
             if reader:
-                await asyncio.to_thread(reader.join, 3)
+                # close() shuts down this test's reader socket. Wait for the
+                # thread itself, rather than abandoning it after three seconds
+                # while it can still schedule close_session on this event loop.
+                await asyncio.to_thread(reader.join)
+                await asyncio.sleep(0)

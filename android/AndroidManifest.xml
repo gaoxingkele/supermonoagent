@@ -1,6 +1,9 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.supermonoagent.mobile" android:versionCode="15" android:versionName="0.2.13">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.supermonoagent.mobile" android:versionCode="19" android:versionName="0.2.17">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <application android:label="SuperMonoAgent" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:theme="@android:style/Theme.Material.NoActionBar" android:hardwareAccelerated="true" android:usesCleartextTraffic="true" android:allowBackup="false" android:supportsRtl="true" android:enableOnBackInvokedCallback="true">
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop" android:resizeableActivity="true" android:windowSoftInputMode="adjustResize" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|smallestScreenSize|screenLayout|density">
             <intent-filter>
@@ -8,5 +11,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service android:name=".TaskNotifications" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-enabled remote terminal task-result monitoring over the user's relay connection; visible stop control; no terminal screen stream." />
+        </service>
     </application>
 </manifest>
