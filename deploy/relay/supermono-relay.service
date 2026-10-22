@@ -1,0 +1,25 @@
+[Unit]
+Description=SuperMonoAgent authenticated relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=supermono-relay
+Group=supermono-relay
+WorkingDirectory=/opt/supermonoagent
+Environment=PYTHONUNBUFFERED=1
+Environment=SUPERMONO_DEFAULT_RELAY=wss://117.50.48.22/ws
+EnvironmentFile=-/etc/supermono-relay/environment
+ExecStart=/opt/supermonoagent/.venv/bin/supermono-relay --host 127.0.0.1 --port 8818 --enrollment-file /var/lib/supermono-relay/owners.json --identity-file /var/lib/supermono-relay/accounts.sqlite3 --public-url wss://117.50.48.22/ws --allowed-origin https://117.50.48.22 --allowed-origin http://127.0.0.1:6769 --allowed-origin http://127.0.0.1:6771 --allowed-origin http://127.0.0.1:6772 --allowed-origin http://127.0.0.1:6773 --allowed-origin http://127.0.0.1:6774 --allowed-origin http://127.0.0.1:6775 --allowed-origin http://127.0.0.1:6776 --allowed-origin http://127.0.0.1:6777 --allowed-origin http://127.0.0.1:6778 --allowed-origin http://127.0.0.1:6779 --allowed-origin http://127.0.0.1:6780 --allowed-origin http://127.0.0.1:6781 --allowed-origin http://127.0.0.1:6782 --allowed-origin http://127.0.0.1:6783 --allowed-origin http://127.0.0.1:6784 --allowed-origin http://127.0.0.1:6785 --allowed-origin http://127.0.0.1:6786 --allowed-origin http://127.0.0.1:6787 --allowed-origin http://127.0.0.1:6788 --reverse-proxy-tls
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/supermono-relay
+
+[Install]
+WantedBy=multi-user.target

@@ -9,7 +9,21 @@ from websockets.asyncio.server import serve
 
 from supermonoagent.daemon import clean_relays
 from supermonoagent.protocol import OP_INPUT, pack, unpack
-from supermonoagent.relay import Relay
+from supermonoagent.relay import Relay, group_hosts
+
+
+class GroupHostsTest(unittest.TestCase):
+    def test_one_project_holds_two_rooms(self):
+        grouped = group_hosts([
+            {"code": "aaa111", "machine": "OFFICE", "project": "施工"},
+            {"code": "bbb222", "machine": "FIELD", "project": "施工"},
+        ])
+        self.assertEqual(len(grouped), 1)
+        self.assertEqual(grouped[0]["project"], "施工")
+        self.assertEqual(
+            sorted(room["code"] for room in grouped[0]["rooms"]),
+            ["aaa111", "bbb222"],
+        )
 
 
 class CleanRelayTest(unittest.TestCase):
@@ -20,7 +34,7 @@ class CleanRelayTest(unittest.TestCase):
 
 class RelayTest(unittest.IsolatedAsyncioTestCase):
     async def test_splice_copies_terminal_frames(self):
-        relay = Relay()
+        relay = Relay(development=True)
         async with serve(relay.handler, "127.0.0.1", 0, max_size=256 * 1024) as server:
             port = server.sockets[0].getsockname()[1]
             url = f"ws://127.0.0.1:{port}"
@@ -49,7 +63,7 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
                     self.assertNotEqual(other_join["id"], phone_id)
 
     async def test_phone_token_is_required(self):
-        relay = Relay()
+        relay = Relay(development=True)
         async with serve(relay.handler, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
             url = f"ws://127.0.0.1:{port}"
@@ -66,8 +80,61 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
                     joined = json.loads(await host.recv())
                     self.assertEqual(joined["token"], "secret")
 
+    async def _health(self, relay: Relay) -> dict:
+        class Response:
+            def __init__(self):
+                self.headers = {"Content-Type": "text/plain"}
+                self.body = ""
+
+        class Conn:
+            def respond(self, status, text):
+                res = Response()
+                res.body = text
+                return res
+
+        class Req:
+            path = "/health"
+
+        res = await relay.serve_page(Conn(), Req())
+        return json.loads(res.body)
+
+    async def test_two_computers_share_one_port(self):
+        relay = Relay(development=True)
+        async with serve(relay.handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            url = f"ws://127.0.0.1:{port}"
+            async with connect(url) as office, connect(url) as field:
+                await office.send(json.dumps({
+                    "op": "host", "code": "aaa111", "tokens": ["tok-a"],
+                    "machine": "OFFICE", "project": "施工",
+                }))
+                await field.send(json.dumps({
+                    "op": "host", "code": "bbb222", "tokens": ["tok-b"],
+                    "machine": "FIELD", "project": "施工",
+                }))
+                self.assertEqual(json.loads(await office.recv())["op"], "ready")
+                self.assertEqual(json.loads(await field.recv())["op"], "ready")
+                async with connect(url) as extra:
+                    await extra.send(json.dumps({
+                        "op": "host", "code": "aaa111", "tokens": ["other"],
+                        "machine": "OTHER", "project": "施工",
+                    }))
+                    with self.assertRaises(ConnectionClosedError):
+                        await asyncio.wait_for(extra.recv(), 1)
+                self.assertIsNotNone(relay.rooms["aaa111"].host)
+                self.assertIsNotNone(relay.rooms["bbb222"].host)
+                health = await self._health(relay)
+                self.assertEqual(health, {'ok': True, 'role': 'relay'})
+                async with connect(url) as phone:
+                    await phone.send(json.dumps({"op": "phone", "code": "bbb222", "token": "tok-a"}))
+                    with self.assertRaises(ConnectionClosedError):
+                        await asyncio.wait_for(phone.recv(), 1)
+                async with connect(url) as phone:
+                    await phone.send(json.dumps({"op": "phone", "code": "bbb222", "token": "tok-b"}))
+                    self.assertEqual(json.loads(await phone.recv())["op"], "ready")
+
     async def test_phone_without_host_is_refused(self):
-        relay = Relay()
+        relay = Relay(development=True)
         async with serve(relay.handler, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
             async with connect(f"ws://127.0.0.1:{port}") as phone:

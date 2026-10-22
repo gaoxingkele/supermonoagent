@@ -8,9 +8,16 @@ dependencies = [
   "websockets>=13",
 ]
 
+[project.optional-dependencies]
+desktop = ["pywebview>=5"]
+
 [project.scripts]
 supermono = "supermonoagent.daemon:main"
 supermono-relay = "supermonoagent.relay:main"
+supermono-client = "supermonoagent.launcher:main"
+
+[tool.setuptools.package-data]
+supermonoagent = ["static/*.js", "static/*.css"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

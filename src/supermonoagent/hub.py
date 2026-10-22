@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import secrets
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from .protocol import (
+    CAPABILITIES,
     OP_HELLO_OK,
     OP_OUTPUT,
     OP_SESSIONS,
@@ -33,6 +36,10 @@ class Session:
     pty: object
     pump: OutputPump = field(default_factory=OutputPump)
     stop: threading.Event = field(default_factory=threading.Event)
+    resize_owner: str | None = None
+    cols: int = 100
+    rows: int = 28
+    io_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 @dataclass
@@ -50,6 +57,7 @@ class Window:
     group_id: str = "default"
     sessions: dict[str, Session] = field(default_factory=dict)
     focused: str | None = None
+    tab_theme: str = ""
 
 
 @dataclass
@@ -60,6 +68,13 @@ class Client:
     session_id: str | None = None
     channel: str = ""
     token: str = ""
+    multiplex: bool = False
+    reliable: bool = False
+    subscriptions: set[str] = field(default_factory=set)
+    failure: str = ""
+    feed_offsets: dict[str, int] = field(default_factory=dict)
+    delegated: bool = False
+    authorize: Callable[[], bool] | None = field(default=None, repr=False)
 
 
 DEFAULT_PRESETS = (
@@ -70,9 +85,11 @@ DEFAULT_PRESETS = (
     {"id": "codex", "label": "codex", "command": "codex", "shortcut": "Ctrl+Alt+5"},
 )
 
+TAB_THEMES = frozenset({"ink", "red", "blue", "green", "purple", "amber", "cyan"})
+
 
 def _desktop_path() -> Path:
-    return Path.home() / ".supermonoagent" / "desktop.json"
+    return Path(os.environ.get("SUPERMONO_STATE_DIR") or Path.home() / ".supermonoagent") / "desktop.json"
 
 
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
@@ -120,7 +137,14 @@ class Hub:
         self._lock = threading.Lock()
         self._seq = 0
         self.default_owner = ""
+        self.machine = ""
+        self.project = "默认"
         self._ensure_default()
+
+    def set_identity(self, machine: str, project: str) -> None:
+        """Name this computer and the one project it belongs to. Windows stay here."""
+        self.machine = str(machine or "")[:40]
+        self.project = str(project or "默认")[:40] or "默认"
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self.loop = loop
@@ -133,8 +157,15 @@ class Hub:
             return client
 
     def detach(self, key: str) -> None:
+        released = False
         with self._lock:
             self.clients.pop(key, None)
+            for session in self.sessions.values():
+                if session.resize_owner == key:
+                    session.resize_owner = None
+                    released = True
+        if released:
+            self._catalog()
 
     def summary(self, owner: str | None = None) -> dict:
         groups = list(self.groups.values())
@@ -143,10 +174,12 @@ class Hub:
         owned = {group.id for group in groups}
         windows = [window for window in self.windows.values() if owner is None or window.group_id in owned]
         return {
+            "capabilities": CAPABILITIES,
             "windows": [
                 {
                     "id": window.id,
                     "title": window.title,
+                    "tab_theme": window.tab_theme,
                     "group": window.group_id,
                     "focused": window.focused,
                     "sessions": [
@@ -161,6 +194,8 @@ class Hub:
                 for group in groups
             ],
             "presets": self.presets,
+            "machine": self.machine,
+            "project": self.project,
         }
 
     def load_desktop(self) -> None:
@@ -322,6 +357,13 @@ class Hub:
         window.title = short_title(session.shell, session.pump.snapshot())
         self._catalog()
 
+    def set_tab_theme(self, window_id: str, theme: str) -> None:
+        window = self.windows.get(window_id)
+        if window is None or (theme and theme not in TAB_THEMES):
+            return
+        window.tab_theme = theme
+        self._catalog()
+
     def move_window(self, window_id: str, group_id: str, owner: str | None = None) -> None:
         window = self.windows.get(window_id or "")
         target = self.groups.get(group_id or "")
@@ -351,8 +393,7 @@ class Hub:
         client.channel = channel
         session = self.sessions.get(client.session_id or "")
         if session is not None and self._channel_ok(client, session):
-            data = fit_payload(session.pump.snapshot())
-            self._send(client, self._feed_frame(client, OP_SNAPSHOT, session.id, data))
+            self._send(client, self._session_snapshot(client, session))
 
     def open_window(self, title: str | None = None, group_id: str | None = None, owner: str = "") -> Window:
         home = self.ensure_owner(owner)
@@ -406,7 +447,7 @@ class Hub:
             return
         with self._lock:
             client.session_id = session.id
-        self._send(client, self._feed_frame(client, OP_SNAPSHOT, session.id, session.pump.snapshot()))
+        self._send(client, self._session_snapshot(client, session))
 
     def follow(self, client: Client, session_id: str) -> None:
         session = self.sessions.get(session_id)
@@ -415,19 +456,107 @@ class Hub:
         with self._lock:
             client.window_id = session.window_id
             client.session_id = session.id
-        self._send(client, self._feed_frame(client, OP_SNAPSHOT, session.id, session.pump.snapshot()))
+        self._send(client, self._session_snapshot(client, session))
 
     def write(self, client: Client, data: bytes) -> None:
         session = self.view(client)
         if session is None or not data:
             return
-        session.pty.write(data)
+        with session.io_lock:
+            if self.view(client) is session:
+                session.pty.write(data)
+
+    def set_subscriptions(self, client: Client, session_ids: list[str]) -> None:
+        if not client.multiplex or client.failure:
+            return
+        selected = {
+            sid for sid in session_ids
+            if isinstance(sid, str) and sid in self.sessions and self._channel_ok(client, self.sessions[sid])
+        }
+        added = selected - client.subscriptions
+        removed = client.subscriptions - selected
+        client.subscriptions = selected
+        released = False
+        for sid in removed:
+            client.feed_offsets.pop(sid, None)
+            session = self.sessions.get(sid)
+            if session is not None and session.resize_owner == client.key:
+                session.resize_owner = None
+                released = True
+        for sid in sorted(added):
+            session = self.sessions[sid]
+            # Keep interactive output batches short without one wakeup per read.
+            session.pump.coalesce_s = min(session.pump.coalesce_s, 0.004)
+            self._send(client, self._session_snapshot(client, session))
+        if released:
+            self._catalog()
+
+    def subscribed_session(self, client: Client, session_id: str) -> Session | None:
+        if (client.failure or self.clients.get(client.key) is not client
+                or (client.authorize is not None and not client.authorize())):
+            return None
+        session = self.sessions.get(session_id)
+        if not client.multiplex or session_id not in client.subscriptions or session is None:
+            return None
+        return session if self._channel_ok(client, session) else None
+
+    def write_session(self, client: Client, session_id: str, data: bytes) -> bool:
+        session = self.subscribed_session(client, session_id)
+        if session is None or not data:
+            return False
+        with session.io_lock:
+            if self.subscribed_session(client, session_id) is not session:
+                return False
+            session.pty.write(data)
+        return True
+
+    def resize_session(self, client: Client, session_id: str, cols: int, rows: int, take_control: bool = False) -> bool:
+        session = self.subscribed_session(client, session_id)
+        if session is None:
+            return False
+        with session.io_lock:
+            if self.subscribed_session(client, session_id) is not session:
+                return False
+            if session.resize_owner not in {None, client.key} and not take_control:
+                return False
+            cols, rows = self._terminal_size(cols, rows)
+            changed = (session.cols, session.rows, session.resize_owner) != (cols, rows, client.key)
+            if (session.cols, session.rows) != (cols, rows):
+                session.pty.resize(cols, rows)
+            if self.clients.get(client.key) is not client:
+                return False
+            session.resize_owner = client.key
+            session.cols, session.rows = cols, rows
+        if changed:
+            self._catalog()
+        return True
+
+    @staticmethod
+    def _terminal_size(cols: int, rows: int) -> tuple[int, int]:
+        return max(2, min(cols, 500)), max(1, min(rows, 200))
+
+    def controls(self, client: Client) -> dict:
+        return {
+            sid: {"cols": session.cols, "rows": session.rows, "owner": session.resize_owner == client.key,
+                  "busy": session.resize_owner not in {None, client.key}}
+            for sid in client.subscriptions
+            if (session := self.sessions.get(sid)) is not None and self._channel_ok(client, session)
+        }
 
     def resize(self, client: Client, cols: int, rows: int) -> None:
         session = self.view(client)
         if session is None:
             return
-        session.pty.resize(max(20, min(cols, 300)), max(5, min(rows, 80)))
+        with session.io_lock:
+            if session.resize_owner is not None and session.resize_owner != client.key:
+                return
+            cols, rows = self._terminal_size(cols, rows)
+            changed = (session.cols, session.rows) != (cols, rows)
+            if changed:
+                session.pty.resize(cols, rows)
+                session.cols, session.rows = cols, rows
+        if changed:
+            self._catalog()
 
     def close_session(self, session_id: str) -> None:
         session = self.sessions.pop(session_id, None)
@@ -443,6 +572,7 @@ class Hub:
                 if window.focused == session_id:
                     window.focused = next(iter(window.sessions), None)
                 for client in self.clients.values():
+                    client.subscriptions.discard(session_id)
                     if client.session_id == session_id:
                         client.session_id = window.focused
                         watchers.append(client)
@@ -489,6 +619,8 @@ class Hub:
         return WinPty(shell_command(shell), cwd)
 
     def _view_locked(self, client: Client) -> Session | None:
+        if client.authorize is not None and not client.authorize():
+            return None
         window = self.windows.get(client.window_id or "")
         if window is None or not self.owns(client.token, window.id):
             return None
@@ -509,7 +641,8 @@ class Hub:
     def _hello(self, client: Client) -> bytes:
         return pack_json(
             OP_HELLO_OK,
-            {**self.summary(client.token), "selected": client.window_id or "", "session": client.session_id or ""},
+            {**self.summary(client.token), "selected": client.window_id or "", "session": client.session_id or "",
+             **({"controls": self.controls(client)} if client.multiplex else {})},
         )
 
     def _read(self, session: Session) -> None:
@@ -533,7 +666,7 @@ class Hub:
     def _feed_frame(self, client: Client, op: int, session_id: str, data: bytes) -> bytes:
         # The session id is only for a relay client that receives every window.
         # A direct pane must get raw terminal bytes, or the id is painted on the prompt.
-        if client.key.startswith("relay-"):
+        if client.multiplex or client.key.startswith("relay-"):
             return pack_feed(op, session_id, data)
         return pack(op, fit_payload(data))
 
@@ -541,7 +674,13 @@ class Hub:
         session = self.view(client)
         if session is None:
             return pack(OP_SNAPSHOT, b"")
-        return self._feed_frame(client, OP_SNAPSHOT, session.id, self.snapshot(client))
+        return self._session_snapshot(client, session)
+
+    def _session_snapshot(self, client: Client, session: Session) -> bytes:
+        data, position = session.pump.snapshot_position()
+        if client.multiplex:
+            client.feed_offsets[session.id] = position
+        return self._feed_frame(client, OP_SNAPSHOT, session.id, data)
 
     def _channel_ok(self, client: Client, session: Session) -> bool:
         window = self.windows.get(session.window_id)
@@ -556,6 +695,10 @@ class Hub:
         with self._lock:
             targets = []
             for client in self.clients.values():
+                if client.multiplex:
+                    if session.id in client.subscriptions and self._channel_ok(client, session):
+                        targets.append(client)
+                    continue
                 # A relay client receives every open session on its channel.
                 if client.key.startswith("relay-") and client.window_id:
                     if self._channel_ok(client, session):
@@ -573,16 +716,36 @@ class Hub:
             return
         op = OP_SNAPSHOT if overflow else OP_OUTPUT
         for client in targets:
-            self._send(client, self._feed_frame(client, op, session_id, data))
+            if overflow and client.reliable:
+                self.fail_client(client, "PTY output overflow; reconnect for bounded history replay")
+                continue
+            chunk = data
+            end = session.pump.flushed_position
+            if client.multiplex and not overflow and end:
+                # A new subscriber's snapshot can already contain this pending batch.
+                seen = client.feed_offsets.get(session_id, 0)
+                if seen >= end:
+                    continue
+                chunk = data[max(0, seen - (end - len(data))):]
+                client.feed_offsets[session_id] = end
+            self._send(client, self._feed_frame(client, op, session_id, chunk))
 
     def _catalog(self) -> None:
         for client in list(self.clients.values()):
-            self._send(client, pack_json(OP_SESSIONS, self.summary(client.token)))
+            summary = self.summary(client.token)
+            if client.multiplex:
+                summary["controls"] = self.controls(client)
+            self._send(client, pack_json(OP_SESSIONS, summary))
 
     def _send(self, client: Client, frame: bytes) -> None:
+        if client.failure or (client.authorize is not None and not client.authorize()):
+            return
         try:
             client.queue.put_nowait(frame)
         except asyncio.QueueFull:
+            if client.reliable:
+                self.fail_client(client, "Slow client output queue overflow; reconnect for bounded history replay")
+                return
             try:
                 client.queue.get_nowait()
             except asyncio.QueueEmpty:
@@ -591,3 +754,12 @@ class Hub:
                 client.queue.put_nowait(frame)
             except asyncio.QueueFull:
                 self.detach(client.key)
+
+    def fail_client(self, client: Client, reason: str) -> None:
+        if client.failure:
+            return
+        client.failure = reason
+        self.detach(client.key)
+        while not client.queue.empty():
+            client.queue.get_nowait()
+        client.queue.put_nowait(None)

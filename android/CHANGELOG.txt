@@ -1,0 +1,14 @@
+2026-10-22
+- Keep saved computers connected independently; show project, computer, group and session directories.
+- Render and subscribe only the visible terminal; preserve per-computer drafts and input modes.
+- Pause every connection in the background and restore every directory on return.
+- Send credentials in authenticated first messages; generic APKs contain no personal connection token.
+
+2026-10-21
+· 自适应手机横竖屏、折叠内外屏和分屏窗口。
+· 修复 APK 压缩资源不可读导致的终端页面 404。
+· 首页显示版本与构建号；每次打包自动递增。
+· 首页增加测试连接按钮，验证网络、中继和访问凭据。
+· 终端菜单支持多台电脑、窗口分组、搜索与当前状态。
+· 修复共享终端行列数不同导致的刷屏错位，按后台网格缩放显示。
+· 个人安装包内置默认连接参数；访问凭据请勿转发。

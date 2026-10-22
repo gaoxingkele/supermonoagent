@@ -1,0 +1,102 @@
+"""A catalog resize must not change the grid of already queued PTY bytes."""
+import asyncio
+from pathlib import Path
+
+import pytest
+from websockets.asyncio.server import serve
+
+from test_client_integration import isolated_host
+
+
+EDGE = Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
+
+
+@pytest.mark.parametrize('renderer', ['dom', 'webgl'])
+def test_queued_output_keeps_its_received_grid(renderer):
+    playwright = pytest.importorskip('playwright.async_api')
+    if not EDGE.exists():
+        pytest.skip('Local Edge required for terminal grid ordering')
+    asyncio.run(check_grid_order(playwright, renderer))
+
+
+async def check_grid_order(playwright, renderer):
+    async with isolated_host() as (daemon, _direct, _relay):
+        window = daemon.hub.open_window('Grid ordering', owner=daemon.token)
+        session = daemon.hub.open_cli(window.id, 'cmd')
+        desktop = daemon.hub.attach(
+            asyncio.Queue(), key='grid-order-owner', token=daemon.token
+        )
+        desktop.multiplex = True
+        desktop.subscriptions = {session.id}
+        assert daemon.hub.resize_session(desktop, session.id, 120, 30, True)
+        try:
+            async with serve(
+                daemon.handle_socket, '127.0.0.1', 0,
+                process_request=daemon.serve_http
+            ) as server:
+                async with playwright.async_playwright() as runtime:
+                    browser = await runtime.chromium.launch(
+                        executable_path=str(EDGE), headless=True
+                    )
+                    try:
+                        page = await browser.new_page(viewport={'width': 1440, 'height': 900})
+                        errors = []
+                        page.on('pageerror', lambda error: errors.append(str(error)))
+                        await page.goto(
+                            f'http://127.0.0.1:{server.sockets[0].getsockname()[1]}'
+                            f'/workspace?direct=1&renderer={renderer}#token={daemon.token}'
+                        )
+                        await page.wait_for_function('''() => {
+                            const workspace=window.smaWorkspace;
+                            const pane=workspace?.panes.get(workspace.activeSession);
+                            return pane?.ready&&!pane.writing&&pane.term.cols===120;
+                        }''')
+                        if renderer == 'webgl':
+                            assert await page.evaluate('smaWorkspace.effectiveRenderer') == 'webgl'
+                        await page.evaluate('''() => {
+                            const term=smaWorkspace.terminal, original=term.write.bind(term);
+                            window.writeGrids=[];
+                            term.write=(data,done)=>{
+                                const text=new TextDecoder().decode(data);
+                                writeGrids.push({cols:term.cols,rows:term.rows,text});
+                                original(data,()=>{
+                                    if(text==='BLOCK')window.releaseWrite=done;
+                                    else done?.();
+                                });
+                            };
+                        }''')
+                        daemon.hub._flushed(session.id, b'BLOCK', False)
+                        await page.wait_for_function('!!window.releaseWrite')
+                        daemon.hub._flushed(session.id, b'\x1b[1;100HOLD_GRID', False)
+                        await page.wait_for_function(
+                            'smaWorkspace.panes.get(smaWorkspace.activeSession).frames.length===1'
+                        )
+                        assert daemon.hub.resize_session(desktop, session.id, 60, 20, True)
+                        await page.wait_for_function(
+                            'smaWorkspace.controls[smaWorkspace.activeSession]?.cols===60'
+                        )
+                        daemon.hub._flushed(session.id, b'\x1b[2J\x1b[HNEW_GRID', False)
+                        await page.wait_for_function(
+                            'smaWorkspace.panes.get(smaWorkspace.activeSession).frames.length===2'
+                        )
+                        await page.evaluate('window.releaseWrite()')
+                        await page.wait_for_function('''() => {
+                            const pane=smaWorkspace.panes.get(smaWorkspace.activeSession);
+                            return !pane.writing&&!pane.frames.length&&
+                                writeGrids.some(write=>write.text.includes('NEW_GRID'));
+                        }''')
+                        grids = await page.evaluate('writeGrids')
+                        assert next(write for write in grids if 'OLD_GRID' in write['text'])['cols'] == 120
+                        assert next(write for write in grids if 'NEW_GRID' in write['text'])['cols'] == 60
+                        assert await page.evaluate('''() => {
+                            const term=smaWorkspace.terminal,buffer=term.buffer.active;
+                            return term.cols===60&&term.rows===20&&
+                                buffer.getLine(buffer.baseY).translateToString(true)==='NEW_GRID'&&
+                                !Array.from({length:term.rows},(_,row)=>buffer.getLine(buffer.baseY+row)
+                                    ?.translateToString(true)||'').join('\\n').includes('OLD_GRID');
+                        }''')
+                        assert not errors, errors
+                    finally:
+                        await browser.close()
+        finally:
+            daemon.hub.detach(desktop.key)

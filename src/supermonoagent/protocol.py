@@ -20,6 +20,11 @@ OP_WINDOW = 12
 OP_SELECT = 13
 OP_FOCUS = 14
 OP_GROUP = 15
+OP_SUBSCRIBE = 16
+OP_INPUT_SESSION = 17
+
+CAPABILITIES = {
+    "protocol_version": 2, "multiplex": True, "targeted_input": True, "resize_lease": True, "reliable": True, "window_themes": True, "resize_ack": True, "conpty_paste": True, "relay_delegation": True}
 
 _HEADER = struct.Struct("<I")
 MAX_FRAME = 256 * 1024

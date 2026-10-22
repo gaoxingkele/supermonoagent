@@ -1,0 +1,5 @@
+# First run: serve HTTP-01 challenges before a trusted certificate exists.
+http://117.50.48.22 {
+    root * /var/lib/supermono-acme
+    file_server
+}

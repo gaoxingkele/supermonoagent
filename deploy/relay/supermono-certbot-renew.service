@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew SuperMonoAgent public IP TLS certificate
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin
+ExecStart=/usr/bin/env certbot renew --cert-name supermono-relay-ip --quiet --deploy-hook /usr/local/sbin/supermono-cert-deploy

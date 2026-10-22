@@ -1,0 +1,18 @@
+http://117.50.48.22 {
+    handle /.well-known/acme-challenge/* {
+        root * /var/lib/supermono-acme
+        file_server
+    }
+    handle {
+        redir https://117.50.48.22{uri} 308
+    }
+}
+
+https://117.50.48.22 {
+    # IP certificates need explicit public ACME issuance; do not use a local CA.
+    tls /etc/supermono-relay/tls/current/fullchain.pem /etc/supermono-relay/tls/current/privkey.pem
+    reverse_proxy 127.0.0.1:8818 {
+        # Reloads can still disconnect streams; clients must recover without ending PTYs.
+        stream_close_delay 5m
+    }
+}

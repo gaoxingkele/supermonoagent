@@ -1,142 +1,163 @@
 # 线协议
 
-两种链路共用同一套帧格式，relay 只搬运不解码：
+## 后续新增：统一中继账号（TD-008）
 
-1. **直连**：浏览器 → 本机 daemon（`ws://127.0.0.1:6769/ws`）。
-2. **中继**：手机/网页 → relay → daemon 的上联。daemon 主动向外连 relay，NAT 后可用。
+这部分实现于本轮源码，公网部署尚未执行。完整配置步骤见 [统一账号部署](relay-account-setup.md)。原有长期 Token/known-room 路径保持独立。
 
-实现位置：Python 在 `src/supermonoagent/protocol.py`，页面在 `src/supermonoagent/web.py` 顶部的 `pack/unpack/packJson`。
+| 首帧文本操作 | 请求 | 响应/行为 |
+| --- | --- | --- |
+| `relay_login` | `{email,password}` | `relay_auth {session,expires,account:{id,email}}`；session 默认有效 1 小时 |
+| `relay_logout` | `{session}` | 撤销该登录，先清目录/phone 路由及队列，再关闭相关连接 |
+| `watch` | `{session}` | `directory {revision,capabilities:{relay_accounts:true,...},hosts:[{endpoint,code,online,machine?,project?}]}`，仅当前账号 grants 内的房间 |
+| `phone` | `{code,session,reliable}` | 检查登录与授权，向 host 发送 `join {id,account,expires}`，收到 `joined {id,ok:true}` 后才给客户端 `ready` |
 
-## 帧格式
+`endpoint` 仅来自管理员配置的 `--public-url`，包含端口，不采用主机任意广告地址。owner secret、daemon 长期 Token 不在账号目录中返回。`watch {rooms:[{code,token}]}` 与 `phone {code,token}` 继续支持，不得把账号 session 当成直接 daemon 的 Token。
 
-```
+委托 phone 随后的二进制 HELLO 不携带 Token/session/password/account。daemon 使用当前上联代际、Client 实例、账号 ID、到期时间和显式 `(relay,room,account)→owner` 本地绑定验证访问，再按该 owner 处理既有会话；direct HELLO 不能伪造此授权。委托账号可以操作绑定所有者的终端和分组，不能修改主机全局 identity/presets/relays。新增能力 `relay_delegation` 不改变原二进制帧格式。
+
+公网账号首帧要求 TLS，或真实来源为受信反代且 `X-Forwarded-Proto: https`；不信任任意客户端提供的该头。Host/Origin 仍精确检查，Windows 本机 UI 的 Origins 需在部署时明确允许。账号、grants 和哈希会话保存在 SQLite；CLI 变更、密码重置、注销和过期由运行中服务监控并撤权。旧终端 Token 轮换不误伤独立的账号委托授权。
+
+本文描述当前仓库实现（2026-10-22），不是远端生产部署状态。终端帧实现见 [protocol.py](../src/supermonoagent/protocol.py)，访问边界见 [security.py](../src/supermonoagent/security.py)，系统关系见 [architecture.md](architecture.md)。
+
+## 链路与认证
+
+- **直连**：客户端 → daemon `/ws`。浏览器在连接后 2 秒内发送二进制 OP1 HELLO，Token 放在 JSON 负载中；原生客户端也可使用 `Authorization: Bearer …`，随后发送 HELLO 协商能力。
+- **本机兼容适配**：浏览器 → loopback frontend → 已运行的 loopback daemon。frontend 等待并校验首个 HELLO 的结构，把其中的 Token 放进固定上游的 Authorization 头，再原样转发 HELLO 一次。它不启动或替换 PTY，也不能代理任意远端 URL。
+- **中继**：客户端 → relay ← daemon 上联。先发 relay 文本角色握手；phone 收到 `ready` 后，再发送二进制 HELLO。relay 验证访问 Token，daemon 也验证对应客户端的 Token 和会话所有权。
+- daemon、relay、frontend 的 WebSocket URL 不接受查询串认证。桌面启动使用 `#token=…`；页面消费 Token 后立即清理地址，并通过首帧认证。旧页面入口的查询 Token 只做一次性兼容消费，不能生成带 Token 的 WS URL。
+
+来源：[daemon.py:handle_socket/allowed/relay_uplink](../src/supermonoagent/daemon.py)、[frontend.py:handler](../src/supermonoagent/frontend.py)、[relay.py:handler](../src/supermonoagent/relay.py)、[workspace.js](../src/supermonoagent/static/workspace.js)。
+
+## 二进制帧
+
+```text
 | uint32 LE length | uint8 op | payload[length-1] |
 ```
 
-- `length` = 1（op 字节）+ payload 长度，自身不含在 length 里。
-- `MAX_FRAME = 256 KiB`，`pack` 超限抛 `ProtocolError`；`unpack` 校验长度合法且与实际字节数精确相等，否则抛错。收到坏帧直接丢弃，不断连。
-- 未知 op 静默忽略（daemon 侧返回空）。
-- 文本类控制用 JSON：payload 为 UTF-8 JSON 且必须是对象（`unpack_json`）。
+`length` 包括 opcode，不包括四字节长度字段。`MAX_FRAME=256 KiB` 限制帧体，`unpack` 要求声明长度与实际长度精确匹配。JSON 负载必须是 UTF-8 对象。认证后的普通坏帧/坏 JSON 会被忽略；认证阶段的坏首帧会关闭连接。
 
-### 截断规则
+**multiplex 客户端的直连与中继采用相同会话前缀**：OP3/OP8 payload 为 `raw_session_id + NUL + terminal_bytes`。未协商 multiplex 的旧直连视图仍接收原始终端字节；旧 relay 视图也带会话前缀。前缀不是需要写进 xterm 的内容。`pack_feed` 和 `fit_payload` 保留最新的有界历史，并跳过截断位置的 UTF-8 续字节。
 
-- `fit_payload`：超限时保留**最新**的字节，并跳过开头的 UTF-8 续字节（`10xxxxxx`），避免半个字符。
-- `pack_feed`：中继帧的 payload = `session_id + "\0" + 数据`，空间不够同样从头部截断。
-- 直连帧不带会话号前缀；只有 `client.key` 以 `relay-` 开头的客户端走 `pack_feed`（见 `hub.py` 的 `_feed_frame`）。原因是会话号直接拼进字节流会印到 PowerShell/cmd 提示符上。
+来源：[protocol.py](../src/supermonoagent/protocol.py)、[hub.py:_feed_frame/_session_snapshot](../src/supermonoagent/hub.py)。
 
 ## Opcode
 
-| Op | 名称 | 方向 | Payload | 说明 |
-|----|------|------|---------|------|
-| 1 | HELLO | 客户端 → daemon | JSON `{token, window?, channel?}` | 首帧。可顺带选窗口、声明订阅频道 |
-| 2 | HELLO_OK | daemon → 客户端 | JSON 全量状态 | 见下方"状态结构"。`error` 字段附在首次回复里 |
-| 3 | OUTPUT | daemon → 客户端 | 终端字节 | 增量输出；中继帧带会话号前缀 |
-| 4 | INPUT | 客户端 → daemon | 原始按键字节 | 写入该客户端当前正在看的会话，原样转发 PTY |
-| 5 | RESIZE | 客户端 → daemon | JSON `{cols, rows}` | 列钳制 20–300，行钳制 5–80 |
-| 6 | OPEN | 客户端 → daemon | JSON `{window?, shell, group?, cwd?}` | 开窗内 CLI；`window` 不存在时新建窗口 |
-| 7 | SESSIONS | daemon → 客户端 | JSON 目录 | 窗口/分组/预设变化时广播 |
-| 8 | SNAPSHOT | daemon → 客户端 | 终端字节 | 全量快照：选中/聚焦/订阅时发，输出溢出时也发 |
-| 9 | CLOSE | 客户端 → daemon | JSON `{window?}` 或 `{session?}` | 关窗口或关单条 CLI（会终止进程） |
-| 10 | PING | 双向 | 任意 | 回显 |
-| 11 | PONG | daemon → 客户端 | PING 的 payload | 原样返回 |
-| 12 | WINDOW | 客户端 → daemon | JSON `{title?, group?}` | 新建窗口并选中 |
-| 13 | SELECT | 客户端 → daemon | JSON `{window}` | 切换当前窗口 |
-| 14 | FOCUS | 客户端 → daemon | JSON `{session}` | 看同一窗口里的另一条 CLI |
-| 15 | GROUP | 客户端 → daemon | JSON `{action, ...}` | 见下表 |
+| Op | 名称 | 方向 | Payload / 语义 |
+|---|---|---|---|
+| 1 | HELLO | 客户端 → daemon | `{token,multiplex?,reliable?,window?,channel?}`；认证、能力与初始选择 |
+| 2 | HELLO_OK | daemon → 客户端 | 目录、身份、能力、当前选择、controls，可能带 error/resize_ack |
+| 3 | OUTPUT | daemon → 客户端 | 增量终端字节；multiplex 带 raw session 前缀 |
+| 4 | INPUT | 客户端 → daemon | 旧单视图按键；multiplex 客户端不使用此操作 |
+| 5 | RESIZE | 客户端 → daemon | `{session?,cols,rows,request?,take_control?}`；列 2–500、行 1–200 |
+| 6 | OPEN | 客户端 → daemon | `{window?,shell,group?,cwd?}`；在授权窗口开 CLI，或新建窗口 |
+| 7 | SESSIONS | daemon → 客户端 | 目录/尺寸租约等更新；multiplex 包含 controls |
+| 8 | SNAPSHOT | daemon → 客户端 | 有界历史回放；multiplex 带 raw session 前缀 |
+| 9 | CLOSE | 客户端 → daemon | `{window}` 或 `{session}`；明确结束后台进程 |
+| 10 | PING | 客户端 → daemon | 任意 payload，用于 RTT 或旧版 resize 顺序屏障 |
+| 11 | PONG | daemon → 客户端 | 原样回显 PING payload |
+| 12 | WINDOW | 客户端 → daemon | `{title?,group?}`；新建并选中窗口 |
+| 13 | SELECT | 客户端 → daemon | `{window}`；旧视图窗口选择 |
+| 14 | FOCUS | 客户端 → daemon | `{session}`；旧视图 CLI 选择 |
+| 15 | GROUP | 客户端 → daemon | `{action,...}`，见下表 |
+| 16 | SUBSCRIBE | 客户端 → daemon | `{sessions:[raw_id,…]}`；替换本连接的输出订阅集，最多 256 项 |
+| 17 | INPUT_SESSION | 客户端 → daemon | `8 字节 raw session ID + NUL + 原始输入字节` |
 
-### OP_GROUP 的 action
+OP16/17/5 都受 Token 所有权与订阅约束。客户端内部的 host/session 元组键不能放进线协议；不同 daemon 的相同 raw ID 由其所属连接隔离。关闭标签页只从 OP16 订阅集移除该 ID，不发送 OP9。
 
-| action | 附加字段 | 效果 |
-|--------|----------|------|
-| `create` | `name`, `channel?` | 新建分组；频道缺省用组名，重名自动加 `-2`、`-3` |
-| `rename` | `id`, `name?`, `channel?` | 改分组名/频道 |
-| `delete` | `id` | 删分组，窗口归 `default` |
-| `move` | `window`, `group` | 窗口移到分组 |
-| `subscribe` | `channel` | 声明订阅频道，立即补发一条快照 |
-| `presets` | `presets` | 整单替换命令预设 |
-| `title` | `window`, `title` | 改窗口标题 |
-| `autotitle` | `window` | 按软件名+最近命令自动命名 |
-| `relays` | `relays` | 整单替换外联中继列表（见"安全现状"） |
+来源：[daemon.py:_op](../src/supermonoagent/daemon.py)、[hub.py:set_subscriptions/write_session/resize_session](../src/supermonoagent/hub.py)。
 
-### 状态结构（OP 2 / OP 7 的 JSON）
+### 尺寸租约与 ACK
+
+`controls[raw_id]` 为 `{cols,rows,owner,busy}`。`owner` 表示本连接拥有尺寸控制；`busy` 表示其他连接占有。空闲租约可被领取，显式 `take_control:true` 可接管。取消订阅或连接分离释放对应租约。
+
+当前 `resize_ack` 能力返回 OP2 状态及 `resize_ack:{session,request,accepted}`，即使请求被拒绝也返回确认后的实际 grid。客户端按 request ID 串行确认，采用服务器 grid 缩放显示；没有 ACK 能力的旧 daemon 使用 `resize:<request>:<raw_id>` PING/PONG 屏障。有限重绘通过确认后的尺寸往返完成，避开输入/IME 组合期间，不能把重绘当作恢复完整历史的保证。
+
+来源：[hub.py:controls/resize_session](../src/supermonoagent/hub.py)、[daemon.py:_op](../src/supermonoagent/daemon.py)、[workspace.js:requestResize/acceptResize/maybeRedrawPane](../src/supermonoagent/static/workspace.js)。
+
+### GROUP actions
+
+| action | 附加字段 | 权限与效果 |
+|---|---|---|
+| create / rename / delete | `name,channel?` / `id,name?,channel?` / `id` | 创建自己的分组；只修改自己的分组 |
+| move | `window,group` | 窗口与目标分组均须属于此 Token |
+| subscribe | `channel` | 选择有权访问的频道 |
+| title / autotitle / tab-theme | `window,title` / `window` / `window,theme` | 只修改自己的窗口；theme 为预设配色 |
+| presets | `presets` | 仅 daemon 主 Token 可替换全局预设 |
+| relays | `relays` | 仅 daemon 主 Token 可修改上联配置 |
+| identity | `project` | 仅 daemon 主 Token；机器名来自本机，项目名保存并推送到 relay |
+
+来源：[daemon.py:_op](../src/supermonoagent/daemon.py)、[hub.py:owns/_channel_ok](../src/supermonoagent/hub.py)。
+
+### 状态结构
+
+OP2/OP7 的共同字段如下；OP2 另有当前选择和 service，resize 的 OP2 可另带 `resize_ack`。字段示意中的省略号不是实际 JSON。
 
 ```json
 {
-  "windows": [{"id", "title", "group", "focused", "sessions": [{"id", "shell", "cwd"}]}],
-  "groups":  [{"id", "name", "channel"}],
-  "presets": [{"id", "label", "command", "shortcut"}],
-  "selected": "窗口id",
-  "session":  "会话id",
-  "service":  {"ok", "accounts", "windows", "sessions", "relays": [{"name", "url", "up"}]}
+  "capabilities": {"protocol_version":2,"multiplex":true,"targeted_input":true,"resize_lease":true,"reliable":true,"resize_ack":true,"window_themes":true,"conpty_paste":true},
+  "machine":"Office-PC",
+  "project":"Project A",
+  "windows":[{"id":"a1b2c3","title":"Codex","group":"default","focused":"1234abcd","sessions":[{"id":"1234abcd","shell":"cmd","cwd":"D:/work"}]}],
+  "groups":[{"id":"default","name":"默认","channel":"default"}],
+  "presets":[],
+  "controls":{"1234abcd":{"cols":100,"rows":28,"owner":false,"busy":true}}
 }
 ```
 
-## 中继链路消息
+能力缺失的旧服务不能被推断为 v2；客户端展示旧版/未知并按实际能力兼容。目录和操作均按当前 Token 过滤。[protocol.py:CAPABILITIES](../src/supermonoagent/protocol.py)、[hub.py:summary](../src/supermonoagent/hub.py)、[daemon.py:_state](../src/supermonoagent/daemon.py)。
 
-relay（`src/supermonoagent/relay.py`）在 WebSocket 之上跑一套自己的小协议，文本 JSON 是控制、二进制是数据。
+## relay 角色与路由
 
-**握手**（连接后 2 秒内必须发出第一帧，否则关闭，code 4000）：
+首帧必须在 2 秒内到达，是 JSON 对象，最大 WS 消息 1 MiB。
 
-| 方向 | 内容 | 说明 |
-|------|------|------|
-| daemon → relay | `{"op": "host", "code": "...", "tokens": [...]}` | 同一房间只能有一个 host，重复连关闭 4003 |
-| 页面 → relay | `{"op": "phone", "code": "...", "token": "..."}` | 房间没有 host 时关闭 4004 |
+| 角色 | 首帧示例 | 边界 |
+|---|---|---|
+| host | `{"op":"host","code":"room-a","owner_secret":"…","tokens":["…"],"machine":"PC","project":"A"}` | 必须具有已登记的独立房间 owner secret；同房间只能一条 host 上联 |
+| phone | `{"op":"phone","code":"room-a","token":"…","reliable":true}` | Token 必须存在于在线 host 发布的集合中；ready 后再做 daemon HELLO |
+| watch | `{"op":"watch","rooms":[{"code":"room-a","token":"…"}]}` | 只查询提供的已知房间，不返回任意房间花名册 |
 
-**控制消息**（双方随时可发）：
+普通错误首帧/不支持角色关闭 4000，凭据无效 4001，重复 host 4003；离线账户请求等路径可使用 4004。无效 Token 与未知房间的 phone 查询均返回 4001，不公开身份。注册/登录/轮换另使用 `register/login/rotate` 文本角色，由在线 host 处理账户密码；它们不是发现接口。
 
-| 方向 | 内容 | 说明 |
-|------|------|------|
-| relay → host | `{"op": "ready"}` | host 握手成功 |
-| relay → phone | `{"op": "ready"}` | phone 握手成功，页面收到后再发 OP 1 HELLO |
-| relay → host | `{"op": "join", "id": N}` / `{"op": "leave", "id": N}` | 手机进出 |
-| host → relay | `{"op": "tokens", "tokens": [...]}` | 全量刷新可用 token 列表 |
+已登记 host 收到 `ready`；phone 加入/离开由 relay 给 host 发 `join:{id,token,reliable}` / `leave:{id}`。host 后续可发 `tokens` 替换访问 Token 集、`identity` 更新机器/项目名、`disconnect` 关闭指定 phone。终端数据在 host–relay 链路外包四字节 LE `phone_id`；relay–phone 链路只传原终端帧。relay 不解释终端 payload，但它是可见凭据与转发内容的信任边界，当前没有端到端加密层。
 
-**数据**：双向都是 `| uint32 LE phone_id | 帧 |`。phone 的每条消息前由 relay 补上自己的编号再转给 host；host 下发同样带编号，relay 按编号找队列。relay 不解析帧内容，不做任何编解码。
+来源：[relay.py:handler/_host/_phone/_account](../src/supermonoagent/relay.py)、[daemon.py:relay_uplink](../src/supermonoagent/daemon.py)。
 
-**扇出**：daemon 侧给每台中继、每个 phone 建一个 `key = relay-<slot>-<phone_id>` 的客户端。中继客户端不走"只看当前会话"的逻辑，而是收**频道内所有窗口**的输出（`hub._feed_targets`），靠帧头的会话号前缀区分；页面用 `^[0-9a-f]{8}\0` 匹配前缀，不是本 pane 的会话就丢掉。
+### 已知房间推送目录
 
-## 本机账户接口
+```json
+{"op":"directory","revision":7,"capabilities":{"known_rooms":true,"directory_push":true,"host_enrollment":true,"protocol_version":2},"hosts":[{"code":"room-a","online":true,"machine":"Office-PC","project":"A"},{"code":"room-b","online":false}]}
+```
 
-不连中继、token 又不通过时（当前 `Daemon.allowed()` 恒真，此路径实际不会触发），daemon 只对 `127.0.0.1`/`::1` 开放一段一次性的 JSON 握手：
+每个请求项只对应其给定 code：在线且 Token 有效才返回机器/项目。未知房间、错误 Token、离线不可验证凭据统一返回 `{code,online:false}`，没有身份字段；查询不会创建房间。当前实现离线时也清除已认证 watcher 的身份，不依赖离线身份缓存。
 
-- 客户端发 `{"op": "register"|"login"|"rotate", "name": "...", "password": "..."}`
-- 成功回 `{"op": "auth", "token": "...", "name": "..."}`，失败回 `{"op": "auth", "error": "..."}`，随后关闭
-- 成功后 daemon 把新 token 列表推给所有已连中继（`{"op": "tokens", ...}`）
+同一 watch socket 可以再次发送完整 `watch` 替换已知集合。host 上线/离线、身份变化、Token 集替换都会触发新 revision 的推送。每个 watcher 队列深度上限 32，发布前替换待发旧快照，因此实际通常只保留最新项；Token 撤销不会排队继续推送旧授权身份。每个连接最多 64 个房间、每秒最多 10 次 watch 更新，房间码 1–128 字符，Token 字段最多 4096 字符，机器/项目名最多 40 字符。
 
-## 背压与丢弃
+桌面每个 relay 一个 watcher，终端连接保持独立；旧 relay 拒绝 watch 时仅标记目录不可用。客户端不轮询 `/health` 发现电脑。[relay.py:_watch_rooms/_watch/_snapshot/_publish](../src/supermonoagent/relay.py)、[workspace.js:refreshDirectories](../src/supermonoagent/static/workspace.js)。
 
-协议无序号、无确认，设计上允许丢帧：
+### owner enrollment 与撤销
 
-- 每条客户端/手机连接一个 32 帧的队列，满时**丢最旧**的一帧再塞新帧（`hub._send`、relay `_enqueue`）。终端画面靠后续帧刷新，不追求字节可靠。
-- daemon 侧每条会话的输出先经 `pump.py` 合并：20ms 窗口内的字节合成一帧；待发缓冲超 128 KiB 时清空，改发全量快照（OP 8）让订阅端重建画面。
-- 每会话保留 256 KiB 环形缓冲，选窗/聚焦时从里取快照。
+生产 relay 的 `--enroll ROOM --enrollment-file FILE` 创建并保存 owner secret 的 SHA-256 verifier，原 secret 只交给对应 daemon（`--relay-owner-secret` 或受保护的 `relays.json`）。终端访问 Token 不能作为 owner secret；未登记、错误 secret 或重复 host 都不能替换已有身份与 Token 集。显式 `--development` 仅允许 loopback 监听及 loopback fixture host 首次声明，不是公网自动认领策略。
 
-## 限额一览
+host 发布新 Token 集时，relay 清空被撤销 phone 的待发帧、移除发送路径并取消其 sender，再关闭连接（4001）；watcher 的旧快照也被替换为重新授权后的结果。host 断开时清空访问 Token。登记 verifier 跨 relay 进程重启保存，在线访问 Token 集则来自重新认证的 host。来源：[relay.py:enroll/_owner_allowed/_replace_tokens](../src/supermonoagent/relay.py)、[daemon.py:publish_tokens](../src/supermonoagent/daemon.py)。
 
-| 项 | 值 | 位置 |
-|----|----|------|
-| 单帧上限 | 256 KiB | `protocol.MAX_FRAME` |
-| daemon WS 消息上限 | 256 KiB | `daemon.main` |
-| relay WS 消息上限 | 1 MiB | `relay.main` |
-| 队列深度 | 32 帧，丢最旧 | `QUEUE_FRAMES` |
-| 环形缓冲 | 256 KiB | `pump.RING_BYTES` |
-| 待发合并 | 20 ms / 128 KiB | `pump.COALESCE_S` / `PENDING_BYTES` |
-| 握手首帧超时 | 2 s | `relay.FIRST_FRAME_S` |
-| 会话/窗口 id | 4 / 3 字节随机 hex | `hub.open_cli` / `open_window` |
-| token / relay code | `secrets.token_urlsafe(18)` / `token_hex(3)` | `accounts`、`daemon.load_code` |
+## HTTP、TLS 与 Origin/Host
 
-## 安全现状（已知缺口）
+`daemon /health` 和 `relay /health` 仅返回 `ok/role` 存活信息，不返回 Token、房间、机器或项目。frontend 的健康响应另有自身 backend/revision 元数据，也不返回 Token/终端目录。发现必须走认证 watch。
 
-测试阶段的实现，**不要对不可信网络开放**：
+daemon、relay、frontend 对 HTTP 与 WS 升级检查 Host 和 Origin：默认只接受实际监听端口的 loopback authority；公网 authority 必须匹配显式 `--allowed-origin` 的 netloc。浏览器 Origin 必须精确匹配 HTTP(S) scheme、host、port 或配置值；`Origin:null` 被拒绝。原生无 Origin 仍需满足 Host 检查并进行凭据认证。
 
-- `Daemon.allowed()` 恒返回 `True`，任何能连到 daemon 端口的人都有完整读写权限（`daemon.py`）。
-- relay 存了 `room.tokens` 但**从不校验** phone 的 token，知道 6 位十六进制房间码即可连入（`relay.py` 的 `_phone`）。
-- 两处 WS 握手都不校验 `Origin`，浏览器里任意网页可尝试连本机 daemon。
-- `OP_GROUP {"action": "relays"}` 可让 daemon 向任意 URL 发起外联，握手时会把全部 token 发给对方。
-- relay 的 `/health` 返回所有活跃房间码。
-- 全程明文 ws://，无 TLS；token 走 URL 查询串，会留在浏览器历史和日志里。
-- 恢复收紧时的落点：`allowed` 改回校验本机 token + 账户 token，relay 的 `_phone` 加 token 校验，`relays` action 限本机。
+服务端支持成对的 `--tls-cert/--tls-key`，最低 TLS1.2。daemon/relay 公网监听必须配置 TLS，或显式 `--reverse-proxy-tls` 加 HTTPS `--allowed-origin`；该标记表示操作者已配置可信 TLS 反向代理，不会自动生成或验证代理部署。daemon 对非 loopback relay 上联只接受 `wss://`，不禁用证书验证。本仓库的这些配置不会自动升级已运行的远端服务。
 
-## 与 Orca 官方协议的关系
+来源：[security.py](../src/supermonoagent/security.py)、[daemon.py:serve_http/main/relay_uplink](../src/supermonoagent/daemon.py)、[relay.py:serve_page/main](../src/supermonoagent/relay.py)、[frontend.py:serve_http](../src/supermonoagent/frontend.py)。
 
-官方 Orca Mobile 的线协议绑着 E2EE 握手和整套桌面 RPC，本项目没有实现，官方 App 连不上本主机。学习笔记见 `study/NOTES.md`。
+## 背压与有界历史
+
+`reliable:true` 表示溢出时明确断开并要求重新订阅有界历史，**不代表带序号的永久无损日志**。daemon 客户端队列、relay phone 队列均为 32 帧；reliable 连接不能静默丢帧后继续 ANSI 流，慢连接以 1013 等关闭。旧非 reliable 路径仍可丢最旧帧。PTY 待发合并超限时，reliable 订阅端失败重连，旧路径可收到快照。
+
+每会话环形历史 256 KiB、待发上限 128 KiB，默认合并窗口 20ms；multiplex 订阅时会把该会话合并窗口降到不高于 4ms。订阅快照记录输出位置，防止紧随其后的 pending batch 重复回放。客户端把 bytes 直接写入 xterm，跨帧保存 UTF-8/ANSI 解析状态。来源：[pump.py](../src/supermonoagent/pump.py)、[hub.py:_flushed/_send/fail_client/set_subscriptions](../src/supermonoagent/hub.py)、[relay.py:_enqueue](../src/supermonoagent/relay.py)。
+
+## 验证入口
+
+[tests/test_protocol.py](../tests/test_protocol.py)、[test_security_directory.py](../tests/test_security_directory.py)、[test_client_integration.py](../tests/test_client_integration.py)、[test_desktop_multihost.py](../tests/test_desktop_multihost.py)、[test_workspace_runtime.py](../tests/test_workspace_runtime.py)、[test_resize_recovery.py](../tests/test_resize_recovery.py)。测试证明本地隔离实现行为；远端生产 TLS/owner enrollment 需要单独配置、迁移和验证。
+
+官方 Orca Mobile 的 E2EE/RPC 协议未在此实现；官方 App 不能直接当作本项目客户端。学习资料见 [study/NOTES.md](../study/NOTES.md)。

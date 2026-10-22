@@ -3,3 +3,14 @@ __pycache__/
 .venv/
 *.egg-info/
 study/orca/
+
+# Generated builds, local tooling and verification artifacts.
+/dist/
+/.omx/
+/.pytest_cache/
+
+# Local credentials and signing keys (test TLS fixtures remain versioned).
+.env
+.env.*
+*.jks
+*.keystore

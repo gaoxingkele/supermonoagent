@@ -2,12 +2,13 @@ PAGE = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <title>SuperMonoAgent</title>
 <link rel="stylesheet" href="/xterm.css">
+<link rel="stylesheet" href="/tab-themes.css">
 <style>
   :root { color-scheme: dark; }
-  body { margin: 0; height: 100vh; display: flex; flex-direction: column; font: 14px/1.4 ui-monospace, Consolas, monospace; background: #12140f; color: #ececec; }
+  body { margin: 0; height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; overscroll-behavior: none; font: 14px/1.4 ui-monospace, Consolas, monospace; background: #12140f; color: #ececec; }
   #tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px; background: #1c2118; }
   #tools label { display: flex; align-items: center; gap: 6px; color: #b7c4a4; }
   #tools select { min-width: 128px; }
@@ -18,7 +19,7 @@ PAGE = r"""<!DOCTYPE html>
   #gate input { font: inherit; padding: 8px; background: #12140f; color: inherit; border: 1px solid #3d4636; border-radius: 6px; }
   #gate.hidden { display: none; }
   .appname { margin: 6px 8px 2px 28px; color: #8e8e8e; font-size: 12px; }
-  .xterm-viewport { touch-action: pan-y; }
+  .xterm-viewport { touch-action: pan-y; overflow-x: hidden; }
   #desk { flex: 1; min-height: 0; display: flex; flex-direction: row; }
   #app { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   #side { width: 260px; flex: none; display: flex; flex-direction: column; background: #171717; color: #ececec; border-right: 1px solid #2a2a2a; padding: 10px 8px 8px; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
@@ -40,7 +41,8 @@ PAGE = r"""<!DOCTYPE html>
   .row:hover .more, .nav-label:hover .more, .row.on .more { opacity: 1; }
   .more:hover, .menu button:hover { background: #424242; }
   .menu { position: fixed; z-index: 80; min-width: 188px; padding: 6px; background: #2a2a2a; border: 1px solid #3f3f3f; border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
-  .menu button { display: block; width: 100%; text-align: left; padding: 8px 10px; }
+  .menu button { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; text-align: left; padding: 8px 10px; }
+  .menu .keys { color: #9a9a9a; font-size: 12px; white-space: nowrap; }
   .menu button.danger:hover { background: #6e2222; }
   dialog { background: #1c2118; color: inherit; border: 1px solid #3d4636; width: min(640px, 96vw); font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
   dialog::backdrop { background: rgba(0,0,0,.45); }
@@ -48,11 +50,22 @@ PAGE = r"""<!DOCTYPE html>
   .preset { display: grid; grid-template-columns: 1fr 1.4fr 1fr auto; gap: 6px; margin-bottom: 6px; }
   .preset input, .preset button, dialog .side-actions button { font: inherit; background: #12140f; color: inherit; border: 1px solid #3d4636; border-radius: 6px; padding: 6px 8px; }
   dialog .side-actions { display: flex; gap: 6px; margin-top: 8px; }
+  body.tools-hidden #tools { display: none; }
+  #tools-toggle { position: fixed; z-index: 75; top: 8px; left: 8px; min-height: 36px; padding: 6px 12px; touch-action: manipulation; background: #2a3124; border: 1px solid #6d7c58; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
   @media (max-width: 720px) {
-    #desk { flex-direction: column; }
-    #side { width: auto; max-height: 28vh; }
-    #side.collapsed { width: auto; max-height: none; }
-    #tools { font-size: 13px; }
+    #app { padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+    #tools { position: fixed; z-index: 60; top: env(safe-area-inset-top); left: 0; right: 0; max-height: 70dvh; overflow: auto; -webkit-overflow-scrolling: touch; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+    #tools input, #tools select, #tools button { font-size: 16px; touch-action: manipulation; }
+    #side { position: fixed; z-index: 65; top: 0; bottom: 0; left: 0; width: min(300px, 88vw); max-height: none; padding-top: calc(10px + env(safe-area-inset-top)); padding-bottom: env(safe-area-inset-bottom); box-shadow: 8px 0 28px rgba(0,0,0,.5); }
+    #side.collapsed { top: calc(8px + env(safe-area-inset-top)); left: calc(8px + env(safe-area-inset-left)); bottom: auto; width: auto; height: auto; padding: 0; border: 0; background: transparent; box-shadow: none; z-index: 70; }
+    #groups { -webkit-overflow-scrolling: touch; }
+    #side #side-toggle { width: auto; min-width: 44px; height: 44px; margin: 0 0 8px; padding: 0 12px; border: 1px solid #5a5a5a; border-radius: 10px; background: #2a2a2a; color: #f2f2f2; font: 15px/44px ui-sans-serif, system-ui, "Segoe UI", sans-serif; touch-action: manipulation; }
+    #side.collapsed #side-toggle { margin: 0; }
+    .more { opacity: 1; }
+    .card { min-width: 0; }
+  }
+  @media (hover: none) {
+    .more { opacity: 1; }
   }
   button, select { font: inherit; background: #2a3124; color: inherit; border: 1px solid #3d4636; border-radius: 6px; padding: 6px 8px; }
   button { cursor: pointer; }
@@ -75,7 +88,8 @@ PAGE = r"""<!DOCTYPE html>
   .bar button.win.link i { width: 8px; height: 8px; border-radius: 50%; display: block; background: #e81123; }
   .bar button.win.link.on i { background: #16c60c; }
   .bar .rate { flex: none; align-self: center; margin-right: 4px; font: 12px/1 Consolas, ui-monospace, monospace; color: #d5d0c4; white-space: nowrap; pointer-events: none; }
-  .screen { flex: 1; min-height: 0; }
+  .screen { flex: 1; min-width: 0; min-height: 0; width: 100%; height: 0; overflow: hidden; position: relative; }
+  .screen > .xterm { position: absolute; left: 0; top: 0; right: 0; bottom: 0; }
   .grip { position: absolute; z-index: 2; }
   .grip.n, .grip.s { left: 8px; right: 8px; height: 6px; cursor: ns-resize; }
   .grip.e, .grip.w { top: 8px; bottom: 8px; width: 6px; cursor: ew-resize; }
@@ -105,11 +119,9 @@ PAGE = r"""<!DOCTYPE html>
   </div>
 </div>
 <header id="tools">
-  <label>Project <select id="project"></select></label>
   <label>命令 <select id="shell"></select></label>
   <button id="new-window" type="button">新窗口</button>
-  <button id="new-project" type="button">新建 Project</button>
-  <label>移到 <select id="move"></select></label>
+  <button id="arrange" type="button" title="排列窗口">窗口</button>
   <button id="close-window" type="button">关窗口</button>
   <button id="close-cli" type="button">关 CLI</button>
   <button id="open-settings" type="button">设定</button>
@@ -121,19 +133,27 @@ PAGE = r"""<!DOCTYPE html>
   <button id="copy-token" type="button">复制 Token</button>
   <span id="status">未连接</span>
 </header>
+<button id="tools-toggle" type="button" title="收起顶部菜单" aria-expanded="true">收起菜单</button>
 <div id="desk">
 <aside id="side">
   <button id="side-toggle" class="mark" type="button" title="收起">-</button>
   <div id="groups"></div>
 </aside>
 <div id="app">
-<p id="empty">用顶部的 Project 和命令打开会话。左侧按最近活动排列。</p>
+<p id="empty">用顶部的命令打开会话。左侧是项目、电脑和窗口。</p>
 <div id="grid"></div>
 <div id="dock"></div>
 </div>
 </div>
 <dialog id="settings">
   <form id="preset-form">
+    <h2>项目</h2>
+    <p class="hint">左边按项目、电脑、窗口排列。电脑名称用这台主机的名字。项目可以自己改，一台电脑只属于一个项目。</p>
+    <p class="hint">电脑 <span id="machine-name"></span></p>
+    <input id="project-name" placeholder="项目" maxlength="40">
+    <div class="side-actions">
+      <button id="save-identity" type="button">保存项目</button>
+    </div>
     <h2>命令行与快捷键</h2>
     <p class="hint">电脑是生产者，手机和网页是订阅端。分组的频道名就是推送频道，走现有 WebSocket 中继。不另开 MQTT，少一个常驻进程，按键也少一跳。快捷键要带 Alt。</p>
     <div id="preset-rows"></div>
@@ -158,14 +178,26 @@ PAGE = r"""<!DOCTYPE html>
 </dialog>
 <script src="/xterm.js"></script>
 <script src="/xterm-fit.js"></script>
+<script src="/xterm-unicode11.js"></script>
+<script src="/xterm-webgl.js"></script>
+<script src="/tab-themes.js"></script>
 <script>
 const params = new URLSearchParams(location.search);
-let token = params.get("token") || sessionStorage.getItem("sma-token") || localStorage.getItem("sma-token") || "";
-if (token) {
-  sessionStorage.setItem("sma-token", token);
-  localStorage.setItem("sma-token", token);
-}
 let relayCode = params.get("code") || "";
+function tokenKey(code) {
+  const value = code === undefined ? relayCode : code;
+  return value ? "sma-token:" + value : "sma-token";
+}
+const fragmentToken = new URLSearchParams(location.hash.slice(1)).get("token");
+if (fragmentToken || params.has("token")) {
+  const clean = new URL(location.href); clean.searchParams.delete("token"); clean.hash = "";
+  history.replaceState(null, "", clean.pathname + clean.search);
+}
+let token = fragmentToken || params.get("token") || sessionStorage.getItem(tokenKey()) || "";
+if (token) {
+  sessionStorage.setItem(tokenKey(), token);
+
+}
 const grid = document.getElementById("grid");
 const dock = document.getElementById("dock");
 const empty = document.getElementById("empty");
@@ -182,7 +214,11 @@ let presets = [
   {id: "codex", label: "codex", command: "codex", shortcut: "Ctrl+Alt+5"}
 ];
 let viewGroup = "";
-let viewChannel = relayCode ? "default" : "";
+let viewChannel = "";
+let machineName = "";
+let projectName = "默认";
+let listedProjects = [];
+let phoneToolsOpen = false;
 let activeId = "";
 let conn = "未连接";
 let resizeTimer = 0;
@@ -213,7 +249,31 @@ function loadRelayBook() {
 }
 let relayBook = loadRelayBook();
 let relayPick = localStorage.getItem("sma-relay-pick") || "";
-if (currentCode()) viewChannel = "default";
+if (params.get("direct") === "1") { relayCode = ""; relayPick = ""; }
+function fitCells(boxW, boxH, cellW, cellH, scrollBar) {
+  if (!(cellW > 0) || !(cellH > 0)) return null;
+  const cols = Math.floor((boxW - (scrollBar || 0)) / cellW);
+  const rows = Math.floor(boxH / cellH);
+  if (cols < 2 || rows < 2) return null;
+  return {cols: cols, rows: rows};
+}
+function shouldRefit(reason, prevBox, nextBox) {
+  if (reason === "scroll" || reason === "chrome") return false;
+  if (!nextBox || !(nextBox.w > 8) || !(nextBox.h > 8)) return false;
+  if (prevBox && prevBox.w === nextBox.w && prevBox.h === nextBox.h) return false;
+  return true;
+}
+function viewportReason(prev, next) {
+  if (!prev || !next || next.w !== prev.w) return "box";
+  return "chrome";
+}
+function toolbarHidden(width, open) {
+  return width <= 720 && !open;
+}
+window.__fitCells = fitCells;
+window.__shouldRefit = shouldRefit;
+window.__viewportReason = viewportReason;
+window.__toolbarHidden = toolbarHidden;
 function relayBase(url) {
   let text = (url || "").trim();
   if (!text) return "";
@@ -232,9 +292,9 @@ function currentCode() {
 function socketUrl() {
   const item = pickedRelay();
   const base = item ? relayBase(item.url) : "";
-  if (base) return base + "/ws?token=" + encodeURIComponent(token);
+  if (base) return base + "/ws";
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  return proto + "://" + location.host + "/ws?token=" + encodeURIComponent(token);
+  return proto + "://" + location.host + "/ws";
 }
 function rememberThisRelay() {
   if (!relayCode) return;
@@ -252,15 +312,18 @@ function showStatus(error) {
 }
 function layoutPane(pane) {
   const box = pane.place;
-  pane.card.classList.toggle("max", pane.maximized && !pane.minimized);
+  const fill = isPhone() && !pane.minimized && shown(pane);
+  pane.card.classList.toggle("max", (pane.maximized || fill) && !pane.minimized);
   pane.card.style.display = pane.minimized || !shown(pane) ? "none" : "flex";
   pane.card.style.zIndex = String(box.z);
-  if (pane.maximized && !pane.minimized) {
+  if ((pane.maximized || fill) && !pane.minimized) {
     pane.card.style.left = "0";
     pane.card.style.top = "0";
     pane.card.style.width = "100%";
     pane.card.style.height = "100%";
+    if (fill) pane.card.style.minWidth = "0";
   } else {
+    if (pane.card.style.minWidth === "0px") pane.card.style.minWidth = "";
     pane.card.style.left = box.x + "px";
     pane.card.style.top = box.y + "px";
     pane.card.style.width = box.w + "px";
@@ -295,23 +358,48 @@ function markActive() {
   const win = catalog.find((item) => item.id === (panes.get(activeId) || {}).windowId);
   if (box && document.activeElement !== box) box.value = win ? win.title : "";
 }
+function focusActiveTerm() {
+  const pane = panes.get(activeId);
+  if (!pane || !pane.term || pane.minimized) return false;
+  pane.term.focus();
+  return true;
+}
+function keepsKeys(el) {
+  if (!el || el === document.body || el === document.documentElement) return false;
+  if (el.closest && el.closest(".xterm, dialog, #gate")) return true;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!el.isContentEditable;
+}
+function keyToData(ev) {
+  if (ev.isComposing || ev.keyCode === 229 || ev.altKey || ev.metaKey) return "";
+  if (ev.ctrlKey) {
+    const key = (ev.key || "").toLowerCase();
+    if (key === "v" || key.length !== 1 || key < "a" || key > "z") return "";
+    return String.fromCharCode(key.charCodeAt(0) - 96);
+  }
+  const named = {
+    Enter: "\r", Backspace: "\x7f", Tab: "\t", Escape: "\x1b",
+    ArrowUp: "\x1b[A", ArrowDown: "\x1b[B", ArrowRight: "\x1b[C", ArrowLeft: "\x1b[D",
+    Delete: "\x1b[3~", Home: "\x1b[H", End: "\x1b[F", PageUp: "\x1b[5~", PageDown: "\x1b[6~"
+  };
+  if (named[ev.key]) return named[ev.key];
+  if (ev.key && ev.key.length === 1) return ev.key;
+  return "";
+}
 function activate(id) {
   const pane = panes.get(id);
   if (!pane) return;
-  if (pane.minimized) {
-    pane.minimized = false;
-    layoutPane(pane);
-  }
+  activeId = id;
+  if (pane.minimized) pane.minimized = false;
   zTop += 1;
   pane.place.z = zTop;
-  layoutPane(pane);
-  activeId = id;
+  for (const item of panes.values()) layoutPane(item);
   noteActivity(pane.sessionId || pane.windowId);
   markActive();
   if (pane.term) {
     pane.term.focus();
     window.__lastTerm = pane.term;
-    sendResize(pane);
+    sendResize(pane, "box");
     requestAnimationFrame(() => paintPane(pane));
   }
 }
@@ -324,16 +412,82 @@ function screenText() {
   return out;
 }
 window.__screen = screenText;
-function sendResize(pane) {
+function measureBox(pane) {
+  const card = pane && pane.card;
+  if (!card) return null;
+  const bar = card.querySelector(".bar");
+  const barH = bar ? bar.offsetHeight : 0;
+  const fill = !!(pane.maximized || (isPhone() && !pane.minimized));
+  if (fill && grid && grid.clientWidth > 8 && grid.clientHeight > barH + 8) {
+    return {w: grid.clientWidth, h: grid.clientHeight - barH};
+  }
+  return {w: card.clientWidth, h: Math.max(0, card.clientHeight - barH)};
+}
+function desiredSize(pane) {
+  const box = measureBox(pane);
+  const core = pane.term && pane.term._core;
+  const cell = core && core._renderService && core._renderService.dimensions.css.cell;
+  if (!box || !cell || !(cell.width > 0) || !(cell.height > 0)) return null;
+  const rawBar = core.viewport ? core.viewport.scrollBarWidth : 0;
+  const bar = rawBar > 0 && rawBar < 24 ? rawBar : 0;
+  return fitCells(box.w, box.h, cell.width, cell.height, bar);
+}
+function applyFit(pane) {
+  const box = measureBox(pane);
+  const core = pane.term._core;
+  const cell = core && core._renderService && core._renderService.dimensions.css.cell;
+  if (!box || !cell || !(cell.width > 0) || !(cell.height > 0)) {
+    pane.fit.fit();
+    return;
+  }
+  const rawBar = core.viewport ? core.viewport.scrollBarWidth : 0;
+  const bar = rawBar > 0 && rawBar < 24 ? rawBar : 0;
+  const decision = fitCells(box.w, box.h, cell.width, cell.height, bar);
+  if (!decision) return;
+  if (pane.term.cols !== decision.cols || pane.term.rows !== decision.rows) pane.term.resize(decision.cols, decision.rows);
+}
+function sendResize(pane, reason) {
   if (!pane || pane.minimized || !pane.term || !pane.fit || !pane.ws || pane.ws.readyState !== 1) return;
-  pane.fit.fit();
+  const next = measureBox(pane);
+  const force = reason === "force";
+  if (reason === "lock") {
+    if (!next || !(next.w > 8) || !(next.h > 8)) return;
+    const same = pane.fitted && pane.fitted.w === next.w && pane.fitted.h === next.h;
+    if (same && (pane.lockSends || 0) >= 2) return;
+    pane.lockSends = same ? (pane.lockSends || 0) + 1 : 1;
+  } else if (!force && !shouldRefit(reason || "box", pane.fitted, next)) {
+    const want = desiredSize(pane);
+    if (!want || (want.cols === pane.term.cols && want.rows === pane.term.rows)) return;
+  } else pane.lockSends = 0;
+  applyFit(pane);
   if (pane.term.cols < 2 || pane.term.rows < 2) return;
+  pane.fitted = next;
   pane.ws.send(packJson(5, {cols: pane.term.cols, rows: pane.term.rows}));
+}
+function shellDesktop() { return params.get("shell") === "desktop"; }
+function attachDesktopRenderer(term) {
+  if (!shellDesktop()) return;
+  try {
+    if (window.Unicode11Addon) {
+      term.loadAddon(new Unicode11Addon.Unicode11Addon());
+      term.unicode.activeVersion = "11";
+    }
+  } catch (err) {}
+  try {
+    if (window.WebglAddon) {
+      const addon = new WebglAddon.WebglAddon();
+      addon.onContextLoss(() => { try { addon.dispose(); } catch (e) {} });
+      term.loadAddon(addon);
+      term.refresh(0, Math.max(0, term.rows - 1));
+    }
+  } catch (err) {}
 }
 function bindTerm(pane, host) {
   const term = new Terminal({
-    fontFamily: "Consolas, monospace",
-    fontSize: 15,
+    allowProposedApi: shellDesktop(),
+    fontFamily: shellDesktop() ? '"Cascadia Mono", "Cascadia Code", Consolas, monospace' : "Consolas, monospace",
+    fontSize: shellDesktop() ? 14 : 15,
+    drawBoldTextInBrightColors: shellDesktop(),
     cursorBlink: true,
     scrollback: 3000,
     convertEol: true,
@@ -364,6 +518,7 @@ function bindTerm(pane, host) {
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(host);
+  attachDesktopRenderer(term);
   fit.fit();
   term.onData((data) => {
     if (activeId !== pane.key) return;
@@ -377,7 +532,6 @@ function bindTerm(pane, host) {
 }
 function paintPane(pane) {
   if (!pane.term || pane.minimized) return;
-  if (pane.fit) pane.fit.fit();
   pane.term.refresh(0, pane.term.rows - 1);
 }
 const PLAIN_TOKEN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|"[^"\n]*"|'[^'\n]*'|(?:错误|失败|异常|警告)|(?:Error|Exception|ERROR|FAIL|FAILED|Warning)\b|(?:[\w./\\-]+)\.(?:py|js|ts|tsx|css|json|md|exe|ps1)(?::\d+)?|\b[A-Za-z_][\w]*\(\)|OP_[A-Z0-9_]+|\b\d+(?:\.\d+)?(?:\s?(?:KiB|MiB|ms|字节))?|[\u2500-\u257F])/g;
@@ -448,8 +602,26 @@ function colorizeEcho(text) {
   }
   return out;
 }
+function armSizeLock(pane) {
+  if (!pane || pane._lockTimer) return;
+  setTimeout(() => sendResize(pane, "lock"), 120);
+  pane._lockTimer = setTimeout(() => {
+    pane._lockTimer = null;
+    sendResize(pane, "lock");
+  }, 700);
+}
+function noteTermOutput(pane, text) {
+  const now = Date.now();
+  const raw = typeof text === "string" ? text : "";
+  const alt = raw.indexOf("\x1b[?1049h") >= 0 || raw.indexOf("\x1b[?1047h") >= 0 || raw.indexOf("\x1b[?47h") >= 0;
+  const gap = now - (pane.lastOut || 0);
+  pane.lastOut = now;
+  if (alt || (raw.length > 2000 && gap > 600)) pane.lockSends = 0;
+  if (alt || gap > 600) armSizeLock(pane);
+}
 function writeTerm(pane, text, reset) {
   if (!pane.term) return;
+  noteTermOutput(pane, text);
   if (reset) pane.term.reset();
   pane.term.write(colorizeEcho(text), () => {
     if (pane._painted) return;
@@ -461,7 +633,10 @@ function writeTerm(pane, text, reset) {
 }
 function nextPlace() {
   const step = Math.max(0, panes.size - 1);
-  return {x: 28 + (step % 6) * 36, y: 28 + (step % 6) * 32, w: 680, h: 420, z: zTop};
+  const box = gridBox();
+  const x = Math.min((step % 6) * 36, box.w / 4);
+  const y = Math.min((step % 6) * 32, box.h / 4);
+  return {x, y, w: Math.max(1, box.w - x - 2), h: Math.max(1, box.h - y - 2), z: zTop};
 }
 function trackPointer(ev, move, done) {
   ev.preventDefault();
@@ -502,21 +677,28 @@ function bindFrame(pane) {
     card.append(grip);
   }
 }
+function restorePane(pane) {
+  pane.maximized = false;
+  const z = pane.place.z;
+  if (pane.beforeMax) pane.place = pane.beforeMax;
+  pane.place.z = z;
+  layoutPane(pane);
+  showMaxGlyph(pane);
+}
 function toggleMax(pane) {
-  activate(pane.key);
   if (pane.minimized) pane.minimized = false;
-  if (pane.maximized) {
-    pane.maximized = false;
-    const z = pane.place.z;
-    if (pane.beforeMax) pane.place = pane.beforeMax;
-    pane.place.z = z;
-  } else {
+  if (pane.maximized) restorePane(pane);
+  else {
+    for (const other of panes.values()) {
+      if (other !== pane && other.maximized) restorePane(other);
+    }
     pane.beforeMax = Object.assign({}, pane.place);
     pane.maximized = true;
+    layoutPane(pane);
+    showMaxGlyph(pane);
   }
-  layoutPane(pane);
-  sendResize(pane);
-  showMaxGlyph(pane);
+  activate(pane.key);
+  sendResize(pane, "force");
 }
 const CAPTION = {
   min: '<svg viewBox="0 0 12 12"><path d="M2 8.5h8" stroke="currentColor" stroke-width="1"/></svg>',
@@ -605,9 +787,10 @@ function beginResize(pane, ev, edge) {
     let y = origin.y;
     let w = origin.w;
     let h = origin.h;
-    if (edge.includes("e")) w = Math.max(280, origin.w + dx);
+    const minW = minPaneWidth(pane);
+    if (edge.includes("e")) w = Math.max(minW, origin.w + dx);
     if (edge.includes("s")) h = Math.max(160, origin.h + dy);
-    if (edge.includes("w")) { w = Math.max(280, origin.w - dx); x = origin.x + origin.w - w; }
+    if (edge.includes("w")) { w = Math.max(minW, origin.w - dx); x = origin.x + origin.w - w; }
     if (edge.includes("n")) { h = Math.max(160, origin.h - dy); y = Math.max(0, origin.y + origin.h - h); }
     pane.place.x = x;
     pane.place.y = y;
@@ -673,10 +856,12 @@ function dressCard(pane, screenText) {
       else { activeId = ""; markActive(); }
     } else renderDock();
   });
-  maxButton.addEventListener("click", (ev) => {
+  maxButton.addEventListener("pointerup", (ev) => {
+    if (ev.button !== 0) return;
     ev.stopPropagation();
     toggleMax(pane);
   });
+  maxButton.addEventListener("click", (ev) => ev.stopPropagation());
   return screen;
 }
 function ensurePane(win, session) {
@@ -685,6 +870,7 @@ function ensurePane(win, session) {
   if (known) {
     known.label = label;
     known.title.textContent = label;
+    TabThemes.apply(known.title.parentElement, win.tab_theme);
     known.windowId = win.id;
     renderDock();
     return;
@@ -693,6 +879,8 @@ function ensurePane(win, session) {
   panes.set(session.id, pane);
   const screen = dressCard(pane);
   const bar = pane.title.parentElement;
+  TabThemes.apply(bar, win.tab_theme);
+  bar.oncontextmenu = (event) => showTabMenu(event, win.id);
   const shutCli = captionButton("cli", "关 CLI");
   const shutWin = captionButton("close", "关窗口");
   bar.append(shutCli, shutWin);
@@ -794,6 +982,7 @@ function ensureBlank(win) {
   if (known) {
     known.label = label;
     known.title.textContent = label;
+    TabThemes.apply(known.title.parentElement, win.tab_theme);
     known.windowId = win.id;
     renderDock();
     return;
@@ -801,6 +990,8 @@ function ensureBlank(win) {
   const pane = {key: id, label, windowId: win.id, sessionId: "", ws: null, term: null, fit: null};
   panes.set(id, pane);
   dressCard(pane, "点「新窗口」打开终端。");
+  TabThemes.apply(pane.title.parentElement, win.tab_theme);
+  pane.title.parentElement.oncontextmenu = event => showTabMenu(event, win.id);
   pane.screen.addEventListener("mousedown", () => activate(id));
   const shutWin = captionButton("close", "关窗口");
   pane.title.parentElement.append(shutWin);
@@ -819,6 +1010,9 @@ function dropMissing(live) {
     panes.delete(id);
   }
   if (!panes.has(activeId)) activeId = panes.keys().next().value || "";
+  for (const item of panes.values()) layoutPane(item);
+  const current = panes.get(activeId);
+  if (current) sendResize(current, "box");
   empty.hidden = panes.size > 0;
   markActive();
 }
@@ -847,14 +1041,6 @@ function sendGroup(obj) {
 }
 function selectGroup(group) {
   viewGroup = group.id;
-  if (currentCode() && viewChannel !== group.channel) {
-    viewChannel = group.channel;
-    const frame = packJson(15, {action: "subscribe", channel: viewChannel});
-    if (control && control.readyState === 1) control.send(frame);
-    for (const pane of panes.values()) {
-      if (pane.ws && pane.ws.readyState === 1) pane.ws.send(frame);
-    }
-  }
   renderSide();
   for (const pane of panes.values()) layoutPane(pane);
   renderDock();
@@ -885,26 +1071,26 @@ function fillSelect(select, options, value, placeholder) {
   if ([...select.options].some((item) => item.value === current)) select.value = current;
 }
 function renderPresets() {
-  const project = document.getElementById("project");
   const shell = document.getElementById("shell");
-  const move = document.getElementById("move");
-  if (!project || !shell || !move) return;
-  const sig = groups.map((group) => group.id + group.name + group.channel).join("|")
-    + "#" + presets.map((item) => item.id + item.label + item.command + item.shortcut).join("|")
-    + "#" + viewGroup;
+  if (!shell) return;
+  const sig = presets.map((item) => item.id + item.label + item.command + item.shortcut).join("|");
   if (sig === barSig) return;
   barSig = sig;
   const shellValue = shell.value;
-  fillSelect(project, groups.map((group) => ({value: group.id, label: group.name + " · " + group.channel})), viewGroup);
   fillSelect(shell, presets.map((item) => ({
     value: item.command,
     label: item.shortcut ? item.label + "  " + item.shortcut : item.label
   })), shellValue);
-  fillSelect(move, groups.map((group) => ({value: group.id, label: group.name})), "", "选择 Project");
 }
 const activity = new Map();
 const folded = new Set();
-let sideClosed = localStorage.getItem("sma-side") === "1";
+const phoneMedia = window.matchMedia("(max-width: 720px)");
+function isPhone() { return phoneMedia.matches; }
+let sideStored = localStorage.getItem("sma-side");
+let sideClosed = sideStored === "1" || (sideStored === null && phoneMedia.matches);
+let deskToolsHidden = localStorage.getItem("sma-tools") === "1";
+let phoneToolsUntil = 0;
+let toolsTimer = 0;
 let sideSig = "";
 function noteActivity(id) {
   if (!id) return;
@@ -927,14 +1113,122 @@ function sessionsOf(group) {
     .map((item) => item.win);
 }
 function sideSignature() {
-  const fold = [...folded].sort().join(",");
-  const body = groups.map((group) => group.id + "=" + sessionsOf(group).map((win) => win.id).join(",")).join("|");
-  return fold + "#" + viewGroup + "#" + activeId + "#" + body;
+  const rooms = listedProjects.map((item) => item.project + "=" + item.rooms.map((room) => room.code + room.machine).join(",")).join("|");
+  const wins = catalog.map((win) => win.id + (win.title || "") + (win.tab_theme || "")).join(",");
+  return rooms + "#" + projectName + "#" + machineName + "#" + relayCode + "#" + activeId + "#" + wins;
 }
 function sessionLabel(win) {
   const session = (win.sessions || []).find((item) => item.id === win.focused) || (win.sessions || [])[0];
   if (!session) return win.title || "空会话";
   return (win.title || "会话") + " · " + session.shell;
+}
+function minPaneWidth(pane) {
+  const n = parseInt(pane.card && pane.card.style.minWidth, 10);
+  return n > 0 ? n : 280;
+}
+function arrangeWindows(mode) {
+  closeMenu();
+  const list = [...panes.values()].filter((pane) => shown(pane) && !pane.minimized && pane.place);
+  list.sort((a, b) => (a.place.z || 0) - (b.place.z || 0));
+  if (list.length < 2) {
+    showStatus("至少打开两个窗口再排列");
+    return;
+  }
+  const dw = grid.clientWidth;
+  const dh = grid.clientHeight;
+  if (dw < 40 || dh < 40) return;
+  const boxes = mode === "cascade" ? cascadeBoxes(list.length, dw, dh) : tileBoxes(list.length, mode, dw, dh);
+  list.forEach((pane, i) => {
+    const box = boxes[i];
+    pane.maximized = false;
+    pane.beforeMax = null;
+    zTop += 1;
+    pane.place.x = box.x;
+    pane.place.y = box.y;
+    pane.place.w = box.w;
+    pane.place.h = box.h;
+    pane.place.z = zTop;
+    pane.card.style.minWidth = Math.min(280, box.w) + "px";
+    showMaxGlyph(pane);
+    layoutPane(pane);
+  });
+  const active = panes.get(activeId);
+  if (active && list.includes(active)) {
+    zTop += 1;
+    active.place.z = zTop;
+    layoutPane(active);
+  }
+  requestAnimationFrame(() => {
+    for (const pane of list) {
+      sendResize(pane);
+      paintPane(pane);
+    }
+  });
+  showStatus();
+}
+function cascadeBoxes(n, dw, dh) {
+  const margin = 8;
+  const span = Math.max(1, n - 1);
+  const minW = Math.min(320, Math.max(160, dw - margin * 2 - 28));
+  const minH = Math.min(220, Math.max(120, dh - margin * 2 - 24));
+  const stepX = Math.min(28, Math.max(16, Math.floor((dw - margin * 2 - minW) / span)));
+  const stepY = Math.min(26, Math.max(16, Math.floor((dh - margin * 2 - minH) / span)));
+  let w = Math.min(Math.floor(dw * 0.74), dw - margin * 2 - stepX * span);
+  let h = Math.min(Math.floor(dh * 0.78), dh - margin * 2 - stepY * span);
+  w = Math.max(160, w);
+  h = Math.max(120, h);
+  const boxes = [];
+  for (let i = 0; i < n; i++) {
+    const x = margin + i * stepX;
+    const y = margin + i * stepY;
+    boxes.push({
+      x: x,
+      y: y,
+      w: Math.max(120, Math.min(w, dw - x - margin)),
+      h: Math.max(100, Math.min(h, dh - y - margin))
+    });
+  }
+  return boxes;
+}
+function tileBoxes(n, mode, dw, dh) {
+  const gap = 6;
+  let cols = Math.ceil(Math.sqrt(n));
+  let rows = Math.ceil(n / cols);
+  if (mode === "rows") { cols = 1; rows = n; }
+  else if (mode === "cols") { cols = n; rows = 1; }
+  const boxes = [];
+  for (let r = 0; r < rows; r++) {
+    const count = Math.min(cols, n - r * cols);
+    const cellW = Math.max(1, Math.floor((dw - gap * (count + 1)) / count));
+    const cellH = Math.max(1, Math.floor((dh - gap * (rows + 1)) / rows));
+    for (let c = 0; c < count; c++) {
+      boxes.push({x: gap + c * (cellW + gap), y: gap + r * (cellH + gap), w: cellW, h: cellH});
+    }
+  }
+  return boxes;
+}
+function arrangeItems() {
+  return [
+    {label: "层叠排列", keys: "Ctrl+Alt+L", run: () => arrangeWindows("cascade")},
+    {label: "横向平铺", keys: "Ctrl+Alt+H", run: () => arrangeWindows("rows")},
+    {label: "纵向平铺", keys: "Ctrl+Alt+V", run: () => arrangeWindows("cols")},
+    {label: "网格平铺", keys: "Ctrl+Alt+G", run: () => arrangeWindows("grid")}
+  ];
+}
+function menuFace(item) {
+  const button = document.createElement("button");
+  button.type = "button";
+  if (item.danger) button.className = "danger";
+  const name = document.createElement("span");
+  name.textContent = item.label;
+  button.append(name);
+  if (item.keys) {
+    const keys = document.createElement("span");
+    keys.className = "keys";
+    keys.textContent = item.keys;
+    button.append(keys);
+  }
+  return button;
 }
 function closeMenu() {
   const menu = document.getElementById("menu");
@@ -948,10 +1242,7 @@ function openMenu(x, y, items) {
   menu.id = "menu";
   menu.className = "menu";
   for (const item of items) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = item.label;
-    if (item.danger) button.className = "danger";
+    const button = menuFace(item);
     button.onpointerenter = () => {
       const old = document.getElementById("submenu");
       if (old) old.remove();
@@ -960,9 +1251,7 @@ function openMenu(x, y, items) {
       sub.id = "submenu";
       sub.className = "menu";
       for (const child of item.children) {
-        const choice = document.createElement("button");
-        choice.type = "button";
-        choice.textContent = child.label;
+        const choice = menuFace(child);
         choice.onclick = (ev) => { ev.stopPropagation(); closeMenu(); child.run(); };
         sub.append(choice);
       }
@@ -1012,9 +1301,16 @@ function projectItems(group) {
   if (group.id !== "default") items.push({label: "删除 Project", danger: true, run: () => sendGroup({action: "delete", id: group.id})});
   return items;
 }
+function paneForWindow(win) {
+  const session = (win.sessions || []).find((item) => item.id === win.focused) || (win.sessions || [])[0];
+  const id = session ? session.id : "blank:" + win.id;
+  return panes.get(id) || null;
+}
 function sessionItems(win) {
   const others = groups.filter((group) => group.id !== (win.group || "default"));
+  const pane = paneForWindow(win);
   const items = [
+    pane && pane.term ? {label: pane.maximized ? "还原" : "最大化", run: () => toggleMax(pane)} : null,
     {label: "修改名称", run: () => {
       const name = prompt("窗口名称", win.title || "");
       if (!name) return;
@@ -1030,7 +1326,20 @@ function sessionItems(win) {
       run: () => sendGroup({action: "move", window: win.id, group: group.id})
     }))});
   }
-  return items;
+  return items.filter(Boolean);
+}
+function showTabMenu(event, windowId) {
+  const win = catalog.find(item => item.id === windowId);
+  if (!win) return;
+  closeMenu();
+  TabThemes.open(event, {
+    theme: win.tab_theme,
+    rename: () => {
+      const name = prompt("窗口名称", win.title || "");
+      if (name && name.trim()) sendGroup({action: "title", window: win.id, title: name});
+    },
+    select: theme => sendGroup({action: "tab-theme", window: win.id, theme})
+  });
 }
 function rootItems() {
   return [
@@ -1064,70 +1373,221 @@ function applySide() {
   const side = document.getElementById("side");
   const button = document.getElementById("side-toggle");
   if (!side || !button) return;
+  const phone = isPhone();
   side.classList.toggle("collapsed", sideClosed);
-  button.textContent = sideClosed ? "+" : "-";
-  button.title = sideClosed ? "展开" : "收起";
+  button.textContent = sideClosed ? (phone ? "侧栏" : "+") : (phone ? "收起" : "-");
+  button.title = sideClosed ? "展开侧栏" : "收起侧栏";
+  button.setAttribute("aria-expanded", sideClosed ? "false" : "true");
+}
+function toolsHiddenNow() {
+  if (isPhone()) return toolbarHidden(window.innerWidth, phoneToolsOpen);
+  return deskToolsHidden;
+}
+function toolsBusy() {
+  const el = document.activeElement;
+  if (document.getElementById("menu")) return true;
+  return !!(el && el.closest && el.closest("#tools"));
+}
+function placeToolsToggle() {
+  const button = document.getElementById("tools-toggle");
+  const side = document.getElementById("side");
+  const tools = document.getElementById("tools");
+  if (!button || !side) return;
+  const hidden = toolsHiddenNow();
+  button.textContent = hidden ? "展开菜单" : "收起菜单";
+  button.title = hidden ? "展开顶部菜单" : "收起顶部菜单";
+  button.setAttribute("aria-expanded", hidden ? "false" : "true");
+  const rect = side.getBoundingClientRect();
+  const phone = isPhone();
+  let top = 8;
+  let left = 8;
+  if (!phone && !hidden && tools) {
+    const bar = tools.getBoundingClientRect();
+    top = Math.max(4, bar.top + (bar.height - button.offsetHeight) / 2);
+  }
+  if (phone || hidden) {
+    top = Math.max(8, rect.top + 8);
+    left = Math.max(8, rect.right + 8);
+  }
+  const reserve = button.offsetWidth + 16;
+  if (left > window.innerWidth - reserve) left = Math.max(8, window.innerWidth - reserve);
+  button.style.top = top + "px";
+  button.style.left = left + "px";
+  if (tools) tools.style.paddingLeft = hidden ? "" : (left + button.offsetWidth + 8) + "px";
+}
+function applyChrome() {
+  const hiding = toolsHiddenNow();
+  const ae = document.activeElement;
+  const inTools = !!(ae && ae.closest && ae.closest("#tools"));
+  if (hiding && inTools) ae.blur();
+  document.body.classList.toggle("phone", isPhone());
+  document.body.classList.toggle("tools-hidden", hiding);
+  applySide();
+  placeToolsToggle();
+  if (hiding && inTools) focusActiveTerm();
+}
+function refitPanes(reason) {
+  if (isPhone() && window.visualViewport) {
+    document.body.style.height = window.visualViewport.height + "px";
+    window.scrollTo(0, 0);
+  } else document.body.style.height = "";
+  const next = gridBox();
+  if (!isPhone() && lastViewport && lastViewport.w > 0 && lastViewport.h > 0) {
+    const scaleBox = box => {
+      if (!box) return;
+      box.x *= next.w / lastViewport.w;
+      box.y *= next.h / lastViewport.h;
+      box.w = Math.max(1, (box.w + 2) * next.w / lastViewport.w - 2);
+      box.h = Math.max(1, (box.h + 2) * next.h / lastViewport.h - 2);
+    };
+    for (const pane of panes.values()) {
+      scaleBox(pane.place);
+      if (pane.beforeMax !== pane.place) scaleBox(pane.beforeMax);
+    }
+  }
+  if (!isPhone()) lastViewport = next;
+  for (const pane of panes.values()) layoutPane(pane);
+  if (reason === "scroll" || reason === "chrome") return;
+  for (const pane of panes.values()) sendResize(pane, reason || "box");
+}
+function showTools() {
+  if (isPhone()) phoneToolsOpen = true;
+  else {
+    deskToolsHidden = false;
+    localStorage.setItem("sma-tools", "0");
+  }
+  applyChrome();
+  refitPanes(isPhone() ? "chrome" : "box");
+}
+function hideTools() {
+  if (isPhone()) phoneToolsOpen = false;
+  else {
+    deskToolsHidden = true;
+    localStorage.setItem("sma-tools", "1");
+  }
+  applyChrome();
+  refitPanes(isPhone() ? "chrome" : "box");
+}
+function bumpTools() {}
+function sectionLabel(text) {
+  const head = document.createElement("div");
+  head.className = "nav-label";
+  const title = document.createElement("span");
+  title.textContent = text;
+  head.append(title);
+  return head;
+}
+function currentProjects() {
+  if (listedProjects.length) return listedProjects;
+  return [{project: projectName || "默认", rooms: [{code: currentCode(), machine: machineName || "这台电脑"}]}];
+}
+function roomIsCurrent(room) {
+  if (listedProjects.length) return !!room.code && room.code === currentCode();
+  return true;
+}
+function enterRoom(code) {
+  if (!code) return;
+  if (code === relayCode && control && control.readyState === 1) return;
+  relayCode = code;
+  if (control) {
+    const old = control;
+    control = null;
+    try { old.close(); } catch (err) {}
+  }
+  for (const pane of [...panes.values()]) {
+    try { if (pane.ws) pane.ws.close(); } catch (err) {}
+    if (pane.card) pane.card.remove();
+  }
+  panes.clear();
+  catalog = [];
+  activeId = "";
+  const found = listedProjects.flatMap((item) => item.rooms.map((room) => Object.assign({project: item.project}, room))).find((room) => room.code === code);
+  if (found) {
+    machineName = found.machine || machineName;
+    projectName = found.project || projectName;
+  }
+  token = sessionStorage.getItem(tokenKey(code)) || "";
+  renderSide();
+  if (!token) {
+    document.getElementById("gate").classList.remove("hidden");
+    const box = document.getElementById("auth-token");
+    if (box) box.value = "";
+    document.getElementById("gate-msg").textContent = "这台电脑要自己的 Token";
+    return;
+  }
+  document.getElementById("gate").classList.add("hidden");
+  connectControl();
+}
+function renderPicker() {
+  if (!empty) return;
+  if (currentCode() || !listedProjects.length) {
+    empty.textContent = "用顶部的命令打开会话。左侧是项目、电脑和窗口。";
+    empty.style.pointerEvents = "none";
+    return;
+  }
+  empty.style.pointerEvents = "auto";
+  empty.replaceChildren();
+  for (const project of listedProjects) {
+    const heading = document.createElement("div");
+    heading.textContent = "项目 " + (project.project || "默认");
+    empty.append(heading);
+    for (const room of project.rooms) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = room.machine || "电脑";
+      button.onclick = () => enterRoom(room.code);
+      empty.append(button);
+    }
+  }
 }
 function renderSide() {
   const root = document.getElementById("groups");
   if (!root || document.getElementById("menu")) return;
-  if (!viewGroup || !groups.some((item) => item.id === viewGroup)) viewGroup = (groups[0] && groups[0].id) || "";
   renderPresets();
   sideSig = sideSignature();
   applySide();
   root.replaceChildren();
-  const head = document.createElement("div");
-  head.className = "nav-label";
-  const title = document.createElement("span");
-  title.textContent = "Projects";
-  head.append(title, moreButton(rootItems()));
-  head.oncontextmenu = (ev) => { ev.preventDefault(); openMenu(ev.clientX, ev.clientY, rootItems()); };
-  root.append(head);
-  for (const group of groups) {
-    const open = !folded.has(group.id);
-    const row = document.createElement("div");
-    row.className = "row" + (group.id === viewGroup ? " on" : "");
-    const name = document.createElement("button");
-    name.type = "button";
-    name.className = "name";
-    name.textContent = group.name;
-    name.onclick = () => {
-      folded.delete(group.id);
-      selectGroup(group);
-    };
-    const items = projectItems(group);
-    row.append(treeMark(open, () => {
-      if (open) folded.add(group.id);
-      else folded.delete(group.id);
-    }), name, moreButton(items));
-    row.oncontextmenu = (ev) => { ev.preventDefault(); openMenu(ev.clientX, ev.clientY, items); };
-    root.append(row);
-    if (!open) continue;
-    const apps = [];
-    for (const win of sessionsOf(group)) {
-      const app = appOf(win);
-      let bucket = apps.find((item) => item.app === app);
-      if (!bucket) {
-        bucket = {app, wins: []};
-        apps.push(bucket);
-      }
-      bucket.wins.push(win);
+  for (const project of currentProjects()) {
+    root.append(sectionLabel("项目"));
+    const prow = document.createElement("div");
+    const mine = project.rooms.some(roomIsCurrent);
+    prow.className = "row" + (mine ? " on" : "");
+    const pname = document.createElement("button");
+    pname.type = "button";
+    pname.className = "name";
+    pname.textContent = project.project || "默认";
+    if (mine) {
+      prow.title = "修改项目名称";
+      pname.onclick = () => {
+        const next = prompt("项目名称", project.project || "默认");
+        if (!next || !next.trim()) return;
+        sendGroup({action: "identity", project: next.trim()});
+      };
     }
-    for (const bucket of apps) {
-      const appKey = group.id + "/" + bucket.app;
-      const appOpen = !folded.has(appKey);
-      const appRow = document.createElement("div");
-      appRow.className = "row app";
-      const appName = document.createElement("span");
-      appName.className = "name";
-      appName.textContent = bucket.app;
-      appRow.append(treeMark(appOpen, () => {
-        if (appOpen) folded.add(appKey);
-        else folded.delete(appKey);
-      }), appName);
-      root.append(appRow);
-      if (!appOpen) continue;
-      for (const win of bucket.wins) {
+    prow.append(pname);
+    root.append(prow);
+    root.append(sectionLabel("电脑"));
+    for (const room of project.rooms) {
+      const row = document.createElement("div");
+      const here = roomIsCurrent(room);
+      row.className = "row app" + (here ? " on" : "");
+      const name = document.createElement("button");
+      name.type = "button";
+      name.className = "name";
+      name.textContent = room.machine || "电脑";
+      name.onclick = () => { if (room.code) enterRoom(room.code); };
+      row.append(name);
+      root.append(row);
+      if (!here) continue;
+      root.append(sectionLabel("窗口"));
+      if (!catalog.length) {
+        const none = document.createElement("div");
+        none.className = "row child";
+        none.textContent = "还没有窗口";
+        root.append(none);
+        continue;
+      }
+      for (const win of catalog) {
         const session = (win.sessions || []).find((item) => item.id === win.focused) || (win.sessions || [])[0];
         const child = document.createElement("div");
         const current = session ? session.id : "blank:" + win.id;
@@ -1136,18 +1596,16 @@ function renderSide() {
         label.type = "button";
         label.className = "name";
         label.textContent = sessionLabel(win);
-        label.onclick = () => {
-          folded.delete(group.id);
-          folded.delete(appKey);
-          focusWindow(win);
-        };
+        label.onclick = () => focusWindow(win);
         const menuItems = sessionItems(win);
         child.append(label, moreButton(menuItems));
-        child.oncontextmenu = (ev) => { ev.preventDefault(); openMenu(ev.clientX, ev.clientY, menuItems); };
+        TabThemes.apply(child, win.tab_theme);
+        child.oncontextmenu = (ev) => showTabMenu(ev, win.id);
         root.append(child);
       }
     }
   }
+  renderPicker();
 }
 function presetRow(preset) {
   const row = document.createElement("div");
@@ -1180,6 +1638,10 @@ function openSettings() {
   const box = document.getElementById("preset-rows");
   box.replaceChildren();
   for (const preset of presets) box.append(presetRow(preset));
+  const machineBox = document.getElementById("machine-name");
+  const projectBox = document.getElementById("project-name");
+  if (machineBox) machineBox.textContent = machineName || "电脑";
+  if (projectBox) projectBox.value = projectName || "默认";
   document.getElementById("settings").showModal();
 }
 function chooseVisibleGroup() {
@@ -1190,15 +1652,12 @@ function chooseVisibleGroup() {
   const group = groups.find((item) => item.id === (hit.group || "default"));
   if (!group) return;
   viewGroup = group.id;
-  if (currentCode() && viewChannel !== group.channel) {
-    viewChannel = group.channel;
-    const frame = packJson(15, {action: "subscribe", channel: viewChannel});
-    if (control && control.readyState === 1) control.send(frame);
-  }
 }
 function sync(info) {
   if (info.windows) catalog = info.windows;
   if (info.groups) groups = info.groups;
+  if (info.machine) machineName = info.machine;
+  if (info.project) projectName = info.project;
   if (info.presets && info.presets.length) presets = info.presets;
   chooseVisibleGroup();
   if (info.service) {
@@ -1236,31 +1695,18 @@ setInterval(() => {
   }
 }, 1000);
 async function discoverCode() {
-  if (currentCode() || pickedRelay()) return true;
-  try {
-    const info = await (await fetch("/health")).json();
-    if (info.role !== "relay") return true;
-    const codes = info.codes || [];
-    if (codes.length === 1) {
-      relayCode = codes[0];
-      if (!viewChannel) viewChannel = "default";
-      rememberThisRelay();
-      renderRelaySelect();
-      return true;
-    }
-    conn = codes.length ? "有多台中继，地址要带 code" : "中继还没有办公室主机";
-    showStatus();
-    return false;
-  } catch (err) {
-    return true;
-  }
+  // Known room credentials come from the saved connection or explicit URL code.
+  return true;
 }
 async function connectControl() {
   if (!token) return;
+  if (control && (control.readyState === 0 || control.readyState === 1)) return;
   if (!(await discoverCode())) {
     setTimeout(connectControl, 2000);
     return;
   }
+  if (!token) return;
+  if (control && (control.readyState === 0 || control.readyState === 1)) return;
   control = new WebSocket(socketUrl());
   control.binaryType = "arraybuffer";
   control.onopen = () => {
@@ -1302,30 +1748,12 @@ function openShell(windowId, command) {
     return;
   }
   const picked = document.getElementById("shell");
-  const project = document.getElementById("project");
   const shell = command || (picked && picked.value) || (presets[0] && presets[0].command) || "powershell";
-  const group = (project && project.value) || viewGroup || "default";
-  viewGroup = group;
+  const group = viewGroup || "default";
   control.send(packJson(6, {window: windowId || "", shell, group}));
   status.textContent = "正在打开终端…";
 }
-document.getElementById("project").onchange = () => {
-  const group = groups.find((item) => item.id === document.getElementById("project").value);
-  if (group) selectGroup(group);
-};
-document.getElementById("move").onchange = () => {
-  const move = document.getElementById("move");
-  const pane = panes.get(activeId);
-  if (!pane || !move.value) return;
-  sendGroup({action: "move", window: pane.windowId, group: move.value});
-  move.value = "";
-};
 document.getElementById("new-window").onclick = () => openShell("");
-document.getElementById("new-project").onclick = () => {
-  const name = prompt("Project 名称", "");
-  if (!name) return;
-  sendGroup({action: "create", name, channel: name});
-};
 document.getElementById("open-settings").onclick = () => openSettings();
 function relayRow(item) {
   const row = document.createElement("div");
@@ -1334,7 +1762,7 @@ function relayRow(item) {
   name.placeholder = "名称";
   name.value = item.name || "";
   const url = document.createElement("input");
-  url.placeholder = "ws://中继:6770";
+  url.placeholder = "ws://117.50.48.22:8817/ws";
   url.value = item.url || "";
   const code = document.createElement("input");
   code.placeholder = "code";
@@ -1377,7 +1805,7 @@ function reconnectSockets() {
 document.getElementById("relay").onchange = () => {
   relayPick = document.getElementById("relay").value;
   localStorage.setItem("sma-relay-pick", relayPick);
-  viewChannel = currentCode() ? "default" : "";
+  viewChannel = "";
   document.getElementById("relay").dataset.sig = "";
   reconnectSockets();
 };
@@ -1423,9 +1851,14 @@ renderRelaySelect();
 function enterWith(value) {
   token = (value || "").trim();
   if (!token) return;
-  sessionStorage.setItem("sma-token", token);
-  localStorage.setItem("sma-token", token);
+  sessionStorage.setItem(tokenKey(), token);
+
   document.getElementById("gate").classList.add("hidden");
+  if (control) {
+    const old = control;
+    control = null;
+    try { old.close(); } catch (err) {}
+  }
   connectControl();
 }
 async function authCall(op) {
@@ -1452,22 +1885,24 @@ async function authCall(op) {
   };
   ws.onclose = () => {};
 }
-async function fillDefaultToken() {
-  try {
-    const info = await (await fetch("/health")).json();
-    const box = document.getElementById("auth-token");
-    if (info.default_token && box && !box.value) {
-      box.value = info.default_token;
-      document.getElementById("gate-msg").textContent = "本机默认 Token 已填上。也可以用邮箱注册，登录后得到自己的 Token。";
-    }
-  } catch (err) {}
-}
 document.getElementById("do-login").onclick = () => authCall("login");
 document.getElementById("do-register").onclick = () => authCall("register");
 document.getElementById("do-token").onclick = () => enterWith(document.getElementById("auth-token").value);
 document.getElementById("copy-token").onclick = async () => {
   try { await navigator.clipboard.writeText(token); conn = "Token 已复制"; showStatus(); }
   catch (err) { conn = "复制失败"; showStatus(); }
+};
+document.getElementById("arrange").addEventListener("pointerdown", (ev) => ev.stopPropagation());
+document.getElementById("arrange").onclick = (ev) => {
+  ev.stopPropagation();
+  const open = document.getElementById("menu");
+  const same = open && open.dataset.kind === "arrange";
+  closeMenu();
+  if (same) return;
+  const rect = ev.currentTarget.getBoundingClientRect();
+  openMenu(rect.left, rect.bottom + 4, arrangeItems());
+  const menu = document.getElementById("menu");
+  if (menu) menu.dataset.kind = "arrange";
 };
 document.getElementById("close-window").onclick = () => {
   const pane = panes.get(activeId);
@@ -1485,6 +1920,10 @@ document.addEventListener("pointerdown", (ev) => {
 document.getElementById("add-preset").onclick = () => {
   document.getElementById("preset-rows").append(presetRow({label: "", command: "", shortcut: ""}));
 };
+document.getElementById("save-identity").onclick = () => {
+  const project = document.getElementById("project-name").value.trim();
+  sendGroup({action: "identity", project});
+};
 document.getElementById("save-presets").onclick = () => {
   const items = [];
   for (const row of document.querySelectorAll("#preset-rows .preset")) {
@@ -1499,6 +1938,19 @@ document.getElementById("save-presets").onclick = () => {
   document.getElementById("settings").close();
 };
 window.addEventListener("keydown", (ev) => {
+  if (ev.repeat) return;
+  const el = ev.target;
+  if (el && el.closest && el.closest("input, select, dialog") && !el.closest(".xterm")) return;
+  if (!ev.ctrlKey || !ev.altKey || ev.shiftKey || ev.metaKey) return;
+  const mode = {l: "cascade", h: "rows", v: "cols", g: "grid"}[(ev.key || "").toLowerCase()];
+  if (!mode) return;
+  const spec = shortcutOf(ev).toLowerCase();
+  if (presets.some((item) => (item.shortcut || "").toLowerCase() === spec)) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  arrangeWindows(mode);
+}, true);
+window.addEventListener("keydown", (ev) => {
   if (ev.target.closest && ev.target.closest("#settings")) return;
   if (!(ev.altKey || ev.metaKey)) return;
   const spec = shortcutOf(ev).toLowerCase();
@@ -1507,28 +1959,113 @@ window.addEventListener("keydown", (ev) => {
   ev.preventDefault();
   openShell("", preset.command);
 });
-applySide();
+applyChrome();
 document.getElementById("side-toggle").onclick = () => {
   sideClosed = !sideClosed;
   localStorage.setItem("sma-side", sideClosed ? "1" : "0");
-  applySide();
-  for (const pane of panes.values()) {
-    layoutPane(pane);
-    sendResize(pane);
-  }
+  applyChrome();
+  refitPanes(isPhone() ? "chrome" : "box");
 };
+document.getElementById("tools-toggle").onclick = () => {
+  if (toolsHiddenNow()) showTools();
+  else hideTools();
+};
+const toolsBar = document.getElementById("tools");
+toolsBar.addEventListener("pointerdown", bumpTools);
+toolsBar.addEventListener("focusin", bumpTools);
+toolsBar.addEventListener("input", bumpTools);
+toolsBar.addEventListener("change", bumpTools);
+document.addEventListener("pointerdown", (ev) => {
+  if (ev.pointerType !== "mouse" || ev.button !== 0) return;
+  const button = ev.target.closest && ev.target.closest("button");
+  if (!button || button.closest(".xterm, .bar, #tools, #tools-toggle, #side, #dock, .menu, dialog, #gate")) return;
+  ev.preventDefault();
+}, true);
+document.addEventListener("pointerup", (ev) => {
+  const button = ev.target.closest && ev.target.closest("button");
+  if (!button || button.closest(".xterm, dialog")) return;
+  requestAnimationFrame(() => {
+    if (!keepsKeys(document.activeElement)) focusActiveTerm();
+  });
+});
+window.addEventListener("keydown", (ev) => {
+  if (ev.defaultPrevented || keepsKeys(ev.target)) return;
+  if (ev.isComposing || ev.keyCode === 229) {
+    focusActiveTerm();
+    return;
+  }
+  const data = keyToData(ev);
+  if (!data) return;
+  const pane = panes.get(activeId);
+  if (!pane || !pane.term || pane.minimized) return;
+  pane.term.focus();
+  pane.term.input(data, true);
+  ev.preventDefault();
+});
+grid.addEventListener("pointerdown", (ev) => {
+  if (!ev.target.closest(".card, button, input, select, textarea")) {
+    ev.preventDefault();
+    focusActiveTerm();
+  }
+  if (!isPhone()) return;
+  const hideBar = !toolsHiddenNow();
+  const hideSide = !sideClosed;
+  if (!hideBar && !hideSide) return;
+  if (hideBar) phoneToolsOpen = false;
+  if (hideSide) {
+    sideClosed = true;
+    localStorage.setItem("sma-side", "1");
+  }
+  clearTimeout(toolsTimer);
+  applyChrome();
+  refitPanes("chrome");
+});
+let edgeSwipe = null;
+window.addEventListener("touchstart", (ev) => {
+  if (!isPhone() || !ev.touches || !ev.touches.length) return;
+  const touch = ev.touches[0];
+  if (touch.clientY > 28) { edgeSwipe = null; return; }
+  edgeSwipe = touch.clientY;
+}, {passive: true});
+window.addEventListener("touchend", (ev) => {
+  if (edgeSwipe === null || !ev.changedTouches || !ev.changedTouches.length) return;
+  const endY = ev.changedTouches[0].clientY;
+  if (endY - edgeSwipe > 24) showTools();
+  edgeSwipe = null;
+}, {passive: true});
+if (phoneMedia.addEventListener) phoneMedia.addEventListener("change", () => { applyChrome(); refitPanes("box"); });
+else if (phoneMedia.addListener) phoneMedia.addListener(() => { applyChrome(); refitPanes("box"); });
+if (window.visualViewport) {
+  visualViewport.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { applyChrome(); refitPanes("box"); }, 150);
+  });
+  visualViewport.addEventListener("scroll", () => { if (isPhone()) window.scrollTo(0, 0); });
+}
 renderSide();
 if (token) document.getElementById("gate").classList.add("hidden");
-else fillDefaultToken();
+
+function gridBox() {
+  if (!grid) return {w: window.innerWidth, h: window.innerHeight};
+  return {w: grid.clientWidth, h: grid.clientHeight};
+}
+let lastViewport = gridBox();
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
-    for (const pane of panes.values()) {
-      layoutPane(pane);
-      sendResize(pane);
-    }
+    const next = gridBox();
+    let reason = "chrome";
+    if (!lastViewport || next.w !== lastViewport.w || next.h !== lastViewport.h) reason = "box";
+    applyChrome();
+    refitPanes(reason);
   }, 150);
 });
+// Sidebar, toolbar and host-window changes can resize the grid without a window event.
+const gridObserver = new ResizeObserver(() => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => refitPanes("box"), 50);
+});
+gridObserver.observe(grid);
 if (token) connectControl();
 </script>
 </body>
@@ -1536,10 +2073,29 @@ if (token) connectControl();
 """
 
 STATIC = {
+    "/tab-themes.js": ("tab-themes.js", "text/javascript; charset=utf-8"),
+    "/tab-themes.css": ("tab-themes.css", "text/css; charset=utf-8"),
+    "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),
+    "/workspace.css": ("workspace.css", "text/css; charset=utf-8"),
+    "/terminal-client.js": ("terminal-client.js", "text/javascript; charset=utf-8"),
     "/xterm.js": ("xterm.js", "text/javascript; charset=utf-8"),
     "/xterm.css": ("xterm.css", "text/css; charset=utf-8"),
     "/xterm-fit.js": ("xterm-fit.js", "text/javascript; charset=utf-8"),
+    "/xterm-webgl.js": ("xterm-webgl.js", "text/javascript; charset=utf-8"),
+    "/xterm-unicode11.js": ("xterm-unicode11.js", "text/javascript; charset=utf-8"),
 }
+
+
+def page_content(path: str):
+    if path in {"/", "/index.html", "/legacy", "/legacy/"}:
+        return PAGE, "text/html; charset=utf-8"
+    if path in {"/workspace", "/workspace/"}:
+        from .workspace import PAGE as workspace_page
+        return workspace_page, "text/html; charset=utf-8"
+    if path in STATIC:
+        name, content_type = STATIC[path]
+        return static_text(name), content_type
+    return None
 
 
 def static_text(name: str) -> str:

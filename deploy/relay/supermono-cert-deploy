@@ -1,0 +1,62 @@
+#!/bin/sh
+# Certbot deploy hook. Never print or copy private key material into project artifacts.
+set -eu
+
+lineage=${RENEWED_LINEAGE:?Certbot must provide RENEWED_LINEAGE}
+case "$lineage" in
+    /etc/letsencrypt/live/supermono-relay-ip) ;;
+    *) exit 0 ;;
+esac
+
+openssl x509 -in "$lineage/cert.pem" -noout -checkip 117.50.48.22 >/dev/null
+openssl x509 -in "$lineage/cert.pem" -noout -checkend 172800 >/dev/null
+task_dir=$(mktemp -d)
+target=/etc/supermono-relay/tls
+stage=''
+old_current=''
+switched=0
+published=0
+finish() {
+    result=$?
+    trap - EXIT HUP INT TERM
+    if test "$switched" = 1 && test "$published" != 1; then
+        if test -n "$old_current"; then
+            ln -s "$old_current" "$target/rollback.$$"
+            mv -Tf "$target/rollback.$$" "$target/current"
+            caddy reload --config /etc/caddy/Caddyfile --force || printf '%s\n' 'Certificate rollback restored; Caddy reload needs operator attention' >&2
+        else
+            rm -f "$target/current"
+        fi
+    fi
+    if test "$published" != 1 && test -n "$stage"; then
+        rm -f "$stage/fullchain.pem" "$stage/privkey.pem"
+        rmdir "$stage"
+    fi
+    rm -f "$task_dir/cert.pem" "$task_dir/cert.der" "$task_dir/key.der"
+    rmdir "$task_dir"
+    exit "$result"
+}
+trap finish EXIT
+trap 'exit 1' HUP INT TERM
+openssl x509 -in "$lineage/cert.pem" -pubkey -noout > "$task_dir/cert.pem"
+openssl pkey -pubin -in "$task_dir/cert.pem" -outform DER -out "$task_dir/cert.der"
+openssl pkey -in "$lineage/privkey.pem" -pubout -outform DER -out "$task_dir/key.der"
+cmp -s "$task_dir/cert.der" "$task_dir/key.der"
+
+install -d -o root -g caddy -m 0750 "$target" "$target/versions"
+if test -e "$target/current" && ! test -L "$target/current"; then
+    printf '%s\n' 'Refusing to replace a non-symlink certificate current path' >&2
+    exit 1
+fi
+old_current=$(readlink "$target/current" 2>/dev/null || true)
+stage=$(mktemp -d "$target/versions/release.XXXXXX")
+chown root:caddy "$stage"
+chmod 0750 "$stage"
+install -o root -g caddy -m 0640 "$lineage/fullchain.pem" "$stage/fullchain.pem"
+install -o root -g caddy -m 0640 "$lineage/privkey.pem" "$stage/privkey.pem"
+ln -s "versions/$(basename "$stage")" "$target/current.new.$$"
+mv -Tf "$target/current.new.$$" "$target/current"
+switched=1
+caddy validate --config /etc/caddy/Caddyfile
+caddy reload --config /etc/caddy/Caddyfile --force
+published=1

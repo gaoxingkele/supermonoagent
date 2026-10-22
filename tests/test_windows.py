@@ -91,27 +91,39 @@ class WindowForwardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bytes(left.pty.written), b"only-a")
         self.assertEqual(bytes(right.pty.written), b"")
 
-    async def test_relay_channel_is_one_group(self):
-        ops = self.hub.add_group("运维", "ops")
-        first = self.hub.open_window("一", ops.id)
-        second = self.hub.open_window("二", "default")
-        left = self.hub.open_cli(first.id, "powershell")
-        right = self.hub.open_cli(second.id, "cmd")
-        queue_r = asyncio.Queue()
-        client_r = self.hub.attach(queue_r, key="relay-9")
-        self.hub.select(client_r, first.id)
-        self.hub.subscribe(client_r, "ops")
-        await self._drain(queue_r)
-        left.pty.emit(b"from-ops")
-        right.pty.emit(b"from-def")
-        got = await self._collect(queue_r)
-        self.assertIn(left.id.encode() + b"\0from-ops", got)
-        self.assertNotIn(b"from-def", got)
-        self.hub.move_window(second.id, ops.id)
-        await self._drain(queue_r)
-        right.pty.emit(b"moved-in")
-        got = await self._collect(queue_r)
-        self.assertIn(b"moved-in", got)
+    async def test_window_stays_on_its_computer_inside_a_project(self):
+        office = self.hub
+        office.set_identity("OFFICE", "施工")
+        window = office.open_window("一")
+        left = office.open_cli(window.id, "powershell")
+        office.set_identity("OFFICE", "施工")
+        self.assertEqual(office.project, "施工")
+        self.assertIn(window.id, office.windows)
+
+        field_ptys = []
+
+        def factory(shell, cwd):
+            pty = FakePty()
+            field_ptys.append(pty)
+            return pty
+
+        field = Hub(pty_factory=factory)
+        field.attach_loop(asyncio.get_running_loop())
+        field.set_identity("FIELD", "施工")
+        other = field.open_window("二")
+        right = field.open_cli(other.id, "cmd")
+        self.assertNotIn(window.id, field.windows)
+        self.assertNotIn(other.id, office.windows)
+        queue_office = asyncio.Queue()
+        client = office.attach(queue_office, key="relay-office")
+        office.select(client, window.id)
+        await self._drain(queue_office)
+        left.pty.emit(b"from-office")
+        right.pty.emit(b"from-field")
+        got = await self._collect(queue_office)
+        self.assertIn(b"from-office", got)
+        self.assertNotIn(b"from-field", got)
+        field.close_window(other.id)
 
     async def test_other_token_cannot_see_windows(self):
         self.hub.default_owner = "owner"

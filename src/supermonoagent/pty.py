@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import os
 import shlex
 import shutil
@@ -14,6 +15,58 @@ class PtyClosed(Exception):
     pass
 
 
+class ConptyInputFilter:
+    """ConPTY drops paste markers; remove them before their partial forms reach it."""
+    START = b"\x1b[200~"
+    END = b"\x1b[201~"
+
+    def __init__(self) -> None:
+        self._pending = b""
+        self._paste: bytearray | None = None
+
+    def feed(self, data: bytes) -> bytes:
+        data = self._pending + bytes(data)
+        self._pending = b""
+        output = bytearray()
+        position = 0
+        while position < len(data):
+            starts = [index for marker in (self.START, self.END) if (index := data.find(marker, position)) >= 0]
+            if not starts:
+                hold = self._partial_suffix(data[position:])
+                end = len(data) - hold
+                (output if self._paste is None else self._paste).extend(data[position:end])
+                self._pending = data[end:]
+                break
+            index = min(starts)
+            (output if self._paste is None else self._paste).extend(data[position:index])
+            marker = self.START if data.startswith(self.START, index) else self.END
+            if marker == self.START and self._paste is None:
+                self._paste = bytearray()
+            elif marker == self.END and self._paste is not None:
+                # xterm normalizes clipboard line breaks to CR. Without the
+                # envelope (discarded by ConPTY), Kimi interprets short CR
+                # pastes as submit keys. LF retains line breaks as editor text.
+                output.extend(self._paste.replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
+                self._paste = None
+            position = index + len(marker)
+        return bytes(output)
+
+    def flush_escape(self) -> bytes:
+        """Flush an incomplete escape when it is a key, rather than a paste."""
+        if self._paste is not None:
+            return b""
+        data, self._pending = self._pending, b""
+        return data
+
+    @classmethod
+    def _partial_suffix(cls, data: bytes) -> int:
+        for size in range(min(len(data), len(cls.START) - 1), 0, -1):
+            suffix = data[-size:]
+            if cls.START.startswith(suffix) or cls.END.startswith(suffix):
+                return size
+        return 0
+
+
 class WinPty:
     def __init__(self, command: list[str], cwd: str, cols: int = 100, rows: int = 28) -> None:
         from winpty import PtyProcess
@@ -23,6 +76,9 @@ class WinPty:
         env.setdefault("COLORTERM", "truecolor")
         self._proc = PtyProcess.spawn(command, cwd=cwd, env=env, dimensions=(rows, cols))
         self._lock = threading.Lock()
+        self._input = ConptyInputFilter()
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._escape_timer: threading.Timer | None = None
 
     def read(self, size: int = 4096) -> bytes:
         try:
@@ -35,15 +91,43 @@ class WinPty:
 
     def write(self, data: bytes) -> None:
         with self._lock:
-            self._proc.write(data.decode("utf-8", errors="replace"))
+            if self._escape_timer is not None:
+                self._escape_timer.cancel()
+                self._escape_timer = None
+            self._write_text(self._input.feed(data))
+            # Let split envelopes complete without making an ordinary Escape
+            # key wait indefinitely. Active paste content is emitted atomically
+            # so ConPTY's removal of envelopes does not fragment paste bursts.
+            if self._input._pending and self._input._paste is None:
+                timer = threading.Timer(0.05, self._flush_escape)
+                timer.daemon = True
+                self._escape_timer = timer
+                timer.start()
+
+    def _write_text(self, data: bytes) -> None:
+        text = self._decoder.decode(data)
+        if text:
+            self._proc.write(text)
+
+    def _flush_escape(self) -> None:
+        with self._lock:
+            if self._escape_timer is not threading.current_thread():
+                return
+            self._escape_timer = None
+            self._write_text(self._input.flush_escape())
 
     def resize(self, cols: int, rows: int) -> None:
-        self._proc.setwinsize(rows, cols)
+        with self._lock:
+            self._proc.setwinsize(rows, cols)
 
     def alive(self) -> bool:
         return bool(self._proc.isalive())
 
     def close(self) -> None:
+        with self._lock:
+            if self._escape_timer is not None:
+                self._escape_timer.cancel()
+                self._escape_timer = None
         try:
             self._proc.terminate(force=True)
         except Exception:
