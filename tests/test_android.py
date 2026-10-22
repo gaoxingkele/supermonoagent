@@ -117,14 +117,14 @@ import dev.supermonoagent.mobile.ConnectionEndpoint;
 public class EndpointCheck {
     public static void main(String[] args) {
         String[] accepted = {"http://localhost:9123", "https://relay.example.com/agent/", "http://[::1]:9123"};
-        String[] rejected = {"", "javascript:alert(1)", "file:///tmp/test", "https://user:secret@example.com",
+        String[] rejected = {"http://example.com", "http://192.168.1.8:8817", "https://@example.com", "", "javascript:alert(1)", "file:///tmp/test", "https://user:secret@example.com",
             "https://example.com?token=secret", "https://example.com/#fragment", "http://example.com:0",
             "http://example.com:65536", "http://example.com:invalid", "http://example.com\\@evil.example",
             "https:///workspace", "//example.com", "https://example.com/%xx"};
-        for (String url : accepted) ConnectionEndpoint.validate(url);
+        for (String url : accepted) ConnectionEndpoint.normalize(url);
         for (String url : rejected) {
             boolean blocked = false;
-            try { ConnectionEndpoint.validate(url); } catch (IllegalArgumentException expected) { blocked = true; }
+            try { ConnectionEndpoint.normalize(url); } catch (IllegalArgumentException expected) { blocked = true; }
             if (!blocked) throw new AssertionError("Accepted unsafe endpoint: " + url);
         }
     }

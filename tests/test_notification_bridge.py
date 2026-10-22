@@ -26,6 +26,19 @@ CATALOG = {"machine": "desktop", "project": "default", "groups": [],
 
 
 class BridgeUnitTest(unittest.TestCase):
+    def test_authenticated_transport_probe_is_labelled_and_does_not_touch_pty(self):
+        bridge = NotificationBridge('http://localhost:6769', 'owner', TaskEventStore())
+        queue = asyncio.Queue(32)
+        bridge.request(pack_json(OP_TASK_SUBSCRIBE, {'replay':False}), queue)
+        reply = bridge.request(pack_json(20, {'probe':'abcdef123456'}), asyncio.Queue())
+        event = unpack_json(unpack(reply[0])[1])
+        self.assertIn('abcdef123456', event['title'])
+        self.assertIn('测试', event['summary'])
+        self.assertEqual(event['session'], '')
+        self.assertEqual(unpack_json(unpack(queue.get_nowait())[1]), event)
+        with self.assertRaises(ValueError):
+            bridge.request(pack_json(20, {'probe':'abcdef123456'}), queue)
+
     def test_backend_must_be_loopback_without_url_credentials(self):
         self.assertEqual(socket_url("http://127.0.0.1:6769", local=True), "ws://127.0.0.1:6769/ws")
         for url in ("ws://public.example/ws", "ws://x@y/ws", "ws://localhost/ws?token=secret"):
@@ -70,7 +83,7 @@ class BridgeIntegrationTest(unittest.IsolatedAsyncioTestCase):
             response = await asyncio.to_thread(fetch)
             self.assertNotIn("private-owner", response)
             self.assertEqual(json.loads(response), {"ok": True, "role": "notification-bridge",
-                            "backend_connected": True, "relay_connected": False})
+                            "backend_connected": True, "relay_connected": False, "subscribers": 0})
 
     async def test_old_daemon_to_existing_relay_notifications_without_shells(self):
         output = asyncio.Queue()

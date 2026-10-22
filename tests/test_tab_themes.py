@@ -96,7 +96,7 @@ async def _check_menu(playwright, edge):
                     await workspace.keyboard.press("Escape")
                     assert await menu.count() == 0
                     await workspace.locator(".tab").click(button="right")
-                    await workspace.locator("#host-name").click()
+                    await workspace.locator(".side-heading").click()
                     assert await menu.count() == 0
                     assert not errors, errors
                 finally:

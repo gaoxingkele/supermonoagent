@@ -21,6 +21,8 @@ def test_add_room_workspace_and_return_to_local_host():
 
 async def _check_hosts(playwright, edge):
     async with isolated_host() as (local, _direct, relay), isolated_host() as (remote, _other_direct, _other_relay):
+        local.hub.set_identity('LOCAL-MACHINE', 'Hidden project')
+        remote.hub.set_identity('REMOTE-MACHINE', 'Hidden project')
         remote.token = remote.hub.default_owner = remote.hub.groups["default"].owner = "remote-owner-only"
         local_window = local.hub.open_window("Local terminal", owner=local.token)
         local_session = local.hub.open_cli(local_window.id, "cmd")
@@ -63,6 +65,26 @@ async def _check_hosts(playwright, edge):
                         await page.locator("#workspace-form").get_by_role("button", name="保存并连接").click()
                         await page.wait_for_function("window.smaWorkspace?.connected && smaWorkspace.activePane?.title.textContent.includes('Remote terminal')")
                         await page.wait_for_function("smaWorkspace.terminal.buffer.active.getLine(0)?.translateToString(true).includes('REMOTE-ONLY')")
+                        assert await page.locator('#tree > .computer-tree').count() == 2
+                        assert await page.locator('#tree .workspace-host-name').all_text_contents() == ['LOCAL-MACHINE', 'REMOTE-MACHINE']
+                        remote_tree = page.locator('#tree > .computer-tree').nth(1)
+                        assert '房间号：office-room' in await remote_tree.locator('.workspace-host').inner_text()
+                        assert await remote_tree.locator(':scope > .computer-windows > .session-row').count() == 1
+                        assert await page.locator('#tree .group-label, #tree .project-label, #workspace-hosts, #new-group, #search').count() == 0
+                        await remote_tree.locator('.workspace-host-toggle').click()
+                        assert await remote_tree.locator('.workspace-host-toggle').get_attribute('aria-expanded') == 'false'
+                        assert await remote_tree.locator('.computer-windows').is_hidden()
+                        assert await page.locator('#tree > .computer-tree').first.locator('.computer-windows').is_visible()
+                        assert await page.locator('#session-count').inner_text() == '2 个终端'
+                        # Telemetry refresh must not reopen a collapsed machine.
+                        await page.wait_for_timeout(1100)
+                        assert await remote_tree.locator('.computer-windows').is_hidden()
+                        if artifacts:
+                            await page.screenshot(path=str(destination / 'machine-collapsed.png'))
+                        await remote_tree.locator('.workspace-host-toggle').click()
+                        assert await remote_tree.locator('.computer-windows').is_visible()
+                        if artifacts:
+                            await page.screenshot(path=str(destination / 'machines-and-windows.png'))
                         assert "LOCAL-ONLY" not in await page.evaluate("Array.from({length:smaWorkspace.terminal.buffer.active.length},(_,i)=>smaWorkspace.terminal.buffer.active.getLine(i).translateToString(true)).join('\\n')")
                         assert remote.token not in await page.evaluate("localStorage.getItem('sma.workspace.hosts')")
                         await page.locator("#connect-button").click()
@@ -74,12 +96,17 @@ async def _check_hosts(playwright, edge):
                             while remote_session.pty.written != b"remote-input":
                                 await asyncio.sleep(0.01)
                         assert local_session.pty.written == b""
+                        await remote_tree.locator('.workspace-host-toggle').click()
                         await page.get_by_role("button", name="切换到本机", exact=True).click()
                         await page.wait_for_function("smaWorkspace.connected && smaWorkspace.activePane?.title.textContent.includes('Local terminal')")
                         await page.reload()
                         await page.wait_for_function("window.smaWorkspace?.connected")
                         await page.get_by_role("button", name="切换到 Office computer", exact=True).click()
                         await page.wait_for_function("smaWorkspace.connected && smaWorkspace.activePane?.title.textContent.includes('Remote terminal')")
+                        remote_tree = page.locator('#tree > .computer-tree').nth(1)
+                        assert await remote_tree.locator('.computer-windows').is_hidden()
+                        await remote_tree.locator('.workspace-host-toggle').click()
+                        assert await remote_tree.locator('.computer-windows').is_visible()
                         await page.get_by_role("button", name="编辑工作区 Office computer").click()
                         await page.locator("#workspace-remove").click()
                         await page.wait_for_function("smaWorkspace.connected && smaWorkspace.activePane?.title.textContent.includes('Local terminal')")

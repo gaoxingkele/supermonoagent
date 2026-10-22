@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from websockets.asyncio.server import serve
 
-from supermonoagent.defaults import DEFAULT_RELAY, default_relay
+from supermonoagent.defaults import DEFAULT_RELAY, LEGACY_RELAY, default_relay, migrate_legacy_relay
 from supermonoagent import workspace
 from test_client_integration import isolated_host
 
@@ -27,11 +27,34 @@ class Fields(HTMLParser):
 
 def test_default_relay_is_centralized_and_environment_overridable(monkeypatch):
     monkeypatch.delenv("SUPERMONO_DEFAULT_RELAY", raising=False)
-    assert default_relay() == DEFAULT_RELAY == "ws://117.50.48.22:8817/ws"
+    assert default_relay() == DEFAULT_RELAY == "wss://117.50.48.22/ws"
     monkeypatch.setenv("SUPERMONO_DEFAULT_RELAY", "  wss://relay.example/ws  ")
     assert default_relay() == "wss://relay.example/ws"
     monkeypatch.setenv("SUPERMONO_DEFAULT_RELAY", "   ")
     assert default_relay() == DEFAULT_RELAY
+
+
+@pytest.mark.parametrize("value", [
+    LEGACY_RELAY, "http://117.50.48.22:8817", "ws://117.50.48.22:8817/",
+    "ws://117.50.48.22:8817/ws/", "  WS://117.50.48.22:8817/ws  ",
+])
+def test_only_known_legacy_relay_moves_to_same_host_tls(value, monkeypatch):
+    monkeypatch.setenv("SUPERMONO_DEFAULT_RELAY", "wss://different-server.example/ws")
+    assert migrate_legacy_relay(value) == "wss://117.50.48.22/ws"
+
+
+@pytest.mark.parametrize("value", [
+    "", "ws://127.0.0.1:8817/ws", "http://localhost:8817/ws", "ws://[::1]:8817/ws",
+    "ws://different-server.example:8817/ws", "wss://117.50.48.22:8817/ws", DEFAULT_RELAY,
+    "https://117.50.48.22/ws", "ws://117.50.48.22:8818/ws", "ws://117.50.48.22/ws",
+    "ws://117.50.48.22:8817/custom", "ws://117.50.48.22:8817/ws?token=secret",
+    "ws://117.50.48.22:8817/ws#token=secret", "ws://user:secret@117.50.48.22:8817/ws",
+    "ws://@117.50.48.22:8817/ws", "ws://:@117.50.48.22:8817/ws",
+    "ws://117.50.48.22:8817@different-server.example/ws", "ws://117.50.48.22:bad/ws",
+    "ws://[invalid", "ws://117.50.48.22.evil.example:8817/ws",
+])
+def test_migration_preserves_custom_tls_local_and_ambiguous_urls(value):
+    assert migrate_legacy_relay(value) == value
 
 
 def test_both_editable_inputs_have_real_safely_injected_options(monkeypatch):

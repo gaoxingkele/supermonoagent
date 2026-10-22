@@ -66,7 +66,7 @@ async def _check_browser(playwright, edge, legacy):
                     await page.wait_for_function("window.smaWorkspace?.terminal && smaWorkspace.metrics.lastPongMs !== null")
                     assert await page.locator('#tabs [role="tab"]').all_text_contents() == ["Runtime probe"]
                     assert await page.locator(".pane-title").inner_text() == "Runtime probe · cmd"
-                    assert await page.locator("#host-name").inner_text()
+                    assert await page.locator("#tree .workspace-host-name").inner_text()
                     assert await page.locator('a[href="/legacy"]').count() == 0
                     await page.wait_for_function("smaWorkspace.terminal.cols === 77 && smaWorkspace.terminal.rows === 44")
                     await page.locator(".pane-header").click()
@@ -79,8 +79,11 @@ async def _check_browser(playwright, edge, legacy):
                     await page.wait_for_function("document.querySelector('#connection-tx').textContent === '↑ 0 B/s' && document.querySelector('#connection-rx').textContent === '↓ 0 B/s'", timeout=5000)
                     assert await page.locator("#connection-label").inner_text() == "本机已连接"
                     assert int(await page.locator("#connection-quality").get_attribute("data-bars")) > 0
-                    # Re-selecting the current tab explicitly reclaims desktop dimensions.
+                    # Selecting a tab is local viewing; only Take Control reclaims dimensions.
                     await page.locator('#tabs [role="tab"]').first.click()
+                    assert session.resize_owner == native_owner
+                    assert (session.cols, session.rows) == (77, 44)
+                    await page.locator('#take-control').click()
                     await page.wait_for_function("(()=>{const p=smaWorkspace.panes.get(smaWorkspace.activeSession),s=smaWorkspace.controls[p.sid],d=p.fit.proposeDimensions();return s?.owner&&!p.resizeRequest&&!p.redrawAfterReplay&&!p.redrawTimer&&s.cols===d.cols&&s.rows===d.rows;})()", timeout=6000)
                     count = len(resizes)
                     await page.locator('[role="tab"]').click()

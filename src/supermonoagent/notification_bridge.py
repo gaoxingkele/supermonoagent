@@ -11,6 +11,8 @@ import contextlib
 import hmac
 import json
 import struct
+import re
+import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -24,14 +26,16 @@ from .protocol import (OP_HELLO, OP_HELLO_OK, OP_OUTPUT, OP_SESSIONS,
 from .security import loopback, request_allowed
 from .web import text_response
 from .task_events import DEFAULT_SUMMARY, TaskEventStore, TaskStateDetector
+from .defaults import migrate_legacy_relay
 
 
 def socket_url(value: str, *, local: bool = False) -> str:
-    parts = urlsplit(value)
+    parts = urlsplit(migrate_legacy_relay(value))
     scheme = {"http": "ws", "https": "wss"}.get(parts.scheme, parts.scheme)
     if (scheme not in {"ws", "wss"} or not parts.hostname or parts.username
             or parts.password or parts.query or parts.fragment
             or parts.path not in {"", "/", "/ws"}
+            or scheme != 'wss' and not loopback(parts.hostname or '')
             or local and not loopback(parts.hostname)):
         raise ValueError("Expected a credential-free WebSocket endpoint" + (" on loopback" if local else ""))
     return urlunsplit((scheme, parts.netloc, "/ws", "", ""))
@@ -48,6 +52,7 @@ class NotificationBridge:
         self.subscribers: set[asyncio.Queue] = set()
         self.connected = False
         self.relay_connected = False
+        self.last_probe = -10.0
 
     def authorized(self, token) -> bool:
         return isinstance(token, str) and hmac.compare_digest(token, self.token)
@@ -132,6 +137,23 @@ class NotificationBridge:
 
     def request(self, frame: bytes, queue: asyncio.Queue) -> list[bytes]:
         op, payload = unpack(frame)
+        if op == 20:
+            # This entry is reachable only after the socket/relay owner authenticates.
+            nonce = unpack_json(payload).get('probe', '')
+            now = time.monotonic()
+            if not isinstance(nonce, str) or not re.fullmatch(r'[0-9a-f]{8,32}', nonce) or now-self.last_probe < 5:
+                raise ValueError('Invalid or repeated notification probe')
+            self.last_probe = now
+            event = self.store.append(self.token, {'title':'通知链路自测 '+nonce,
+                'machine':self.catalog.get('machine',''), 'project':self.catalog.get('project',''),
+                'status':'completed', 'summary':'这是通知链路测试，不代表终端任务完成。'})
+            reply = pack_json(OP_TASK_EVENT, event)
+            for target in tuple(self.subscribers):
+                try:target.put_nowait(reply)
+                except asyncio.QueueFull:
+                    while not target.empty():target.get_nowait()
+                    target.put_nowait(None);self.subscribers.discard(target)
+            return [reply]
         if op == OP_HELLO:
             body = unpack_json(payload)
             if body.get("token") and not self.authorized(body["token"]):
@@ -187,7 +209,8 @@ class NotificationBridge:
         if request.path == "/health":
             return text_response(connection, 200, json.dumps({"ok": True,
                 "role": "notification-bridge", "backend_connected": self.connected,
-                "relay_connected": self.relay_connected}), "application/json")
+                "relay_connected": self.relay_connected,
+                "subscribers": len(self.subscribers)}), "application/json")
         if request.path != "/ws":
             return text_response(connection, 404, "Not found", "text/plain")
         return None

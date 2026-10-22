@@ -26,6 +26,8 @@ GEOMETRY = """() => {
     keys=rect(document.getElementById('keys')),vv=window.visualViewport;
   const raw=m?.controls,candidate=raw?.[m?.active]||raw;
   const sizing=document.getElementById('sizing')?.value;
+  const viewportMode=s?.dataset.viewportMode||'overview',readable=viewportMode==='readable';
+  const scale=Number(s?.dataset.scale)||1,fontSize=t?.options.fontSize||null;
   const cell=t?._core?._renderService?.dimensions?.css?.cell;
   const controls=candidate&&typeof candidate==='object'?{
     cols:Number(candidate.cols)||null,rows:Number(candidate.rows)||null,
@@ -38,14 +40,18 @@ GEOMETRY = """() => {
     orientation:window.screen.orientation?.type,
     visual:vv?{width:vv.width,height:vv.height,scale:vv.scale,offsetLeft:vv.offsetLeft,
       offsetTop:vv.offsetTop}:null},documentWidth:document.documentElement.scrollWidth,
-    revision:String(m?.revision||'unknown').slice(0,100),sizing,
+    revision:String(m?.revision||'unknown').slice(0,100),sizing,viewportMode,
+    fontSize,effectiveFontSize:fontSize?fontSize*scale:null,
+    pan:s?{left:s.scrollLeft,top:s.scrollTop,width:s.scrollWidth,height:s.scrollHeight}:null,
     connected:!!m?.connected,ready:!!m?.ready,cols:t?.cols||null,rows:t?.rows||null,
     controls,screen,terminal,keys,dialogs,
     violations:[!m?.connected?'terminal_disconnected':null,!m?.ready?'terminal_not_ready':null,
       document.documentElement.scrollWidth>innerWidth+1?'document_overflow':null,
       keys&&keys.bottom>innerHeight+1?'keys_below_viewport':null,
-      terminal&&screen&&terminal.right>screen.right+1?'terminal_horizontal_overflow':null,
-      terminal&&screen&&terminal.bottom>screen.bottom+1?'terminal_vertical_overflow':null,
+      screen&&(screen.right>innerWidth+1||screen.bottom>innerHeight+1)?'screen_outside_viewport':null,
+      !readable&&terminal&&screen&&terminal.right>screen.right+1?'terminal_horizontal_overflow':null,
+      !readable&&terminal&&screen&&terminal.bottom>screen.bottom+1?'terminal_vertical_overflow':null,
+      readable&&fontSize&&fontSize*scale<fontSize-.5?'readable_font_shrunk':null,
       controls?.cols&&t&&controls.cols!==t.cols?'canonical_columns_mismatch':null,
       controls?.rows&&t&&controls.rows!==t.rows?'canonical_rows_mismatch':null,
       sizing==='phone'&&controls?.owner&&terminal&&screen&&cell&&

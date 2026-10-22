@@ -2,7 +2,9 @@
 
 ## 当前行为
 
-Android 使用系统 WebView、xterm、Unicode11 和可选 WebGL。默认“适应手机屏幕”向后台申请手机行列数，后台确认后才调整本地网格；“共享电脑原尺寸”保持后台网格并缩放显示。隐藏或零尺寸窗口不请求最小网格。历史数据若先于尺寸到达，会先进入有界等待队列，随后按确认网格重放。
+Android 使用系统 WebView、xterm、Unicode11 和可选 WebGL。2026-10-22 修正跨端尺寸争抢：手机默认保持清晰字号并在终端区域内滑动观看共享网格，可选全屏总览缩放，切换会话、旋转、打开编辑框均不自动接管；Windows 普通标签切换也不抢占另一端。只有明确点击“接管”才交接共享 PTY 尺寸控制权，当前所有者可随后适配自己的视口。后台确认后才调整本地网格。隐藏或零尺寸窗口不请求最小网格。历史数据若先于尺寸到达，会先进入有界等待队列，随后按确认网格重放。
+
+同一 CLI 的 PTY 只有一套行列数，双方不能各自无约束改变它；本机布局、缩放和显示选择独立，接管是明确的共享尺寸操作。`tests/test_cross_device_layout.py` 用真实桌面和手机页面验证了双向不抢占及明确交接。旧手机页面仍含自动接管逻辑，必须激活新版界面才生效；不能只更新 Windows 就宣布问题全部修复。
 
 来源：`android/assets/mobile/app.js`、`mobile-core.js`；Orca 对照源码 `study/orca/mobile/src/terminal/document/fit-scale.ts`。首次连接、重连、切换会话的回归在 `tests/test_android_replay.py`；共享网格及折叠尺寸回归在 `tests/test_android_mobile_ui.py`。
 
@@ -18,7 +20,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/push-android-ui.ps1
 
 多设备时加 `-Serial <设备序列号>`。脚本分发完整、不可变的版本目录，最后原子切换指针；原生端逐文件验证 SHA256、10 个固定文件名和 5 MiB 总上限。全部校验通过后才加载该版本，不混用两个版本；失败则整体回退 APK。切换版本只重建显示端连接，后台 shell 继续运行。
 
-实现：`HotAssets.java`、`package-android-ui.py`、`push-android-ui.ps1`。这是 USB 开发热更新；尚未提供互联网 OTA 服务。原生 Java、权限、签名和 Manifest 的变化仍需升级 APK。
+实现：`HotAssets.java`、`package-android-ui.py`、`push-android-ui.ps1`。这是 USB 开发热更新；签名远程界面更新使用现有中继的 HTTPS /updates/stable/manifest.json，可从右上角 Update 手动检查、下载并验签后激活。原生 Java、权限、签名和 Manifest 的变化仍需升级 APK。
 
 ## 真机自动化
 

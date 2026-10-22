@@ -302,8 +302,7 @@ public final class MainActivity extends Activity {
     }
 
     static Uri validEndpoint(String value) {
-        ConnectionEndpoint.validate(value);
-        return Uri.parse(value);
+        return Uri.parse(ConnectionEndpoint.normalize(value));
     }
 
     private boolean trustedDocument() {

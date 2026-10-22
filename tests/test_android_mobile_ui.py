@@ -73,6 +73,8 @@ async def check_mobile(playwright,intercepted):
                             print({'intercepted':intercepted,'errors':errors,'console':logs,'status':await page.locator('#status').text_content()})
                             raise
                         assert await page.evaluate('location.hash')==''
+                        # Responsive PTY ownership is now an explicit user action.
+                        await page.locator('#control').tap()
                         second.pty.inbox.put(b'background activity\r\n')
                         await page.locator('#sessions').tap()
                         # Unopened sessions stay unsubscribed even when their PTY is busy.

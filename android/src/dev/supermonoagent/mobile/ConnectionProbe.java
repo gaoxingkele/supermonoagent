@@ -31,8 +31,7 @@ public final class ConnectionProbe {
 
     public static String test(String endpoint, String code, String token) {
         try {
-            ConnectionEndpoint.validate(endpoint);
-            return probe(new URI(endpoint), code == null ? "" : code, token == null ? "" : token);
+            return probe(new URI(ConnectionEndpoint.normalize(endpoint)), code == null ? "" : code, token == null ? "" : token);
         } catch (SocketTimeoutException error) {
             return "测试失败：连接超时，请检查网络、端口及主机是否在线。";
         } catch (SSLException error) {

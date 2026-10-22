@@ -29,7 +29,7 @@ class GroupHostsTest(unittest.TestCase):
 class CleanRelayTest(unittest.TestCase):
     def test_bare_public_url_uses_ws_path(self):
         got = clean_relays([{"name": "公网", "url": "http://117.50.48.22:8817/", "code": "abc"}])
-        self.assertEqual(got, [{"name": "公网", "url": "ws://117.50.48.22:8817/ws", "code": "abc"}])
+        self.assertEqual(got, [{"name": "公网", "url": "wss://117.50.48.22/ws", "code": "abc"}])
 
 
 class RelayTest(unittest.IsolatedAsyncioTestCase):

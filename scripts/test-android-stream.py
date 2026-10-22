@@ -56,9 +56,21 @@ async def wait_bytes(pty, expected):
             await asyncio.sleep(.02)
 
 
+async def wait_page(page, expression, *, arg=None, timeout=30000):
+    # Runtime evaluation works with the app's strict CSP; Playwright's string
+    # wait_for_function uses page eval(), which correctly remains forbidden.
+    deadline = asyncio.get_running_loop().time() + timeout / 1000
+    while asyncio.get_running_loop().time() < deadline:
+        result = await page.evaluate(expression, arg)
+        if result:
+            return result
+        await asyncio.sleep(.05)
+    raise TimeoutError('Android page condition timed out')
+
+
 async def exercise(page, device, daemon, first, second, window, output, report):
     """All input-producing actions happen after the fake session ID is confirmed."""
-    await page.wait_for_function("sid=>MobileTerminal.ready&&MobileTerminal.active===sid", arg=first.id, timeout=12000)
+    await wait_page(page, "sid=>MobileTerminal.ready&&MobileTerminal.active===sid", arg=first.id, timeout=12000)
     report["fake_host_authenticated"] = True
     fixture_host=json.loads(await page.evaluate('MobileTerminal.activeKey'))[0]
     fixture_rows=f'#session-list .session[data-host="{fixture_host}"]'
@@ -71,11 +83,11 @@ async def exercise(page, device, daemon, first, second, window, output, report):
     try:
         if not daemon.hub.resize_session(desktop, first.id, 120, 30, True):
             raise AssertionError("Fake desktop could not acquire the resize lease")
-        await page.wait_for_function("MobileTerminal.terminal?.cols===120&&MobileTerminal.terminal.rows===30", timeout=8000)
+        await wait_page(page, "MobileTerminal.terminal?.cols===120&&MobileTerminal.terminal.rows===30", timeout=8000)
         for index in range(300):
             first.pty.inbox.put((f"\x1b[H\x1b[2J\x1b[1;100HRIGHT_{index:03}"
                                  f"\x1b[10;30HMIDDLE_{index:03}\x1b[28;1HBOTTOM_{index:03}").encode())
-        await page.wait_for_function("""() => {
+        await wait_page(page, """() => {
           const b=MobileTerminal.terminal?.buffer.active;if(!b)return false;
           return b.getLine(b.baseY)?.translateToString().slice(99).startsWith('RIGHT_299')&&
             b.getLine(b.baseY+9)?.translateToString().slice(29).startsWith('MIDDLE_299')&&
@@ -95,7 +107,7 @@ async def exercise(page, device, daemon, first, second, window, output, report):
         # Composer events exercise UTF-8 transport; this memory object is the only recipient.
         expected = "USB_ASCII_123 中文输入验证"
         first.pty.inbox.put(('\r\n'.join(f'USB-HISTORY-{i:04}' for i in range(6500))+'\r\n').encode())
-        await page.wait_for_function('MobileTerminal.terminal.buffer.normal.baseY>6000')
+        await wait_page(page, 'MobileTerminal.terminal.buffer.normal.baseY>6000')
         before_history=await page.evaluate('MobileTerminal.terminal.buffer.normal.baseY')
         first.pty.inbox.put(b'\x1b[3J')
         await asyncio.sleep(.2)
@@ -117,7 +129,26 @@ async def exercise(page, device, daemon, first, second, window, output, report):
         report['history']={**history,'touch_scroll':True,'clear_scrollback_preserved':True}
         await page.screenshot(path=str(output/'history-touch-webview.png'))
         device.screenshot(output/'history-touch-device.png')
-        await page.locator('#bottom').click()
+        before_buttons = bytes(first.pty.written)
+        for selector in ('#page-up', '#page-down', '#history-top', '#history-bottom'):
+            await page.locator(selector).click()
+        await page.locator('#history-top').click()
+        if await page.evaluate('MobileTerminal.terminal.buffer.active.viewportY') != 0:
+            raise AssertionError('Top button did not reach the local history start')
+        await page.locator('#history-bottom').click()
+        if not await page.evaluate('MobileTerminal.terminal.buffer.active.viewportY===MobileTerminal.terminal.buffer.active.baseY'):
+            raise AssertionError('Bottom button did not reach latest output')
+        grid_before = (first.cols, first.rows, first.resize_owner)
+        await page.locator('#refresh-screen').click()
+        if bytes(first.pty.written) != before_buttons or (first.cols, first.rows, first.resize_owner) != grid_before:
+            raise AssertionError('Local toolbar changed remote input or desktop dimensions')
+        await page.locator('[data-key="enter"]').click()
+        await wait_bytes(first.pty, before_buttons + b'\r')
+        if bytes(first.pty.written) != before_buttons + b'\r':
+            raise AssertionError('Enter button sent more than one carriage return')
+        report['navigation_buttons']={'page_up_down':True,'top_bottom':True,'refresh_local_only':True,
+                                      'desktop_grid_preserved':True,'enter_exactly_once':True}
+        await page.locator('#history-bottom').click()
         before = bytes(first.pty.written)
         await page.locator("#mode").click()
         await page.locator("#draft").fill(expected)
@@ -140,15 +171,15 @@ async def exercise(page, device, daemon, first, second, window, output, report):
         # Select the second session, then verify server-side closure returns to the first.
         await page.locator("#sessions").click()
         await page.locator(f'{fixture_rows}[data-session="{second.id}"]').click()
-        await page.wait_for_function("sid=>MobileTerminal.active===sid&&MobileTerminal.ready", arg=second.id, timeout=6000)
+        await wait_page(page, "sid=>MobileTerminal.active===sid&&MobileTerminal.ready", arg=second.id, timeout=6000)
         daemon.hub.close_session(second.id)
-        await page.wait_for_function("sid=>MobileTerminal.active===sid&&MobileTerminal.ready", arg=first.id, timeout=6000)
+        await wait_page(page, "sid=>MobileTerminal.active===sid&&MobileTerminal.ready", arg=first.id, timeout=6000)
         await page.locator("#sessions").click()
         if await page.locator(fixture_rows).count() != 1:
             raise AssertionError("Closed session remains in Android navigation")
         await page.locator("#sessions-close").click()
         daemon.hub.close_window(window.id)
-        await page.wait_for_function("MobileTerminal.active===''&&MobileTerminal.terminal===null", timeout=6000)
+        await wait_page(page, "MobileTerminal.active===''&&MobileTerminal.terminal===null", timeout=6000)
         await page.locator("#sessions").click()
         if await page.locator(fixture_rows).count():
             raise AssertionError("Closed window sessions remain in Android navigation")
@@ -263,7 +294,7 @@ async def probe(args):
                                 await remove.click()
                                 await page.locator("#sessions-close").click()
                                 report["cleanup"]["temporary_profile_removed"] = True
-                                await page.wait_for_function("MobileTerminal.connected", timeout=15000)
+                                await wait_page(page, "MobileTerminal.connected", timeout=15000)
                                 report["cleanup"]["home_reconnected"] = True
                                 if not saved["composerHidden"] and await page.locator("#composer").evaluate("e=>e.tagName==='DIALOG'?!e.open:e.hidden"):
                                     await UI.toggle_mode_without_focus(page)

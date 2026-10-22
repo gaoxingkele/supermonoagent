@@ -49,7 +49,7 @@
     constructor(id,name,settings){
       Object.assign(this,{id,name,config:{...settings},ws:null,generation:0,retry:0,retryTimer:0,pingTimer:0,
         connected:false,supported:false,helloSent:false,catalog:[],groups:[],controls:{},capabilities:{},identity:{},activity:new Map(),
-        selectedGroup:'',initialCatalog:true,nextSplit:'',sessionsBeforeOpen:new Set(),subscriptionSignature:'',
+        selectedGroup:'',collapsed:read(sessionStorage,'sma.workspace.collapsed.'+id)==='true',initialCatalog:true,nextSplit:'',sessionsBeforeOpen:new Set(),subscriptionSignature:'',
         phase:'offline',error:'',pingSentAt:null,meter:new C.ConnectionMeter(performance.now()),rates:{tx:0,rx:0}});
     }
   }
@@ -87,7 +87,6 @@
     const bars=$('connection-quality');bars.dataset.bars=String(quality.bars);bars.setAttribute('aria-label','连接质量：'+quality.label);
     $('connect-button').title=host.name+' · '+quality.label+(host.meter.rtt===null?'':' · '+Math.round(host.meter.rtt)+' ms')+'；当前电脑应用消息字节数';
     metrics.lastPongMs=host.meter.rtt===null?null:Math.round(host.meter.rtt);
-    $('host-name').textContent=[host.identity.machine,host.identity.project].filter(Boolean).join(' / ')||host.name;
     notice(host.error);
   }
   function ping(host){host.pingSentAt=performance.now();send(owner(host),10,encoder.encode(String(host.pingSentAt)));}
@@ -241,6 +240,23 @@
       if(explicit||(!pane.writing&&!pane.resizeRequest&&!pane.followFrame&&pane.followGeometry===viewportGeometry(pane)))
         pane.followOutput=term.buffer.active.viewportY===term.buffer.active.baseY;
     });
+    const scrollBar=node('div','pane-scroll');
+    const scrollAction=fn=>{
+      const context=owner(pane.host);
+      return()=>{
+        if(!validOwner(context)||!livePane(pane))return;
+        pane.userScrollGeometry=viewportGeometry(pane);pane.userScrollUntil=performance.now()+500;
+        cancelAnimationFrame(pane.followFrame);pane.followFrame=0;
+        fn();
+      };
+    };
+    scrollBar.append(
+      button('▲ 上翻屏','向上翻动一页历史',scrollAction(()=>{pane.followOutput=false;term.scrollPages(-1);})),
+      button('▼ 下翻屏','向下翻动一页历史',scrollAction(()=>{term.scrollPages(1);const buffer=term.buffer.active;pane.followOutput=buffer.viewportY===buffer.baseY;if(pane.followOutput)keepFollowing(pane);})),
+      button('⤒ 到开头','翻到最早的历史输出',scrollAction(()=>{pane.followOutput=false;term.scrollToTop();})),
+      button('⤓ 到末尾','翻到最新输出并恢复自动跟随',scrollAction(()=>{pane.followOutput=true;keepFollowing(pane);}))
+    );
+    el.append(scrollBar);
     pane.bindHeader=()=>{
       const context=owner(pane.host),guard=action=>(...args)=>{if(validOwner(context)&&livePane(pane))action(...args);};
       header.replaceChildren(title,own);
@@ -374,7 +390,7 @@
     pane.lastInputAt=performance.now();const frame=C.targetFrame(17,pane.raw,text);socketSend(pane.host,frame);
   }
   function takeControl(sid=active){const pane=panes.get(sid);if(pane){pane.wantControl=true;pane.lastAttempt='';pane.redrawAfterReplay=true;pane.resizePaused=false;fitPane(pane,true);}}
-  function openView(sid, takeover=true) {
+  function openView(sid, takeover=false) {
     if(!sessionInfo(sid))return;
     const changed=active!==sid||!panes.has(sid);
     if(!panes.has(sid))createPane(sid);
@@ -456,26 +472,18 @@
     }
   }
   function renderTree(){
-    const tree=$('tree');tree.replaceChildren();const query=$('search').value.trim().toLowerCase();let count=0;
-    const projects=new Map();for(const host of hosts.values()){const project=host.identity.project||'工作区';if(!projects.has(project))projects.set(project,[]);projects.get(project).push(host);}
-    for(const [project,computers] of projects){
-      tree.append(node('div','project-label',project));
-      for(const host of computers){
-        const computer=node('section','computer-tree');computer.dataset.host=host.id;
-        computer.append(button(host.identity.machine||host.name,'选择电脑 '+host.name,()=>switchHost(host.id)));
-        const allGroups=[...host.groups];for(const win of host.catalog)if(!allGroups.some(group=>group.id===(win.group||'default')))allGroups.push({id:win.group||'default',name:'默认分组'});
-        for(const group of allGroups){
-          const entries=catalog.filter(win=>win.host===host&&win.group===key(host,group.id)).flatMap(win=>win.sessions.map(session=>({win,session}))).filter(({win,session})=>(win.title+' '+session.shell+' '+(session.cwd||'')).toLowerCase().includes(query));
-          if(query&&!entries.length)continue;
-          const context=owner(host),heading=node('div','group-label');const pick=button('⌑ '+group.name,'选择分组 '+group.name,()=>{if(!validOwner(context))return;switchHost(host.id);host.selectedGroup=key(host,group.id);renderTree();});
-          pick.setAttribute('aria-pressed',String(host.id===selectedHost&&host.selectedGroup===key(host,group.id)));heading.append(pick,node('span','muted',String(entries.length)));computer.append(heading);
-          for(const {win,session} of entries){count++;const row=node('div','session-row');row.dataset.current=String(session.id===active);row.dataset.host=host.id;row.dataset.session=session.raw;
-            const open=button('','打开 '+win.title,()=>{if(validOwner(context))openView(session.id);});open.className='session-open';const text=node('span','session-label',win.title);text.append(node('span','session-shell',session.shell));const dot=node('i','session-dot');dot.setAttribute('role','img');open.append(dot,text);
-            row.append(open,button('···','重命名窗口',()=>rename(win.id,context)));TabThemes.apply(row,win.tab_theme);row.oncontextmenu=event=>tabMenu(event,win,context);computer.append(row);
-          }
-        }
-        tree.append(computer);
+    const tree=$('tree');tree.replaceChildren();let count=0;
+    for(const host of hosts.values()){
+      const computer=node('section','computer-tree');computer.dataset.host=host.id;
+      computer.append(hostRow(host));
+      const windows=node('div','computer-windows');windows.id='host-windows-'+encodeURIComponent(host.id);windows.hidden=host.collapsed;computer.append(windows);
+      const entries=catalog.filter(win=>win.host===host).flatMap(win=>win.sessions.map(session=>({win,session})));
+      const context=owner(host);
+      for(const {win,session} of entries){count++;const row=node('div','session-row');row.dataset.current=String(session.id===active);row.dataset.host=host.id;row.dataset.session=session.raw;
+        const open=button('','打开 '+win.title,()=>{if(validOwner(context))openView(session.id);});open.className='session-open';const text=node('span','session-label',win.title);text.append(node('span','session-shell',session.shell));const dot=node('i','session-dot');dot.setAttribute('role','img');open.append(dot,text);
+        row.append(open,button('···','重命名窗口',()=>rename(win.id,context)));TabThemes.apply(row,win.tab_theme);row.oncontextmenu=event=>tabMenu(event,win,context);windows.append(row);
       }
+      tree.append(computer);
     }
     if(!catalog.length)tree.append(node('p','muted small','暂无会话。新建终端开始工作。'));
     $('session-count').textContent=count+' 个终端';
@@ -487,7 +495,7 @@
     if(host?.connected)status((info?.session.cwd||'工作区已连接')+(host.meter.rtt===null?'':' · '+Math.round(host.meter.rtt)+' ms'));
     for(const pane of panes.values()){const lease=pane.host.controls[pane.raw];pane.own.textContent=lease?(lease.owner?'尺寸主控':'共享观看'):'';}
     $('take-control').disabled=!pane||!pane.host.connected;
-    for(const id of ['new-session','empty-new','new-group'])$(id).disabled=!host?.connected;
+    for(const id of ['new-session','empty-new'])$(id).disabled=!host?.connected;
   }
   function newSession(){
     const host=currentHost();if(!host?.connected)return;
@@ -532,16 +540,25 @@
     return '';
   }
   function saveHostToken(id,token,remember){const settings=savedHosts.find(host=>host.id===id);save(sessionStorage,hostTokenKey(id),token);save(localStorage,hostTokenKey(id),remember?token:'');for(const storage of [sessionStorage,localStorage])save(storage,hostTokenKey(id)+'.target',token&&settings?endpoint(settings):'');}
-  function renderHosts(){
-    const list=$('workspace-hosts');list.replaceChildren();
-    for(const host of hosts.values()){
+  function hostRow(host){
       const row=node('div','workspace-host');row.dataset.current=String(host.id===selectedHost);row.dataset.host=host.id;row.dataset.phase=host.phase;
+      const toggle=button('', '',()=>{
+        host.collapsed=!host.collapsed;save(sessionStorage,'sma.workspace.collapsed.'+host.id,String(host.collapsed));
+        const windows=$('host-windows-'+encodeURIComponent(host.id));if(windows)windows.hidden=host.collapsed;
+        updateToggle();
+      });toggle.className='workspace-host-toggle';toggle.setAttribute('aria-controls','host-windows-'+encodeURIComponent(host.id));
+      function updateToggle(){toggle.textContent=host.collapsed?'▸':'▾';toggle.setAttribute('aria-expanded',String(!host.collapsed));toggle.title=(host.collapsed?'展开':'收起')+'窗口列表';toggle.setAttribute('aria-label',toggle.title+' '+(host.identity.machine||host.name));}
+      updateToggle();row.append(toggle);
       const pick=button('','切换到'+(host.id==='local'?host.name:' '+host.name),()=>switchHost(host.id));pick.className='workspace-host-pick';pick.setAttribute('aria-current',String(host.id===selectedHost));
-      pick.append(node('span','workspace-host-name',host.name),node('small','muted',host.config.code||'本机终端'));
-      const protocol=(Number.isInteger(host.capabilities.protocol_version)?'v'+host.capabilities.protocol_version:'旧版/未知')+(host.capabilities.multiplex?' · multiplex':'')+(host.capabilities.resize_ack?' / ACK':'');
+      const rooms=host.config.code?[host.config.code]:host.id==='local'?[...new Set(homeRelays.map(relay=>relay.code).filter(code=>typeof code==='string'&&code))]:[];
+      pick.append(node('span','workspace-host-name',host.identity.machine||host.name),node('small','muted',rooms.length?'房间号：'+rooms.join('、'):'未配置房间号'));
       pick.append(node('span','workspace-host-status',(host.connected?'已连接':host.phase)+' · '+(host.meter.rtt===null?'—':Math.round(host.meter.rtt)+' ms')),
-        node('small','host-rates','↑ '+C.formatRate(host.rates.tx)+' ↓ '+C.formatRate(host.rates.rx)+' · '+protocol));row.append(pick);
-      if(host.id!=='local'){const edit=button('···','编辑工作区 '+host.name,()=>showWorkspace(host.id));edit.className='workspace-host-edit';row.append(edit);}list.append(row);
+        node('small','host-rates','↑ '+C.formatRate(host.rates.tx)+' ↓ '+C.formatRate(host.rates.rx)));row.append(pick);
+      if(host.id!=='local'){const edit=button('···','编辑工作区 '+host.name,()=>showWorkspace(host.id));edit.className='workspace-host-edit';row.append(edit);}return row;
+  }
+  function renderHosts(){
+    for(const computer of $('tree').querySelectorAll('.computer-tree')){
+      const host=hosts.get(computer.dataset.host);if(host)computer.querySelector('.workspace-host')?.replaceWith(hostRow(host));
     }
   }
   function switchHost(id){
@@ -612,9 +629,8 @@
   $('rename-cancel').onclick=()=>$('rename-dialog').close();$('rename-form').onsubmit=e=>{e.preventDefault();send(renameWindow,15,{action:'title',window:renameWindow?.id,title:$('rename-value').value.trim()});$('rename-dialog').close();};
   $('terminate-cancel').onclick=()=>$('terminate-dialog').close();$('terminate-form').onsubmit=e=>{e.preventDefault();send(terminateSession,9,{session:terminateSession?.id});$('terminate-dialog').close();};
   $('new-project').onclick=()=>showWorkspace();
-  $('new-group').onclick=()=>{const context=owner(currentHost()),name=prompt('新分组名称');if(name?.trim())send(context,15,{action:'create',name:name.trim(),channel:name.trim()});};
   for(const [command,label] of presets){const option=node('option','',label);option.value=command;$('preset').append(option);}
-  $('new-session').onclick=newSession;$('empty-new').onclick=newSession;$('search').oninput=renderTree;
+  $('new-session').onclick=newSession;$('empty-new').onclick=newSession;
   $('split-horizontal').onclick=()=>split('horizontal');$('split-vertical').onclick=()=>split('vertical');
   $('maximize').onclick=()=>{if(!active)return;maximized=!maximized;$('maximize').setAttribute('aria-pressed',String(maximized));renderLayout();};
   $('take-control').onclick=()=>takeControl();$('renderer').value=renderer;

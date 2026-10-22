@@ -83,16 +83,27 @@
     const addon=pane.webgl;pane.webgl=null;if(addon)addon.dispose();
     pane.term.dispose();pane.el.remove();return true;
   }
-  function socketURL(relay, origin) {
-    const url = new URL(relay || origin);
+  function secureEndpoint(value) {
+    const url=new URL(value),authority=String(value).match(/^[a-z]+:\/\/([^/?#]*)/i)?.[1]||'';
     if (!['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)) throw new Error('Invalid relay URL');
-    if (url.username || url.password) throw new Error('URL credentials are not supported');
+    if (authority.includes('@')||url.username||url.password) throw new Error('URL credentials are not supported');
+    if(url.search||url.hash)throw new Error('Relay URL must not contain query or fragment credentials');
+    const insecure=['http:','ws:'].includes(url.protocol);
+    if(insecure&&url.hostname==='117.50.48.22'&&url.port==='8817'&&['/','/ws','/ws/'].includes(url.pathname)){
+      url.protocol=url.protocol==='http:'?'https:':'wss:';url.port='';url.pathname='/';
+    }
+    const local=['localhost','127.0.0.1','[::1]','::1'].includes(url.hostname)||/^127(?:\.\d{1,3}){3}$/.test(url.hostname);
+    if(['http:','ws:'].includes(url.protocol)&&!local)throw new Error('Network connections require HTTPS/WSS; plaintext is allowed only on loopback');
+    return url.toString();
+  }
+  function socketURL(relay, origin) {
+    const url = new URL(secureEndpoint(relay || origin));
     url.protocol = ['https:', 'wss:'].includes(url.protocol) ? 'wss:' : 'ws:';
     if (url.pathname === '/' || !url.pathname) url.pathname = '/ws';
     url.search = ''; url.hash = '';
     return url.toString();
   }
-  const api = {pack, unpack, targetFrame, sessionPayload, terminalInput, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL,
+  const api = {pack, unpack, targetFrame, sessionPayload, terminalInput, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,
     retryDelay: attempt => Math.min(15000, 500 * 2 ** Math.min(10, attempt)),
     rendererName: name => ['auto', 'dom', 'webgl'].includes(name) ? name : 'auto'};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

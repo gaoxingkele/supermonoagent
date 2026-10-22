@@ -15,6 +15,7 @@ MODES = {
     "microsoft": "supermonoagent.microsoft",
     "native-attach": "supermonoagent.native_attach",
     "notifications": "supermonoagent.notification_bridge",
+    "relay-bridge": "supermonoagent.relay_bridge",
 }
 
 

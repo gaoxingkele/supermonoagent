@@ -58,7 +58,7 @@
     if(inventory.length)activate(inventory[0].id);renderHosts();renderList();
   }
   function endpoint(h){
-    const u=new URL(h.endpoint);
+    const u=new URL(C.secureEndpoint(h.endpoint));
     if(!['http:','https:'].includes(u.protocol)||u.username||u.password||u.search||u.hash)throw new Error('无效的服务器地址');
     u.pathname=u.pathname.replace(/\/+$/,'')+'/ws';u.protocol=u.protocol==='https:'?'wss:':'ws:';return u.toString();
   }
@@ -116,7 +116,7 @@
     if(sid!==active||!writer||!controls[sid])return;
     if(replay){replaying++;ready=false;}
     writer.push(replay?C.snapshotBytes(bytes,sid):bytes,replay,()=>{if(sid!==active)return;
-      if(replay){replaying=Math.max(0,replaying-1);ready=connected;term.options.disableStdin=!ready;term.scrollToBottom();notice(bytes.length?'有限历史已恢复；全屏程序可能需要自行刷新':'');}
+      if(replay){replaying=Math.max(0,replaying-1);ready=connected;term.options.disableStdin=!ready;term.scrollToBottom();localBottom();notice(bytes.length?'有限历史已恢复；全屏程序可能需要自行刷新':'');}
       historyStatus();scheduleFit();
     },controls[sid]);
   }
@@ -199,24 +199,40 @@
   function input(text){if(!text||!ready||paused||!connected||selected().socket?.readyState!==1)return false;selected().socket.send(C.targetFrame(17,active,text));return true;}
   function key(text){if(composing){pendingKeys.push({sid:sessionKey(),text});return;}input(text);}
   function flushKeys(){const keys=pendingKeys;pendingKeys=[];for(const k of keys)if(k.sid===sessionKey())input(k.text);}
+  const localViews=new WeakMap();
+  function localView(){let view=localViews.get(term);if(!view){view={bottom:true};localViews.set(term,view);$('screen').scrollLeft=0;}return view;}
+  function localBottom(){if(!term)return;localView().bottom=true;$('screen').scrollTop=$('screen').scrollHeight;}
+  function baseCell(){
+    if(!term)return null;
+    if(term.options.lineHeight!==1)term.options.lineHeight=1;
+    if(term.options.letterSpacing!==0)term.options.letterSpacing=0;
+    const cell=term._core._renderService.dimensions.css.cell;
+    return cell.width&&cell.height?cell:null;
+  }
   function desiredSize(){
     if(!term||document.hidden||$('screen').clientWidth<48||$('screen').clientHeight<24)return null;
-    const cell=term._core._renderService.dimensions.css.cell;if(!cell.width||!cell.height)return null;
+    const cell=baseCell();if(!cell)return null;
     return C.terminalSize(Math.floor(($('screen').clientWidth-12-term._core.viewport.scrollBarWidth)/cell.width),Math.floor(($('screen').clientHeight-5)/cell.height));
   }
   function displayGrid(){
-    if(!term?.element)return;const cell=term._core._renderService.dimensions.css.cell;if(!cell.width||!cell.height)return;
+    if(!term?.element)return;const cell=baseCell();if(!cell)return;
+    const screen=$('screen'),rect=screen.getBoundingClientRect(),view=localView();
     const width=term.cols*cell.width+12+term._core.viewport.scrollBarWidth,height=term.rows*cell.height+5;
-    const scale=Math.min($('screen').getBoundingClientRect().width/width,$('screen').getBoundingClientRect().height/height);
-    if(scale<=0)return;Object.assign(term.element.style,{width:width+'px',height:height+'px',transformOrigin:'top left',transform:'scale('+scale+')'});
-    $('screen').dataset.grid=term.cols+'×'+term.rows;$('screen').dataset.scale=String(scale);
+    const readable=sizing==='phone'&&!control,scale=readable?1:Math.min(rect.width/width,rect.height/height);
+    if(scale<=0)return;screen.dataset.viewportMode=readable?'readable':'overview';
+    Object.assign(term.element.style,{width:width+'px',height:(readable?Math.max(height,screen.clientHeight):height)+'px',transformOrigin:'top left',transform:'scale('+scale+')'});
+    screen.dataset.grid=term.cols+'×'+term.rows;screen.dataset.scale=String(scale);
+    if(readable&&view.bottom)screen.scrollTop=screen.scrollHeight;
+    if(!readable){screen.scrollLeft=0;screen.scrollTop=0;}
+    historyStatus();
   }
   function requestSize(takeControl=false){
     const desired=desiredSize(),lease=controls[active];if(!desired||!ready||!lease)return;
+    // Viewing, switching and rotating are local actions. Only an existing owner
+    // or an explicit Take Control click may alter the shared PTY dimensions.
+    if(!takeControl&&!control)return;
     if(sizing==='shared'&&!takeControl)return;
     const key=desired.cols+'x'+desired.rows;
-    if(!takeControl&&!control&&lease.busy===true&&sizing==='shared')return;
-    if(sizing==='phone'&&key!==lastSize)takeControl=true;
     if((takeControl||key!==lastSize)&&send(5,{session:active,...desired,take_control:takeControl}))lastSize=key;
   }
   function scheduleFit(){if(fitFrame!==null||!term)return;fitFrame=requestAnimationFrame(()=>{fitFrame=null;if(!term||paused||writer?.idle===false)return;
@@ -254,14 +270,26 @@
       onSent:()=>{$('draft').value='';drafts.delete(sid);uncertainDrafts.delete(sid);closeComposer();notice('输入回显已确认，已发送回车。');},
       isCurrent:()=>!paused&&ready&&connected&&term===current&&selected()===c&&c.socket===socket&&c.generation===generation&&sessionKey()===sid}))return;
   }
-  function historyStatus(){if(!term)return;const b=term.buffer.active;$('resume').hidden=b.type!=='normal'||b.viewportY>=b.baseY;}
-  let gesture=M.createGesture(),scrollRows=0,scrollFrame=null;
+  function historyStatus(){if(!term)return;const b=term.buffer.active,screen=$('screen');$('resume').hidden=(b.type!=='normal'||b.viewportY>=b.baseY)&&(screen.dataset.viewportMode!=='readable'||screen.scrollTop>=screen.scrollHeight-screen.clientHeight-2);}
+  function visibleRows(){const cell=term?._core?._renderService?.dimensions.css.cell,scale=Number($('screen').dataset.scale)||1;return Math.max(1,Math.min(term?.rows||1,Math.floor($('screen').clientHeight/((cell?.height||17)*scale))));}
+  function localScroll(pixels){
+    if(!term||!pixels)return;const screen=$('screen'),buffer=term.buffer.active,line=term._core._renderService.dimensions.css.cell.height*(Number(screen.dataset.scale)||1);
+    if(screen.dataset.viewportMode!=='readable'){if(buffer.type==='normal')term.scrollLines(Math.trunc(pixels/line));historyStatus();return;}
+    const view=localView(),historyPixels=value=>{const total=(view.historyPixels||0)+value,before=buffer.viewportY;term.scrollLines(Math.trunc(total/line));const rest=total-(buffer.viewportY-before)*line,edge=total<0?buffer.viewportY===0:buffer.viewportY>=buffer.baseY;view.historyPixels=edge?0:rest;return edge?rest:0;};
+    let remaining=pixels;
+    // Returning towards the prompt consumes history before the current grid.
+    if(remaining>0&&buffer.type==='normal'&&buffer.viewportY<buffer.baseY)remaining=historyPixels(remaining);
+    const before=screen.scrollTop;screen.scrollTop+=remaining;remaining-=screen.scrollTop-before;
+    if(remaining<0&&buffer.type==='normal')historyPixels(remaining);
+    view.bottom=screen.scrollTop>=screen.scrollHeight-screen.clientHeight-2&&(buffer.type!=='normal'||buffer.viewportY>=buffer.baseY);historyStatus();
+  }
+  let gesture=M.createGesture(),scrollRows=0,scrollFrame=null,panTouch=null;
   function scroll(rows){if(!rows||!term)return;scrollRows+=rows;if(scrollFrame!==null)return;scrollFrame=requestAnimationFrame(()=>{scrollFrame=null;const n=scrollRows;scrollRows=0;if(!term)return;
-    if(term.buffer.active.type==='alternate'){for(let i=0;i<Math.min(12,Math.abs(n));i++)key(M.alternateScroll(n,!!term.modes?.applicationCursorKeysMode));}else term.scrollLines(n);historyStatus();});}
-  $('screen').addEventListener('touchstart',e=>{if(e.touches.length!==1)return;gesture.start(e.touches[0].clientX,e.touches[0].clientY);e.preventDefault();},{passive:false});
-  $('screen').addEventListener('touchmove',e=>{if(e.touches.length!==1)return;const cell=term?._core?._renderService?.dimensions?.css?.cell;const line=(cell?.height||17)*(Number($('screen').dataset.scale)||1);const move=gesture.move(e.touches[0].clientX,e.touches[0].clientY,line);if(move.drag)scroll(move.rows);e.preventDefault();},{passive:false});
+    localScroll(n*term._core._renderService.dimensions.css.cell.height*(Number($('screen').dataset.scale)||1));});}
+  $('screen').addEventListener('touchstart',e=>{if(e.touches.length!==1)return;const touch=e.touches[0];gesture.start(touch.clientX,touch.clientY);panTouch={x:touch.clientX,y:touch.clientY};e.preventDefault();},{passive:false});
+  $('screen').addEventListener('touchmove',e=>{if(e.touches.length!==1)return;const touch=e.touches[0],cell=term?._core?._renderService?.dimensions?.css?.cell;const line=(cell?.height||17)*(Number($('screen').dataset.scale)||1);const move=gesture.move(touch.clientX,touch.clientY,line);if(move.drag&&panTouch){if($('screen').dataset.viewportMode==='readable'){$('screen').scrollLeft+=panTouch.x-touch.clientX;localScroll(panTouch.y-touch.clientY);}else scroll(move.rows);panTouch={x:touch.clientX,y:touch.clientY};}e.preventDefault();},{passive:false});
   $('screen').addEventListener('touchend',e=>{if(gesture.end()){if(modes.get(sessionKey())==='buffered')setMode(true);else term?.focus();}e.preventDefault();},{passive:false});
-  $('screen').addEventListener('wheel',e=>{e.preventDefault();scroll(Math.sign(e.deltaY)*3);},{passive:false});
+  $('screen').addEventListener('wheel',e=>{e.preventDefault();if($('screen').dataset.viewportMode==='readable'){$('screen').scrollLeft+=e.deltaX||(e.shiftKey?e.deltaY:0);if(!e.shiftKey)localScroll(e.deltaY);}else scroll(Math.sign(e.deltaY)*3);},{passive:false});
   $('sessions').onclick=()=>{renderHosts();renderList();$('session-dialog').showModal();};$('sessions-close').onclick=()=>$('session-dialog').close();
   $('session-search').oninput=renderList;
   let editingHost=null;
@@ -292,7 +320,7 @@
   $('font').oninput=()=>{localStorage.setItem('sma.mobile.font',$('font').value);if(term)term.options.fontSize=Number($('font').value);scheduleFit();};
   $('renderer').onchange=()=>{renderer=C.rendererName($('renderer').value);if(term)setRenderer();};
   $('ctrl').onpointerdown=e=>e.preventDefault();$('ctrl').onclick=()=>setCtrl(!ctrl);
-  const keys={escape:'\x1b',tab:'\t',f2:'\x1bOQ',up:'\x1b[A',down:'\x1b[B',left:'\x1b[D',right:'\x1b[C'};
+  const keys={escape:'\x1b',tab:'\t',f2:'\x1bOQ',enter:'\r',up:'\x1b[A',down:'\x1b[B',left:'\x1b[D',right:'\x1b[C'};
   for(const b of document.querySelectorAll('[data-key]')){b.onpointerdown=e=>e.preventDefault();b.onclick=()=>key(keys[b.dataset.key]);}
   $('mode').onclick=()=>{modes.set(sessionKey(),'buffered');setMode(true);};
   $('github').onclick=()=>{modes.set(sessionKey(),'buffered');setMode(true);if(!$('draft').value){$('draft').value='提交全部文件到 GitHub';drafts.set(sessionKey(),$('draft').value);updateComposer();}else $('composer-status').textContent='已保留现有草稿；清空后可再次选择“提交 GitHub”。';};
@@ -304,7 +332,17 @@
   $('draft').onkeydown=e=>{const action=M.composerAction(e,composing);composerNewline=action==='newline';if(action==='send'){e.preventDefault();submit();}};
   $('draft').onbeforeinput=e=>{if(composerNewline){composerNewline=false;return;}if(M.composerAction(e,composing)==='send'){e.preventDefault();submit();}};
   $('send').onclick=submit;
-  $('bottom').onclick=()=>{term?.scrollToBottom();historyStatus();};
+  function viewHistory(action){
+    if(!term)return;
+    if(scrollFrame!==null)cancelAnimationFrame(scrollFrame);scrollFrame=null;scrollRows=0;
+    action(term);historyStatus();
+  }
+  function historyPage(direction){if(!term)return;const line=term._core._renderService.dimensions.css.cell.height*(Number($('screen').dataset.scale)||1);localScroll(direction*Math.max(1,visibleRows()-1)*line);}
+  const historyActions={'page-up':()=>historyPage(-1),'page-down':()=>historyPage(1),'history-top':t=>{if(t.buffer.active.type==='normal')t.scrollToTop();localView().bottom=false;$('screen').scrollTop=0;},'history-bottom':t=>{if(t.buffer.active.type==='normal')t.scrollToBottom();localBottom();}};
+  for(const [id,action] of Object.entries(historyActions)){$(id).onpointerdown=e=>e.preventDefault();$(id).onclick=()=>viewHistory(action);}
+  $('bottom').onclick=()=>viewHistory(historyActions['history-bottom']);
+  $('refresh-screen').onpointerdown=e=>e.preventDefault();
+  $('refresh-screen').onclick=()=>{if(!term)return;term.refresh(0,term.rows-1);displayGrid();historyStatus();};
   $('copy').onclick=()=>{if(!term)return;let text=term.getSelection();if(!text){const b=term.buffer.active;text=Array.from({length:term.rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)||'').join('\n');}
     $('copy-text').value=text;$('settings-dialog').close();$('copy-dialog').showModal();$('copy-text').focus();$('copy-text').select();};$('copy-close').onclick=()=>$('copy-dialog').close();
   new ResizeObserver(scheduleFit).observe($('screen'));window.visualViewport?.addEventListener('resize',scheduleFit);

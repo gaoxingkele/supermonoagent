@@ -15,6 +15,7 @@ import re
 import secrets
 import tempfile
 import time
+import time
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -74,10 +75,12 @@ def tap_field(device, node, value):
         raise RuntimeError("Native fixture input has no visible bounds")
     left, top, right, bottom = map(int, bounds.groups())
     device.run("shell", "input", "tap", str((left + right) // 2), str((top + bottom) // 2))
-    device.run("shell", "input", "keycombination", "113", "29")  # Ctrl+A
-    device.run("shell", "input", "keyevent", "KEYCODE_DEL")
+    time.sleep(.3)
+    device.run("shell", "input", "keyevent", "KEYCODE_MOVE_END", *(["KEYCODE_DEL"] * 128))
     for character in value:
         device.run("shell", "input", "text", character)
+        time.sleep(.04)
+    device.run("shell", "input", "keyevent", "KEYCODE_DPAD_RIGHT")
 
 
 def dismiss_password_vault(device, nodes=None):
@@ -127,23 +130,39 @@ def notification_action(device, action):
     raise RuntimeError("Native notification action unavailable after vault-aware retries")
 
 
+def connection_fields(device):
+    for attempt in range(7):
+        nodes=device.native_nodes()
+        fields=[n for n in nodes if n.get("package")==PACKAGE and n.get("class")=="android.widget.EditText"]
+        if len(fields)==3:return fields
+        bounds=re.findall(r"\d+",nodes[0].get("bounds","")) if nodes else []
+        if len(bounds)!=4:break
+        left,top,right,bottom=map(int,bounds);x=str((left+right)//2)
+        device.run("shell","input","swipe",x,str(top+(bottom-top)//3),x,str(top+(bottom-top)*4//5),"200")
+    raise RuntimeError("Native connection form unavailable after scrolling to top")
+
+
 def configure(device, endpoint, code, token, *, keep_native_token=False):
     device.run("shell", "am", "start", "-f", "0x20000000", "-n", PACKAGE + "/.MainActivity",
                "--ez", "ui_probe", "true", "--ez", "show_settings", "true", "--ez", "hide_keyboard", "true")
-    fields = [node for node in device.native_nodes()
-              if node.get("package") == PACKAGE and node.get("class") == "android.widget.EditText"]
+    fields = connection_fields(device)
     if len(fields) != 3:
         raise RuntimeError("Native connection form unavailable; unlock the phone manually")
     if keep_native_token and (fields[2].get("password") != "true" or not fields[2].get("text")):
         raise RuntimeError("Bundled native password field is empty; cannot preserve fixture authentication")
-    values = (endpoint, code) if keep_native_token else (endpoint, code, token)
-    for index, value in enumerate(values):
-        fields = [node for node in device.native_nodes()
-                  if node.get("package") == PACKAGE and node.get("class") == "android.widget.EditText"]
+    values = [(1, code)] if keep_native_token else list(enumerate((endpoint, code, token)))
+    if keep_native_token and fields[0].get("text", "").rstrip("/") != endpoint.rstrip("/"):
+        raise RuntimeError("Native endpoint differs from the explicitly selected relay")
+    for index, value in values:
+        fields = connection_fields(device)
         if len(fields) != 3:
             raise RuntimeError("Native connection fields changed during fixture setup")
         tap_field(device, fields[index], value)
-        device.run("shell", "input", "keyevent", "KEYCODE_BACK")
+        device.run("shell", "am", "start", "-f", "0x20000000", "-n", PACKAGE + "/.MainActivity",
+                   "--ez", "ui_probe", "true", "--ez", "hide_keyboard", "true")
+    observed = connection_fields(device)
+    if len(observed)!=3 or observed[1].get("text") != code:
+        raise RuntimeError("Native room input did not match fixture room")
     # Current APK defaults legacy compatibility on; assert it when dialog appears.
     notification_action(device, "启用通知")
     # Runtime permission may already be granted. Only touch the OS permission dialog.
@@ -188,14 +207,18 @@ async def probe(args):
             async with serve(service.handle_socket, "127.0.0.1", 0) as local:
                 bridge = NotificationBridge(f"http://127.0.0.1:{local.sockets[0].getsockname()[1]}", token, TaskEventStore())
                 tasks = [asyncio.create_task(bridge.observe()), asyncio.create_task(bridge.relay(args.relay, code + "-events"))]
+                report["stage"]="local_bridge"
                 await wait_for(lambda: bridge.connected and bridge.relay_connected and any(
                     client.subscriptions for client in service.hub.clients.values()))
+                report["stage"]="native_configuration"
                 await asyncio.to_thread(configure, device, endpoint, code, token,
                                         keep_native_token=bool(args.credentials))
+                report["stage"]="event_subscription"
                 await wait_for(lambda: bool(bridge.subscribers), 60)
                 await asyncio.sleep(.5)  # Allow first-enable baseline cursor to arrive.
                 phases = ["background", "locked"] + (["doze"] if args.doze else [])
                 for phase in phases:
+                    report["stage"]=phase
                     if phase == "background":
                         await asyncio.to_thread(device.run, "shell", "input", "keyevent", "KEYCODE_HOME")
                     elif phase == "locked":
@@ -222,6 +245,7 @@ async def probe(args):
                 report["passed"] = len(report["checks"]) == len(phases)
     except Exception as error:
         report["errors"].append(ui.safe_error(error) or type(error).__name__)
+        if "bridge" in locals():report["bridge_state"]={"backend":bridge.connected,"relay":bridge.relay_connected,"subscribers":len(bridge.subscribers),"events":len(bridge.store.records)}
     finally:
         if doze:
             await asyncio.to_thread(device.run, "shell", "dumpsys", "deviceidle", "unforce", check=False)

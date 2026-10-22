@@ -43,5 +43,8 @@
 - `tests/test_notification_bridge.py`：旧后台 Authorization 请求头、真实隔离中继、只读连接、不创建 PTY。
 - `tests/test_android_notifications.py`：真实 JVM WebSocket 掩码、握手、帧限额、分片、控制帧、空闲保活。
 - `scripts/test-android-notifications.py --doze`：在当前公网中继创建临时隔离测试房间，用假 PTY 验证手机后台/锁屏/Doze。测试不向用户终端发送指令；完成后必须恢复真实监测目标。不会绕过手机锁屏或安装指纹确认。
+- `scripts/test-live-notifications.py --credentials 本机私有配置.json --doze`：不修改手机连接表单，使用已经开启的真实监测目标进行标注清楚的链路自测。兼容桥的认证后操作 20 只生成无终端 ID 的测试通知、每 5 秒最多一次，不写入 PTY。真实任务检测另外由上述隔离状态转换测试覆盖。
+
+2026-10-22 实机结果：荣耀 FLC-AN00 / Android 16 / APK 0.2.17，通过既有公网中继的后台、锁屏、ADB 强制深度待机通知均已在系统通知记录中确认，测得约 437/374/340ms。深度待机确认状态为 IDLE，测试后已恢复 ACTIVE。这里验证的是短时可达性，不代表 30 分钟锁屏、8 小时耗电或大样本送达率。记录：`.omx/artifacts/terminal-notifications/live-device/verification.json`。USB 后续断开，当前是否仍开启监测以手机常驻通知与桥健康检查的 subscribers 为准。
 
 本轮构建：Android 0.2.17 / code 19；Windows `dist/windows-notifications/`。Android 私人安装包使用了本机既有连接默认值，不能当作通用公开包转发。完整测试记录与实机状态以 `.omx/artifacts/terminal-notifications/` 为准，尚未做 8 小时耗电和长时间锁屏送达率评估。

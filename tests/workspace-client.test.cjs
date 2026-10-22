@@ -47,6 +47,13 @@ test('retry is bounded and renderer choice is constrained', () => {
   assert.equal(client.rendererName('webgl'), 'webgl');
   assert.equal(client.rendererName('invalid'), 'auto');
 });
+
+test('known relay migrates to fixed WSS and other insecure network URLs fail closed',()=>{
+  assert.equal(client.socketURL('ws://117.50.48.22:8817/ws','http://localhost'),'wss://117.50.48.22/ws');
+  assert.equal(client.secureEndpoint('http://117.50.48.22:8817'),'https://117.50.48.22/');
+  assert.equal(client.socketURL('http://127.0.0.1:9123','http://localhost'),'ws://127.0.0.1:9123/ws');
+  for(const value of ['ws://other.example/ws','http://192.168.1.8:8817','ws://@117.50.48.22:8817/ws','ws://117.50.48.22:8817/ws?token=x'])assert.throws(()=>client.socketURL(value,'http://localhost'));
+});
 test('redraw size bounce stays within daemon limits and restores the size', () => {
   assert.deepEqual(client.redrawSizes(100, 30), [{cols:99,rows:30},{cols:100,rows:30}]);
   assert.deepEqual(client.redrawSizes(500, 200), [{cols:499,rows:200},{cols:500,rows:200}]);

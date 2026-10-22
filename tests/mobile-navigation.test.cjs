@@ -4,6 +4,7 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 const {webcrypto}=require('node:crypto');
 const MobileCore=require('../android/assets/mobile/mobile-core.js');
+const TerminalClient=require('../src/supermonoagent/static/terminal-client.js');
 
 function client(){
   class Element{
@@ -20,15 +21,15 @@ function client(){
     send(value){this.sent.push(value);} close(){this.closed=true;}
   }
   const context={document:{getElementById:get,createElement:()=>new Element(),querySelectorAll:()=>[],addEventListener(){}},
-    location:{hash:'#'+encodeURIComponent(JSON.stringify({endpoint:'http://home:1234',token:'home-secret'})),pathname:'/mobile/index.html'},
+    location:{hash:'#'+encodeURIComponent(JSON.stringify({endpoint:'https://home:1234',token:'home-secret'})),pathname:'/mobile/index.html'},
     addEventListener(){},history:{replaceState(){}},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},
-    TerminalClient:{pack:(op,value)=>({op,value}),retryDelay:()=>100},MobileCore,
+    TerminalClient:{pack:(op,value)=>({op,value}),retryDelay:()=>100,secureEndpoint:TerminalClient.secureEndpoint},MobileCore,
     TextEncoder,TextDecoder,URL,Uint8Array,Uint32Array,crypto:webcrypto,WebSocket:Socket,performance:{now:()=>0},
     ResizeObserver:class{observe(){}},setTimeout:()=>1,clearTimeout(){},setInterval:()=>2,clearInterval(){},cancelAnimationFrame(){}};
   context.window=context;
   vm.runInNewContext(fs.readFileSync(require('node:path').join(__dirname,'../android/assets/mobile/app.js'),'utf8'),context);
   const add=(name,token)=>{
-    get('host-name').value=name;get('host-endpoint').value='http://other:5678';get('host-code').value='room';get('host-token').value=token;
+    get('host-name').value=name;get('host-endpoint').value='https://other:5678';get('host-code').value='room';get('host-token').value=token;
     get('host-form').onsubmit({preventDefault(){}});
   };
   return {get,storage,sockets,add};

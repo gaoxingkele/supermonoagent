@@ -224,7 +224,7 @@ async def _check_plaintext(playwright):
                     await page.wait_for_function('generation=>smaWorkspace.connected&&smaWorkspace.activeHost.generation>generation',arg=generation)
                     before=list(urls)
                     await page.locator('#connect-button').click()
-                    await login(page,'ws://117.50.48.22:8817/ws')
+                    await login(page,'ws://untrusted.example:8817/ws')
                     assert 'HTTPS/WSS' in await page.locator('#relay-account-status').inner_text()
                     assert await page.locator('#relay-account-password').input_value()==''
                     assert urls==before

@@ -20,7 +20,8 @@ async def _check_activity(playwright, edge):
     async with isolated_host() as (daemon, _direct, _relay):
         sessions = []
         for title in ('Active window', 'Quiet window'):
-            window = daemon.hub.open_window(title, owner=daemon.token)
+            group = daemon.hub.add_group(title + ' group', owner=daemon.token)
+            window = daemon.hub.open_window(title, group_id=group.id, owner=daemon.token)
             sessions.append(daemon.hub.open_cli(window.id, 'cmd'))
         sessions[0].pty.inbox.put(b'Historical output\r\n')
         async with serve(daemon.handle_socket, '127.0.0.1', 0, process_request=daemon.serve_http) as server:
@@ -35,8 +36,9 @@ async def _check_activity(playwright, edge):
                     assert await rows.count() == 2
                     assert await rows.first.locator('.session-dot').get_attribute('aria-label') == '状态：等待输入（暂未收到新输出）'
                     assert await rows.first.locator('.session-dot').evaluate('(el)=>getComputedStyle(el).backgroundColor') == 'rgb(244, 207, 85)'
-                    geometry = await rows.first.evaluate('row=>({row:row.getBoundingClientRect().left,group:row.parentElement.querySelector(".group-label").getBoundingClientRect().left,dot:row.querySelector(".session-dot").getBoundingClientRect().width,label:row.querySelector(".session-label").getBoundingClientRect().left,right:row.getBoundingClientRect().right,sidebar:document.querySelector("#sidebar").getBoundingClientRect().right})')
-                    assert geometry['row'] >= geometry['group'] + 16
+                    assert await page.locator('#tree .project-label, #tree .group-label, #new-group').count() == 0
+                    geometry = await rows.first.evaluate('row=>({row:row.getBoundingClientRect().left,machine:row.closest(".computer-tree").querySelector(".workspace-host").getBoundingClientRect().left,dot:row.querySelector(".session-dot").getBoundingClientRect().width,label:row.querySelector(".session-label").getBoundingClientRect().left,right:row.getBoundingClientRect().right,sidebar:document.querySelector("#sidebar").getBoundingClientRect().right})')
+                    assert geometry['row'] >= geometry['machine'] + 16
                     assert geometry['dot'] == 8
                     assert geometry['right'] <= geometry['sidebar']
                     out = Path('.omx/artifacts/sidebar-activity')

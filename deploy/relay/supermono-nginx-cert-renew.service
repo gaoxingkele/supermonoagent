@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew the short-lived SuperMonoAgent IP certificate
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/supermono-certbot/bin/certbot renew --config-dir /etc/letsencrypt-supermono --work-dir /var/lib/letsencrypt-supermono --logs-dir /var/log/letsencrypt-supermono --cert-name supermono-ip --quiet --deploy-hook /usr/local/libexec/supermono-nginx-cert-deploy

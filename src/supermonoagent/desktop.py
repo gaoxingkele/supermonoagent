@@ -214,6 +214,10 @@ def connection_url(args: argparse.Namespace, *, browser: bool = False) -> str:
     authority = f"[{args.host}]" if ":" in args.host else args.host
     base = f"http://{authority}:{args.port}"
     status = health(base)
+    if args.state_dir or os.environ.get("SUPERMONO_STATE_DIR") or args.port == PORT:
+        from .relay_bridge import ensure_running
+        bridge_state = Path(args.state_dir or os.environ.get("SUPERMONO_STATE_DIR") or Path.home() / ".supermonoagent")
+        ensure_running(base, bridge_state)
     token = str(status.get("default_token") or "")  # Older loopback daemons only.
     if not token and (args.state_dir or os.environ.get("SUPERMONO_STATE_DIR") or args.port == PORT):
         state = Path(args.state_dir or os.environ.get("SUPERMONO_STATE_DIR") or Path.home() / ".supermonoagent")

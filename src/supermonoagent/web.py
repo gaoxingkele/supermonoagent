@@ -1762,7 +1762,7 @@ function relayRow(item) {
   name.placeholder = "名称";
   name.value = item.name || "";
   const url = document.createElement("input");
-  url.placeholder = "ws://117.50.48.22:8817/ws";
+  url.placeholder = "wss://117.50.48.22/ws";
   url.value = item.url || "";
   const code = document.createElement("input");
   code.placeholder = "code";

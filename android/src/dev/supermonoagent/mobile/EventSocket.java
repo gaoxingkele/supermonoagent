@@ -24,8 +24,7 @@ public final class EventSocket implements AutoCloseable {
         Message(int opcode, byte[] body) { this.opcode = opcode; this.body = body; }
     }
     public EventSocket(String address) throws Exception {
-        ConnectionEndpoint.validate(address);
-        URI uri = new URI(address);
+        URI uri = new URI(ConnectionEndpoint.normalize(address));
         boolean tls = "https".equalsIgnoreCase(uri.getScheme());
         int port = uri.getPort() < 0 ? (tls ? 443 : 80) : uri.getPort();
         String host = uri.getHost();

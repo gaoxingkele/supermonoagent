@@ -21,6 +21,7 @@ from websockets.asyncio.server import serve
 from . import web
 from .security import request_allowed, tls_context, transport_options, loopback, FIRST_FRAME_S
 from .accounts import Accounts
+from .defaults import migrate_legacy_relay
 from .hub import Hub
 from .task_events import TaskEventStore
 from .protocol import (
@@ -648,6 +649,7 @@ def clean_relays(items) -> list[dict]:
             url = "wss://" + url[8:]
         elif url and not url.startswith(("ws://", "wss://")):
             url = "ws://" + url
+        url = migrate_legacy_relay(url)
         url = url.rstrip("/")
         parts = urlsplit(url)
         if parts.scheme in {"ws", "wss"} and parts.path in {"", "/"}:
