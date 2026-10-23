@@ -12,8 +12,8 @@
 | 生产加密与发布 | [x] HTTPS/WSS 和签名更新已部署 | 不再以“缺 SSH/TLS”作为当前阻塞。公网证书、WSS 和更新包回读验签见 `.omx/artifacts/wss-migration/public-tls.json`、`.omx/artifacts/ui-menu-profiles/publication-verified.json`；续期 timer 的新鲜只读证据为 `.omx/artifacts/goal-completion-audit/cert-renew-timer.json`（active/enabled、service success、exit0）。 |
 | Android 实机基础验证 | [x] API2 0.2.24 安装及定向验证已完成 | 保留数据安装、六种模式、655 字符中英草稿、临时 WSS 多主机切换及草稿保留已实测；原主机、空草稿和原生 sender 已恢复，临时房间已清理。依据：`.omx/artifacts/android-api2-live/{initial-state.json,multihost-validation.json,restored-after-probe.json}`。 |
 | Android 输入法边界 | 未实测真实 OS IME | 已做真实 WebView 的合成 composition 事件守卫，不能替代系统输入法候选、确认或实际软键盘验收；不宣称这一项通过。 |
-| Android HTTPS 直连 | [ ] 集成复查发现回归，修复中 | 非 loopback 的 HTTPS 直连被房间流程挡住；不能把已通过的中继 Token＋房间流程当作此直连情形也通过。修复后需定向验证。 |
-| Android 已保存 Token | [ ] 集成复查发现保留风险，修复中 | 暂时解密失败并进入 onPause 的路径可能删除已有 Token；不能把解密暂不可用等同于用户明确删除。修复及其保留/删除边界需补验证，不读取或记录凭据正文。 |
+| Android HTTPS 直连 | [x] 已修复并通过定向验证 | 目录发现失败不能视为直连成功；同一 endpoint/Token 必须完成真实 HELLO 鉴权，修改地址、Token 或房间会作废回执。真实 TLS 非 loopback DNS fixture 已验证成功直连、错误 Token 和 relay 认证失败，见 `.omx/artifacts/android-credential-direct-fixes/verification.json` 及 `goal-completion-audit/post-fix.xml`。 |
+| Android 已保存 Token | [x] 已修复并通过定向验证 | 程序自动预填、临时解密失败和未编辑的 onPause 不触发密文写入/删除；只有用户编辑、明确清空或取消保存才提交变更。JVM 保存策略、AES/GCM 与目标绑定回归通过，证据同上；不读取或记录真实凭据正文。 |
 | Android 故障回退 | [ ] 仍待修复后真机复验 | 旧独立 QA 0.0.2 的 good 更新及草稿/配置保留通过；throw2 实际退到 bundled，而非预期 good2，good2 缓存 16 文件完整且 Java 验签通过。Native 退休/已知良好视图与状态字段修复已落地，但修复 QA 0.0.3 的安装会话 81224 已终态 `INSTALL_FAILED_ABORTED: User rejected permissions`，设备未安装该修复包；throw3/hang3 未执行，不能以源码/JVM通过替代真机通过。依据：`.omx/artifacts/android-ui-rollback-qa/qa-20261023T153711Z-00fddc0833a0/{physical-verification.json,cached-good2-integrity.json,cached-good2-java-verification.txt,fixed-install-terminal.json}`。 |
 | 新一轮整套验证 | 整套基线及后续定向修复通过 | `.omx/artifacts/goal-completion-audit/full-suite.{xml,txt}` 为 499 passed、1 skipped、57 subtests（505.96 秒），Node 42 passed。随后发现的两项 Android 连接回归已修复，41 项定向测试及全部 Java 编译通过，见 `.omx/artifacts/android-credential-direct-fixes/verification.json`。0.2.30 双端已构建；不把测试或构建当作手机故障回滚验收。 |
 
