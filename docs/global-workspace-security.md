@@ -1,8 +1,8 @@
 # 多电脑连接与凭证边界
 
-后续更新：用户已确认实施统一中继账号。新账号/授权目录/委托终端访问的代码和隔离验证见 [统一中继账号配置](relay-account-setup.md)。下文 TD-006G 是本轮之前的设计记录；当前代码能力与尚未执行的公网部署应按新文档区分。
+当前更新（2026-10-24）：用户最新选择为 Token＋房间号，统一邮箱账号不再是交付前提；[统一中继账号配置](relay-account-setup.md) 保留为高级功能说明。生产 HTTPS/WSS 和签名更新已部署，但真实 WSS 目录能力仍报告 `host_enrollment:false`，独立房间所有权的严格生产迁移尚未执行。证据：`.omx/artifacts/goal-completion-audit/production-directory-capabilities.json`。取消邮箱账号不等于取消独立 owner secret 的边界。
 
-本轮 TD-006 使用每台电脑独立授权、已知房间订阅的模型。实现证据见 `src/supermonoagent/security.py`、`relay.py`、`daemon.py`、`static/workspace.js` 与 `android/assets/mobile/app.js`；协议见 [protocol.md](protocol.md)。远程生产中继尚未部署本轮代码。
+本轮 TD-006 使用每台电脑独立授权、已知房间订阅的模型。实现证据见 `src/supermonoagent/security.py`、`relay.py`、`daemon.py`、`static/workspace.js` 与 `android/assets/mobile/app.js`；协议见 [protocol.md](protocol.md)。生产中继已部署兼容 Token 发现能力，不能据此声称严格所有权登记已迁移。
 
 ## 连接与身份
 
