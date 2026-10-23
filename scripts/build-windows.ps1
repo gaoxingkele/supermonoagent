@@ -37,7 +37,7 @@ $buildArgs = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--con
     '--hidden-import', 'supermonoagent.daemon', '--hidden-import', 'supermonoagent.relay',
     '--hidden-import', 'supermonoagent.frontend',
     '--hidden-import', 'supermonoagent.notification_bridge',
-    '--hidden-import', 'supermonoagent.relay_bridge',
+    '--hidden-import', 'supermonoagent.relay_bridge', '--hidden-import', 'supermonoagent.console_snapshot',
     '--hidden-import', 'supermonoagent.desktop', '--hidden-import', 'supermonoagent.microsoft',
     '--hidden-import', 'supermonoagent.native_attach', '--hidden-import', 'webview.platforms.winforms',
     '--hidden-import', 'webview.platforms.edgechromium', '--hidden-import', 'clr',

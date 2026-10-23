@@ -9,8 +9,8 @@ test('session dots follow live output, idle timeout and disconnection',()=>{
   assert.equal(M.sessionState(true,100,1900),'waiting');
   assert.equal(M.sessionState(false,1900,1900),'disconnected');
   assert.equal(M.agentType({title:'Work Codex',shell:'powershell'}),'Codex');
-  assert.equal(M.agentType({title:'Task',shell:'claude'}),'Claude');
-  assert.equal(M.agentType({title:'Build',shell:'cmd'}),'cmd');
+  assert.equal(M.agentType({title:'Task',shell:'claude'}),'Claude Code');
+  assert.equal(M.agentType({title:'Build',shell:'cmd'}),'其他');
 });
 test('recovery uses a close code accepted by the actual WebSocket API',()=>{
   const ws=new WebSocket('ws://127.0.0.1:9');ws.addEventListener('error',()=>{});

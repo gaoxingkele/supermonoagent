@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import struct
 
+from .ansi_state import bounded_snapshot
+
 OP_HELLO = 1
 OP_HELLO_OK = 2
 OP_OUTPUT = 3
@@ -26,7 +28,7 @@ OP_TASK_SUBSCRIBE = 18
 OP_TASK_EVENT = 19
 
 CAPABILITIES = {
-    "protocol_version": 2, "multiplex": True, "targeted_input": True, "resize_lease": True, "reliable": True, "window_themes": True, "resize_ack": True, "conpty_paste": True, "relay_delegation": True, "task_events": True}
+    "protocol_version": 2, "multiplex": True, "targeted_input": True, "resize_lease": True, "reliable": True, "window_themes": True, "resize_ack": True, "conpty_paste": True, "relay_delegation": True, "task_events": True, "snapshot_sgr": True}
 
 _HEADER = struct.Struct("<I")
 MAX_FRAME = 256 * 1024
@@ -43,9 +45,11 @@ def pack(op: int, payload: bytes = b"") -> bytes:
     return _HEADER.pack(len(body)) + body
 
 
-def fit_payload(payload: bytes) -> bytes:
+def fit_payload(payload: bytes, *, snapshot: bool = False) -> bytes:
     """Keep the newest bytes that still fit in one frame after the opcode."""
     limit = MAX_FRAME - 1
+    if snapshot:
+        return bounded_snapshot(payload, limit)
     if len(payload) <= limit:
         return payload
     payload = payload[-limit:]
@@ -61,9 +65,12 @@ def pack_feed(op: int, session_id: str, data: bytes) -> bytes:
     if room < 1:
         raise ProtocolError("session id too long")
     if len(data) > room:
-        data = data[-room:]
-        while data and data[0] & 0xC0 == 0x80:
-            data = data[1:]
+        if op == OP_SNAPSHOT:
+            data = bounded_snapshot(data, room)
+        else:
+            data = data[-room:]
+            while data and data[0] & 0xC0 == 0x80:
+                data = data[1:]
     return pack(op, prefix + data)
 
 

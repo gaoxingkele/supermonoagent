@@ -15,11 +15,11 @@
   const sessionKey=(id=active,hid=hostId)=>JSON.stringify([hid,id]);
   const targetKey=h=>JSON.stringify([new URL(h.endpoint).toString().replace(/\/+$/,''),h.code||'']);
   // Page-private session credentials survive an update navigation, never UI-state export.
-  function saveSessionCredentials(){try{sessionStorage.setItem('sma.mobile.credentials',JSON.stringify([home,...hosts].filter(h=>hostTokens.has(h.id)).map(h=>[h.id,targetKey(h),hostTokens.get(h.id)])));}catch{}}
+  function saveSessionCredentials(){try{sessionStorage.setItem('sma.mobile.credentials',JSON.stringify([home,...hosts].filter(h=>!h.autoDirectory&&hostTokens.has(h.id)).map(h=>[h.id,targetKey(h),hostTokens.get(h.id)])));}catch{}}
   try{for(const row of JSON.parse(sessionStorage.getItem('sma.mobile.credentials')||'[]')){const h=[home,...hosts].find(h=>h.id===row[0]);if(h&&row.length===3&&row[1]===targetKey(h)&&typeof row[2]==='string'&&h.id!=='home')hostTokens.set(h.id,row[2]);}}catch{}
   let restoringUI=null;
 
-  function connection(h){let c=connections.get(h.id);if(!c){c={host:h,socket:null,generation:0,retry:0,retryTimer:null,pingTimer:null,lastPing:0,connected:false,inventory:[],groups:[],activity:new Map(),controls:{},machine:'',project:'',subscription:'',status:'等待连接',createPending:false,beforeCreate:new Set()};connections.set(h.id,c);}return c;}
+  function connection(h){let c=connections.get(h.id);if(!c){c={host:h,socket:null,generation:0,retry:0,retryTimer:null,pingTimer:null,lastPing:0,connected:false,inventory:[],groups:[],activity:new Map(),agents:new Map(),controls:{},machine:'',project:'',subscription:'',status:'等待连接',createPending:false,beforeCreate:new Set()};connections.set(h.id,c);}return c;}
   let paused=false,connected=false;
   let inventory=[],active='',term=null,fit=null,writer=null,highlighter=null,webgl=null,renderer=config.renderer||'auto';
   $('highlight').checked=localStorage.getItem('sma.mobile.highlight')!=='off';
@@ -36,7 +36,7 @@
   const metrics={connections:0,frames:0,bytes:0,writes:0,fallbacks:0};
   const notice=text=>{$('notice').textContent=text;$('notice').hidden=!text;};
   const state=text=>{$('status').textContent=text;};
-  function saveHosts(){try{localStorage.setItem('sma.mobile.hosts',JSON.stringify(hosts));return true;}catch{notice('电脑列表无法保存；请检查设备存储空间');return false;}}
+  function saveHosts(){try{localStorage.setItem('sma.mobile.hosts',JSON.stringify(hosts.filter(h=>!h.autoDirectory)));return true;}catch{notice('电脑列表无法保存；请检查设备存储空间');return false;}}
   function selected(){return connection([home,...hosts].find(h=>h.id===hostId)||home);}
   function loadSelected(){const c=selected();connected=c.connected;inventory=c.inventory;controls=c.controls;machine=c.machine;project=c.project;createPending=c.createPending;state(c.status);}
   function renderHosts(){
@@ -45,14 +45,15 @@
       const c=connection(h),row=document.createElement('div');row.className='host-row';
       const b=document.createElement('button');b.className='host-button';b.dataset.hostId=h.id;b.setAttribute('aria-current',String(h.id===hostId));
       b.textContent=[c.project,c.machine||h.name,c.status].filter(Boolean).join(' · ');b.onclick=()=>chooseHost(h.id);row.append(b);
-      const edit=document.createElement('button');edit.textContent='设置';edit.onclick=()=>editHost(h);row.append(edit);
+      if(!h.autoDirectory){const edit=document.createElement('button');edit.textContent='设置';edit.onclick=()=>editHost(h);row.append(edit);}
       const retryButton=document.createElement('button');retryButton.textContent='重连';retryButton.onclick=()=>connect(c);row.append(retryButton);
-      if(h.id!=='home'){const remove=document.createElement('button');remove.className='host-remove';remove.textContent='移除';remove.setAttribute('aria-label','移除电脑 '+h.name);remove.onclick=()=>{stopSocket(c);connections.delete(h.id);hosts=hosts.filter(x=>x.id!==h.id);hostTokens.delete(h.id);saveSessionCredentials();for(const key of [...drafts.keys()])if(JSON.parse(key)[0]===h.id)drafts.delete(key);for(const key of [...modes.keys()])if(JSON.parse(key)[0]===h.id)modes.delete(key);if(h.id===hostId)chooseHost('home');saveHosts();refreshWatchers();renderHosts();renderList();};row.append(remove);}
+      if(h.id!=='home'&&!h.autoDirectory){const remove=document.createElement('button');remove.className='host-remove';remove.textContent='移除';remove.setAttribute('aria-label','移除电脑 '+h.name);remove.onclick=()=>{stopSocket(c);connections.delete(h.id);hosts=hosts.filter(x=>x.id!==h.id);hostTokens.delete(h.id);saveSessionCredentials();for(const key of [...drafts.keys()])if(JSON.parse(key)[0]===h.id)drafts.delete(key);for(const key of [...modes.keys()])if(JSON.parse(key)[0]===h.id)modes.delete(key);if(h.id===hostId)chooseHost('home');saveHosts();refreshWatchers();renderHosts();renderList();};row.append(remove);}
       $('host-list').append(row);
     }
     $('host-identity').textContent=[machine||selected().host.name,project].filter(Boolean).join(' · ');
   }
-  function chooseHost(id){
+  function chooseHost(id,restoring=false){
+    if(!restoring)restoringUI=null;
     const h=[home,...hosts].find(x=>x.id===id);if(!h||id===hostId)return;
     if(active)drafts.set(sessionKey(),$('draft').value);
     const previous=selected();sendHost(previous,16,{sessions:[]});previous.subscription='';
@@ -105,19 +106,68 @@
     ws.onerror=()=>{if(current())hostState(c,'网络不可用');};
     ws.onclose=event=>{if(!current())return;stopSocket(c);hostState(c,event.code===4001?'验证失败，请更新令牌':event.code===4004?'电脑离线 · 等待重连':'已断线 · 等待重连');if(!paused&&event.code!==4001)c.retryTimer=setTimeout(()=>connect(c),C.retryDelay(c.retry++));};
   }
+  // Only explicit profiles grant directory access. Discovered rooms never become
+  // credential roots, nor persist tokens or room lists across a UI navigation.
+  function removeDiscovered(h){
+    if(h.id===hostId)chooseHost('home');
+    const c=connections.get(h.id);if(c)stopSocket(c);
+    connections.delete(h.id);hostTokens.delete(h.id);hosts=hosts.filter(x=>x!==h);
+  }
+  function applyDirectory(w,message){
+    if(!Array.isArray(message.hosts)||message.hosts.length>64||!Number.isSafeInteger(message.revision)||message.revision<0||message.revision<w.revision)return;
+    w.revision=message.revision;
+    const discovery=message.capabilities?.token_discovery===true,wanted=new Set();
+    for(const entry of message.hosts.slice(0,64)){
+      if(!entry||typeof entry.code!=='string'||!entry.code||entry.code.length>128)continue;
+      const known=w.known.filter(h=>h.code===entry.code);
+      for(const h of known){const c=connection(h);c.directoryOnline=entry.online===true;if(entry.online===true){c.machine=String(entry.machine||'');c.project=String(entry.project||'');}}
+      if(known.length||!discovery||entry.online!==true||!Number.isInteger(entry.token_index)||entry.token_index<0||entry.token_index>=w.tokens.length)continue;
+      const id='discovered:'+JSON.stringify([w.url,entry.code]);
+      // Match canonical transport identity, including migrated legacy profiles.
+      if([home,...hosts].some(h=>!h.autoDirectory&&h.code===entry.code&&safeEndpoint(h)===w.url))continue;
+      wanted.add(id);let h=hosts.find(h=>h.id===id);
+      if(!h){if(hosts.length>=64)continue;const u=new URL(w.url);u.protocol=u.protocol==='wss:'?'https:':'http:';u.pathname=u.pathname.replace(/\/ws$/,'');h={id,name:entry.machine||entry.code,endpoint:u.toString().replace(/\/+$/,''),code:entry.code,autoDirectory:w.url,discoveryScope:w.signature};hosts.push(h);}
+      const c=connection(h),token=w.tokens[entry.token_index],changed=hostTokens.get(id)!==token;
+      hostTokens.set(id,token);h.name=String(entry.machine||entry.code);c.machine=String(entry.machine||'');c.project=String(entry.project||'');c.directoryOnline=true;
+      if(!c.socket||changed)connect(c);
+    }
+    for(const h of [...hosts])if(h.autoDirectory===w.url&&!wanted.has(h.id))removeDiscovered(h);
+    if(restoringUI){const h=hosts.find(h=>h.id===restoringUI.hostId);if(h){chooseHost(h.id,true);restoreSelected();}}
+    loadSelected();renderHosts();renderList();
+  }
+  function safeEndpoint(h){try{return endpoint(h);}catch{return '';}}
+  function requestDirectory(w){
+    if(paused||watchers.get(w.url)!==w||w.socket?.readyState!==1)return;
+    const delay=1000-(Date.now()-w.lastRequest);
+    if(delay>0){if(!w.refreshTimer)w.refreshTimer=setTimeout(()=>{w.refreshTimer=null;requestDirectory(w);},delay);return;}
+    w.lastRequest=Date.now();w.socket.send(JSON.stringify({op:'watch',rooms:w.known.map(h=>({code:h.code,token:hostTokens.get(h.id)})),tokens:w.tokens}));
+  }
+  function closeWatcher(w){clearTimeout(w.timer);clearTimeout(w.refreshTimer);w.socket.onclose=null;w.socket.close();}
   function refreshWatchers(){
-    for(const w of watchers.values()){clearTimeout(w.timer);w.socket.onclose=null;w.socket.close();}watchers.clear();if(paused)return;
-    const groups=new Map();for(const h of [home,...hosts]){if(!h.code||!hostTokens.get(h.id))continue;let url;try{url=endpoint(h);}catch{continue;}if(!groups.has(url))groups.set(url,[]);groups.get(url).push(h);}
-    for(const [url,known] of groups){const socket=new WebSocket(url),w={socket,timer:null};watchers.set(url,w);
-      socket.onopen=()=>socket.send(JSON.stringify({op:'watch',rooms:known.map(h=>({code:h.code,token:hostTokens.get(h.id)}))}));
-      socket.onmessage=e=>{if(paused||watchers.get(url)!==w)return;try{const m=JSON.parse(e.data);if(m.op!=='directory')return;for(const entry of m.hosts||[])for(const h of known.filter(h=>h.code===entry.code)){const c=connection(h);c.directoryOnline=entry.online;if(entry.online){c.machine=String(entry.machine||'');c.project=String(entry.project||'');} }loadSelected();renderHosts();renderList();}catch{}};
-      socket.onclose=e=>{if(!paused&&e.code!==4000&&watchers.get(url)===w)w.timer=setTimeout(refreshWatchers,10000);};socket.onerror=()=>{};
+    const groups=new Map();if(!paused)for(const h of [home,...hosts]){
+      if(h.autoDirectory||!h.code||!hostTokens.get(h.id))continue;
+      const url=safeEndpoint(h);if(!url)continue;
+      if(!groups.has(url))groups.set(url,[]);groups.get(url).push(h);
+    }
+    for(const [url,w] of watchers)if(!groups.has(url)){closeWatcher(w);watchers.delete(url);}
+    for(const h of [...hosts])if(!paused&&h.autoDirectory&&!groups.has(h.autoDirectory))removeDiscovered(h);
+    for(const [url,known] of groups){
+      const tokens=[...new Set(known.map(h=>hostTokens.get(h.id)))].slice(0,32),signature=JSON.stringify(known.map(h=>[h.id,h.code,hostTokens.get(h.id)]));
+      const existing=watchers.get(url);
+      if(existing&&existing.signature===signature&&existing.socket.readyState<2){requestDirectory(existing);continue;}
+      if(existing)closeWatcher(existing);
+      // Remove grants from a previous credential scope before accepting a new snapshot.
+      for(const h of [...hosts])if(h.autoDirectory===url&&h.discoveryScope!==signature)removeDiscovered(h);
+      const socket=new WebSocket(url),w={url,known,tokens,signature,socket,timer:null,refreshTimer:null,lastRequest:0,revision:-1};watchers.set(url,w);
+      socket.onopen=()=>requestDirectory(w);
+      socket.onmessage=e=>{if(paused||watchers.get(url)!==w||typeof e.data!=='string'||e.data.length>1048576)return;try{const message=JSON.parse(e.data);if(message.op==='directory')applyDirectory(w,message);}catch{}};
+      socket.onclose=e=>{if(watchers.get(url)!==w)return;for(const h of [...hosts])if(h.autoDirectory===url)removeDiscovered(h);renderHosts();renderList();if(!paused&&e.code!==4000&&e.code!==4001)w.timer=setTimeout(refreshWatchers,10000);};socket.onerror=()=>{};
     }
   }
   function consumeFeed(sid,bytes,replay){
     if(sid!==active||!writer||!controls[sid])return;
     if(replay){replaying++;ready=false;}
-    writer.push(replay?C.snapshotBytes(bytes,sid):bytes,replay,()=>{if(sid!==active)return;
+    writer.push(replay?C.snapshotBytes(bytes,sid,selected().capabilities?.snapshot_sgr===true):bytes,replay,()=>{if(sid!==active)return;
       if(replay){replaying=Math.max(0,replaying-1);ready=connected;term.options.disableStdin=!ready;term.scrollToBottom();localBottom();notice(bytes.length?'有限历史已恢复；全屏程序可能需要自行刷新':'');}
       historyStatus();scheduleFit();
     },controls[sid]);
@@ -129,12 +179,12 @@
     if(info.controls)c.controls=info.controls;
     if(info.machine!==undefined)c.machine=String(info.machine||'');if(info.project!==undefined)c.project=String(info.project||'');
     if(info.groups)c.groups=info.groups;
-    if(info.windows)c.inventory=info.windows.flatMap(w=>(w.sessions||[]).map(s=>({...s,title:w.title,window:w.id,group:w.group})));
-    if(info.windows){const ids=new Set(c.inventory.map(s=>s.id));for(const sid of c.activity.keys())if(!ids.has(sid))c.activity.delete(sid);}
+    if(info.windows)c.inventory=info.windows.flatMap(w=>(w.sessions||[]).map(s=>({...s,learnedAgent:c.agents.get(s.id)||'',title:w.title,window:w.id,group:w.group})));
+    if(info.windows){const ids=new Set(c.inventory.map(s=>s.id));for(const cache of [c.activity,c.agents])for(const sid of cache.keys())if(!ids.has(sid))cache.delete(sid);}
     if(c!==selected()){renderHosts();renderList();return;}
     loadSelected();renderHosts();renderList();
     if(c.createPending){const created=inventory.find(s=>!c.beforeCreate.has(s.id));if(created){c.createPending=false;createPending=false;activate(created.id);}}
-    if(restoringUI&&restoringUI.hostId===hostId&&inventory.some(s=>s.id===restoringUI.activeSid)){const sid=restoringUI.activeSid;restoringUI=null;activate(sid);}
+    restoreSelected();
     if(!inventory.some(s=>s.id===active)){if(inventory.length)activate(inventory[0].id);else{disposeTerminal();active='';}}
     if(controls[active]){const size=controls[active];control=!!size.owner;$('control').textContent=control?'主控':'接管';if(term&&(term.cols!==size.cols||term.rows!==size.rows))writer?.push(new Uint8Array(),false,scheduleFit,size);scheduleFit();}
     if(controls[active]&&waitingFeeds.length){const feeds=waitingFeeds;waitingFeeds=[];waitingBytes=0;for(const feed of feeds)consumeFeed(feed.sid,feed.bytes,feed.replay);}
@@ -153,17 +203,17 @@
   function startActivityTimer(){clearInterval(activityTimer);activityTimer=setInterval(()=>{if($('session-dialog').open)updateSessionDots();},300);}
   function renderList(){
     $('session-list').replaceChildren();const query=$('session-search').value.trim().toLocaleLowerCase();let count=0;
-    const projects=new Map();for(const c of connections.values()){const project=c.project||'未分配项目';if(!projects.has(project))projects.set(project,[]);projects.get(project).push(c);}
+    const projects=new Map();for(const c of connections.values()){if(!c.connected&&!c.inventory.length)continue;const project=c.project||'未分配项目';if(!projects.has(project))projects.set(project,[]);projects.get(project).push(c);}
     for(const [project,computers] of projects){const ph=document.createElement('h3');ph.textContent=project;$('session-list').append(ph);
       for(const c of computers){const heading=document.createElement('h4');heading.textContent=(c.machine||c.host.name)+' · '+c.status;$('session-list').append(heading);const groups=new Map();
         for(const s of c.inventory){count++;if(![s.title,s.shell,s.cwd,c.machine,c.project].join(' ').toLocaleLowerCase().includes(query))continue;const key=s.group||s.window||s.title||'窗口';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(s);}
         for(const sessions of groups.values()){
           const group=document.createElement('p');group.className='window-heading';group.textContent=c.groups.find(g=>g.id===sessions[0].group)?.name||sessions[0].title||'窗口';$('session-list').append(group);
-          for(const s of sessions){const b=document.createElement('button');b.className='session';b.dataset.host=c.host.id;b.dataset.session=s.id;b.dataset.name=s.title||'未命名窗口';b.dataset.agent=M.agentType(s);b.setAttribute('aria-current',String(c.host.id===hostId&&s.id===active));const dot=document.createElement('i');dot.className='session-dot';dot.setAttribute('aria-hidden','true');const name=document.createElement('span');name.className='session-name';name.textContent=b.dataset.name;const type=document.createElement('small');type.className='session-agent';type.textContent=b.dataset.agent;b.append(dot,name,type);b.onclick=()=>{chooseHost(c.host.id);activate(s.id);$('session-dialog').close();};$('session-list').append(b);}
+          for(const s of sessions){const b=document.createElement('button');b.className='session';b.dataset.host=c.host.id;b.dataset.session=s.id;b.dataset.name=s.title||'未命名窗口';b.dataset.agent=M.agentType(s);b.setAttribute('aria-label',b.dataset.name+'（'+b.dataset.agent+'）');b.setAttribute('aria-current',String(c.host.id===hostId&&s.id===active));const dot=document.createElement('i');dot.className='session-dot';dot.setAttribute('aria-hidden','true');const name=document.createElement('span');name.className='session-name';name.textContent=b.dataset.name;const type=document.createElement('small');type.className='session-agent';type.textContent='（'+b.dataset.agent+'）';b.append(dot,name,type);b.onclick=()=>{chooseHost(c.host.id);activate(s.id);$('session-dialog').close();};$('session-list').append(b);}
         }
       }
     }
-    $('session-count').textContent=count+' 个终端';$('new').disabled=!connected||createPending;
+    $('session-count').textContent=count+' 个终端';$('new').disabled=!connected||createPending;const current=inventory.find(s=>s.id===active);if(current)$('title').textContent=current.title+'（'+M.agentType(current,current.title)+'）';
     updateSessionDots();
   }
   function disposeTerminal(){
@@ -179,12 +229,23 @@
     if(scrollFrame!==null)cancelAnimationFrame(scrollFrame);scrollFrame=null;scrollRows=0;gesture=M.createGesture();
     if(sid===active&&term)return;
     if(active)drafts.set(sessionKey(),$('draft').value);disposeTerminal();active=sid;selected().subscription='';
-    const s=inventory.find(x=>x.id===sid);if(!s)return;$('title').textContent=s.title+' · '+s.shell;
+    const s=inventory.find(x=>x.id===sid);if(!s)return;$('title').textContent=s.title+'（'+M.agentType(s,s.title)+'）';
     $('draft').value=drafts.get(sessionKey(sid))||'';if(drafts.size>32)drafts.delete(drafts.keys().next().value);
     const font=Number(localStorage.getItem('sma.mobile.font'))||14;$('font').value=String(Math.max(11,Math.min(22,font)));
-    term=new Terminal({allowProposedApi:true,disableStdin:true,convertEol:false,scrollback:20000,fontSize:Number($('font').value),fontFamily:'Consolas, monospace',cursorBlink:false,windowsPty:{backend:'conpty'},theme:{background:'#141414',foreground:'#ededed',cursor:'#ddd'}});
+    term=new Terminal({allowProposedApi:true,disableStdin:true,convertEol:false,scrollback:20000,fontSize:Number($('font').value),fontFamily:'Consolas, monospace',cursorBlink:false,minimumContrastRatio:4.5,windowsPty:{backend:'conpty'},theme:{background:'#141414',foreground:'#ededed',cursor:'#ddd'}});
     // Full-screen tools may erase scrollback during repaint; preserve mobile reading history.
     term.parser.registerCsiHandler({final:'J'},params=>params[0]===3);
+    const agentHost=selected(),agentGeneration=agentHost.generation;
+    term.parser.registerOscHandler(7501,data=>{
+      if(selected()!==agentHost||agentHost.generation!==agentGeneration||active!==sid)return false;
+      const session=agentHost.inventory.find(item=>item.id===sid);if(!session||session.agent)return false;
+      const app=/(?:^|[;:])app=([a-zA-Z0-9_-]{1,40})(?:[;:]|$)/.exec(data)?.[1];
+      const clear=/(?:^|[;:])state=clear(?:[;:]|$)/.test(data);
+      if(!clear&&!/^(codex|claude(?:[-_]code)?|kimi|gemini|opencode|copilot|aider)$/i.test(app||''))return false;
+      const next=clear?'':app.toLowerCase().replace('_','-');if((agentHost.agents.get(sid)||'')===next)return false;
+      if(next)agentHost.agents.set(sid,next);else agentHost.agents.delete(sid);
+      session.learnedAgent=next;renderList();return false;
+    });
     fit=new FitAddon.FitAddon();term.loadAddon(fit);term.loadAddon(new Unicode11Addon.Unicode11Addon());term.unicode.activeVersion='11';term.open($('screen'));setRenderer();
     const current=term;
     highlighter=M.createHighlighter(current,{enabled:$('highlight').checked});
@@ -205,12 +266,18 @@
   const localViews=new WeakMap();
   function localView(){let view=localViews.get(term);if(!view){view={bottom:true};localViews.set(term,view);$('screen').scrollLeft=0;}return view;}
   function localBottom(){if(!term)return;localView().bottom=true;$('screen').scrollTop=$('screen').scrollHeight;}
+  let naturalCell=null;
   function baseCell(){
     if(!term)return null;
-    if(term.options.lineHeight!==1)term.options.lineHeight=1;
-    if(term.options.letterSpacing!==0)term.options.letterSpacing=0;
-    const cell=term._core._renderService.dimensions.css.cell;
-    return cell.width&&cell.height?cell:null;
+    const key=JSON.stringify([term.options.fontSize,term.options.fontFamily,term.options.fontWeight,term.options.fontWeightBold,devicePixelRatio]);
+    if(naturalCell?.term!==term||naturalCell.key!==key||naturalCell.renderer!==webgl){
+      if(term.options.lineHeight!==1)term.options.lineHeight=1;
+      if(term.options.letterSpacing!==0)term.options.letterSpacing=0;
+      const cell=term._core._renderService.dimensions.css.cell;
+      if(!cell.width||!cell.height)return null;
+      naturalCell={term,key,renderer:webgl,width:cell.width,height:cell.height};
+    }
+    return naturalCell;
   }
   function desiredSize(){
     if(!term||document.hidden||$('screen').clientWidth<48||$('screen').clientHeight<24)return null;
@@ -220,8 +287,18 @@
   function displayGrid(){
     if(!term?.element)return;const cell=baseCell();if(!cell)return;
     const screen=$('screen'),rect=screen.getBoundingClientRect(),view=localView();
-    const width=term.cols*cell.width+12+term._core.viewport.scrollBarWidth,height=term.rows*cell.height+5;
-    const readable=sizing==='phone'&&!control,scale=readable?1:Math.min(rect.width/width,rect.height/height);
+    const readable=sizing==='phone'&&!control;
+    // Keep glyph size and columns unchanged; short desktop grids may use the
+    // available vertical space through local row spacing alone.
+    let lineHeight=readable?Math.max(1,(screen.clientHeight-5)/(term.rows*cell.height)):1;
+    if(term.options.lineHeight!==lineHeight)term.options.lineHeight=lineHeight;
+    let actual=term._core._renderService.dimensions.css.cell;
+    if(lineHeight>1&&actual.height*term.rows<screen.clientHeight-5){
+      lineHeight+=(screen.clientHeight-5-actual.height*term.rows+1)/(term.rows*cell.height);
+      term.options.lineHeight=lineHeight;actual=term._core._renderService.dimensions.css.cell;
+    }
+    const width=term.cols*actual.width+12+term._core.viewport.scrollBarWidth,height=term.rows*actual.height+5;
+    const scale=readable?1:Math.min(rect.width/width,rect.height/height);
     if(scale<=0)return;screen.dataset.viewportMode=readable?'readable':'overview';
     Object.assign(term.element.style,{width:width+'px',height:(readable?Math.max(height,screen.clientHeight):height)+'px',transformOrigin:'top left',transform:'scale('+scale+')'});
     screen.dataset.grid=term.cols+'×'+term.rows;screen.dataset.scale=String(scale);
@@ -230,11 +307,11 @@
     historyStatus();
   }
   function requestSize(takeControl=false){
-    const desired=desiredSize(),lease=controls[active];if(!desired||!ready||!lease)return;
     // Viewing, switching and rotating are local actions. Only an existing owner
     // or an explicit Take Control click may alter the shared PTY dimensions.
     if(!takeControl&&!control)return;
     if(sizing==='shared'&&!takeControl)return;
+    const desired=desiredSize(),lease=controls[active];if(!desired||!ready||!lease)return;
     const key=desired.cols+'x'+desired.rows;
     if((takeControl||key!==lastSize)&&send(5,{session:active,...desired,take_control:takeControl}))lastSize=key;
   }
@@ -293,7 +370,7 @@
   $('screen').addEventListener('touchmove',e=>{if(e.touches.length!==1)return;const touch=e.touches[0],cell=term?._core?._renderService?.dimensions?.css?.cell;const line=(cell?.height||17)*(Number($('screen').dataset.scale)||1);const move=gesture.move(touch.clientX,touch.clientY,line);if(move.drag&&panTouch){if($('screen').dataset.viewportMode==='readable'){$('screen').scrollLeft+=panTouch.x-touch.clientX;localScroll(panTouch.y-touch.clientY);}else scroll(move.rows);panTouch={x:touch.clientX,y:touch.clientY};}e.preventDefault();},{passive:false});
   $('screen').addEventListener('touchend',e=>{if(gesture.end()){if(modes.get(sessionKey())==='buffered')setMode(true);else term?.focus();}e.preventDefault();},{passive:false});
   $('screen').addEventListener('wheel',e=>{e.preventDefault();if($('screen').dataset.viewportMode==='readable'){$('screen').scrollLeft+=e.deltaX||(e.shiftKey?e.deltaY:0);if(!e.shiftKey)localScroll(e.deltaY);}else scroll(Math.sign(e.deltaY)*3);},{passive:false});
-  $('sessions').onclick=()=>{renderHosts();renderList();$('session-dialog').showModal();};$('sessions-close').onclick=()=>$('session-dialog').close();
+  $('sessions').onclick=()=>{refreshWatchers();renderHosts();renderList();$('session-dialog').showModal();};$('sessions-close').onclick=()=>$('session-dialog').close();
   $('session-search').oninput=renderList;
   let editingHost=null;
   function editHost(h=null){editingHost=h;$('host-form').reset();$('host-name').value=h?.name||'';$('host-endpoint').value=h?.endpoint||selected().host.endpoint;$('host-code').value=h?.code||'';$('host-token').value=h?hostTokens.get(h.id)||'':'';$('host-error').hidden=true;$('session-dialog').close();$('host-dialog').showModal();}
@@ -304,7 +381,7 @@
   $('host-cancel').onclick=closeHost;$('host-dialog').addEventListener('cancel',e=>{e.preventDefault();closeHost();});
   $('host-form').onsubmit=e=>{e.preventDefault();try{
     const u=new URL($('host-endpoint').value.trim());if(!['http:','https:'].includes(u.protocol)||u.username||u.password||u.search||u.hash)throw new Error('请填写有效 HTTP(S) 地址');
-    const name=$('host-name').value.trim();if(!name)throw new Error('请填写电脑名称');if(!editingHost&&hosts.length>=30)throw new Error('最多保存30台电脑');
+    const name=$('host-name').value.trim();if(!name)throw new Error('请填写电脑名称');if(!editingHost&&hosts.filter(h=>!h.autoDirectory).length>=30)throw new Error('最多保存30台电脑');
     const h=editingHost||{id:'host-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-')};const old=editingHost&&targetKey(h);
     Object.assign(h,{name,endpoint:u.toString().replace(/\/+$/,''),code:$('host-code').value.trim()});if(old&&old!==targetKey(h)){
       const c=connection(h);stopSocket(c);hostTokens.delete(h.id);
@@ -367,14 +444,22 @@
     if(!c||!c.inventory.some(s=>s.id===value.session))return false;
     document.querySelectorAll('dialog[open]').forEach(d=>d.close());chooseHost(host.id);activate(value.session);return true;
   }
+  function restoreSelected(){
+    if(!restoringUI||restoringUI.hostId!==hostId||!inventory.some(s=>s.id===restoringUI.activeSid))return;
+    const sid=restoringUI.activeSid;restoringUI=null;activate(sid);$('draft').value=drafts.get(sessionKey())||'';setMode(false);
+  }
   function restoreUIState(value){
     if(!value||value.version!==1)return;
-    const h=[home,...hosts].find(h=>h.id===value.hostId);if(!h)return;
-    restoringUI={hostId:h.id,activeSid:value.activeSid};chooseHost(h.id);
+    const h=[home,...hosts].find(h=>h.id===value.hostId);
+    if(!h&&!(typeof value.hostId==='string'&&value.hostId.startsWith('discovered:')))return;
+    // Leave the startup host before restoring drafts: chooseHost saves the
+    // visible editor, which may still be empty after a fresh navigation.
+    restoringUI={hostId:value.hostId,activeSid:value.activeSid};if(h)chooseHost(h.id,true);
     for(const [key,text] of value.drafts||[])drafts.set(key,text);
     for(const [key,mode] of value.modes||[])modes.set(key,mode);
     for(const [key,text] of value.uncertainDrafts||[])uncertainDrafts.set(key,text);
-    if(inventory.some(s=>s.id===value.activeSid)){restoringUI=null;activate(value.activeSid);$('draft').value=drafts.get(sessionKey())||'';setMode(false);}
+    if(active)$('draft').value=drafts.get(sessionKey())||'';
+    restoreSelected();
   }
   window.MobileTerminal={pause,resume,captureUIState,restoreUIState,prepareUIReload,cancelUIReload,openNotification,reconnect:()=>{if(paused)resume();else{connect();refreshWatchers();}},chooseHost,get hosts(){return [...connections.values()].map(c=>({id:c.host.id,connected:c.connected,status:c.status,sessions:c.inventory.map(s=>s.id),subscription:c.subscription}));},get terminal(){return term;},get active(){return active;},get activeKey(){return sessionKey();},get connected(){return connected;},get ready(){return ready;},get controls(){return controls[active]||null;},revision:config.uiRevision||'bundled',metrics};
   for(const h of [home,...hosts])connection(h);

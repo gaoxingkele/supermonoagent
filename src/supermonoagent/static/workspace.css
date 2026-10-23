@@ -19,3 +19,9 @@
 dialog{max-height:calc(100dvh - 30px);overflow-y:auto}#relay-account-panel{min-width:0}
 
 #check-updates{flex:none;width:26px;min-width:26px;padding:3px;font-size:17px}@media(max-width:600px){.titlebar:has(#check-updates:not([hidden])) .wordmark{max-width:88px;overflow:hidden;text-overflow:ellipsis}}
+#highlight-toggle[aria-pressed=true]{color:#c3e88d}#highlight-toggle{flex-shrink:0}
+/* Keep the programming agent visible beside a single ellipsized window title. */
+.session-row{min-height:30px}
+.session-open{gap:6px;min-height:28px;padding:3px 6px}
+.session-label{flex:1;min-width:0}
+.session-shell{display:inline;flex:none;margin:0;font-size:11px;white-space:nowrap}

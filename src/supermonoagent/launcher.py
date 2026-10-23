@@ -16,6 +16,7 @@ MODES = {
     "native-attach": "supermonoagent.native_attach",
     "notifications": "supermonoagent.notification_bridge",
     "relay-bridge": "supermonoagent.relay_bridge",
+    "console-snapshot": "supermonoagent.console_snapshot",
 }
 
 

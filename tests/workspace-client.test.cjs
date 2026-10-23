@@ -77,6 +77,9 @@ test('bounded snapshots start at a complete terminal token', () => {
   assert.equal(new TextDecoder().decode(aligned.subarray(0,11)),'\x1b[0mFOOTER ');
   const complete=new TextEncoder().encode('normal beginning\r\n');
   assert.equal(client.snapshotBytes(complete,'12345678'),complete);
+  // New backends supply a restored SGR prefix and an aligned tail already.
+  const styled=new Uint8Array(bytes.length);styled.set(new TextEncoder().encode('\x1b[0;31mRED\n'));
+  assert.equal(client.snapshotBytes(styled,'12345678',true),styled);
 });
 test('bundled xterm preserves split UTF8 and split ANSI state as byte writes', async () => {
   const {Terminal}=require('../src/supermonoagent/static/xterm.js');

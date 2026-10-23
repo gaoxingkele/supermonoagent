@@ -4,7 +4,7 @@
 
 Android 专用终端默认开启文本高亮，右上角“⋯ → 文本高亮”可以关闭，选择保存在当前设备。文件名、数字、引号内容、Markdown 行内代码、函数名和错误提示会补充颜色；应用自身输出的 ANSI 前景色、背景色、反色和隐藏文字保持原样。
 
-实现位于 `mobile-core.js` 的 `createHighlighter`：原始字节仍直接交给 xterm，在解析后的可见字格上注册 foreground decoration，不往终端流中插入 SGR，不改变字符、光标、复制内容或后台会话。装饰只保留当前可见行，随输出、滚动、尺寸和缓冲区变化刷新，切换会话时销毁；DOM 与 WebGL 使用同一套规则。这是文字模式的辅助着色，不是完整的编程语言语法解析器；跨终端自动换行的单个 token 可能只按各行分别匹配。
+实现复用 `vendor/terminal-client.js` 的 `createHighlighter`，`mobile-core.js` 保留相同接口；Windows 工作区也使用这一实现。原始字节仍直接交给 xterm，在解析后的可见字格上注册 foreground decoration，不往终端流中插入 SGR，不改变字符、光标、复制内容或后台会话。装饰只保留当前可见行，随输出、滚动、尺寸和缓冲区变化刷新，切换会话时销毁；DOM 与 WebGL 使用同一套规则。这是文字模式的辅助着色，不是完整的编程语言语法解析器；跨终端自动换行的单个 token 可能只按各行分别匹配。
 
 回归：`python -m pytest -q tests/test_android_highlighting.py`。隔离后台和隐藏 Edge 覆盖冷启动历史、逐字节 UTF-8/SGR/OSC、中文及 emoji 字格、原生调色板/真彩色、光标覆盖、备用屏、历史滚动、旋转、开关保存和会话切换；DOM 检查实际文字颜色，双渲染器截图位于 `.omx/artifacts/mobile-highlighting/`。这些是桌面 Chromium 验证，不代表已更新或验证真机 WebView。
 
@@ -74,3 +74,25 @@ Windows Codex 右侧空白已在运行界面定位：旧前端保留宽本地网
 ## 2026-10-22 后续提交与重影修复
 
 手机现已安装原生 0.2.13，本轮界面修复通过 USB 热更新交付，不再安装 APK。编辑发送改为等待远端新回显后再发唯一一次 Enter，支持 Android 输入法事件；无回显 5 秒停止并提示直输。Win3 已切换当前显示服务，原有 4 个 daemon 会话保留。最新真机输入与布局证据分别在 `.omx/artifacts/android-stream-20261022-014319/` 和 `.omx/artifacts/android-device-probe-20261022-014405/`。原因、测试与加密评估见 [客户端评估](transport-crypto-review.md)。
+
+
+## Relay computer discovery (2026-10-23)
+
+Opening the terminal selector refreshes the existing relay directory connection.
+The home connection and manually saved profiles grant access only to their own
+relay endpoint and Tokens. The directory automatically lists every online
+terminal room authorized by those Tokens, and mobile connects to each computer
+for its window catalog. Unselected terminals do not subscribe to output or take
+PTY size control. The active terminal and unsent draft stay unchanged when a new
+computer appears.
+
+Discovered computers and their credentials remain in page memory; they never
+become additional credential roots or persist in localStorage or exported UI
+state. A signed UI update restores an automatically discovered selection only
+after the new page receives a fresh authorized directory snapshot. Offline or
+revoked rooms are removed together with their sockets and catalogs; if the
+selected computer disappears, mobile returns to the home computer and retains
+the previous computer's unsent draft. Older directory servers can still report
+known rooms, but unknown rooms require explicit token-discovery capability and
+a valid token index. Repeated selector openings reuse the directory socket and
+coalesce refreshes to at most one request per second.

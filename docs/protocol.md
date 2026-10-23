@@ -166,6 +166,8 @@ daemon、relay、frontend 对 HTTP 与 WS 升级检查 Host 和 Origin：默认�
 
 ## 验证入口
 
+终端能力 `snapshot_sgr:true` 表示后台在有界历史裁剪及快照二次装帧裁剪时补回裁剪点的 ANSI SGR 样式，并对齐首个控制 token/UTF-8 字节。客户端收到此标记时直接重放快照，不再运行旧版首边界猜测裁剪。实时输出和 feed 的原始位置不变；只还原颜色、强弱、下划线等 SGR 状态，不宣称重建完整屏幕、光标、滚动区或 OSC8。来源：[ansi_state.py](../src/supermonoagent/ansi_state.py)、[pump.py](../src/supermonoagent/pump.py)、[protocol.py](../src/supermonoagent/protocol.py)。
+
 [tests/test_protocol.py](../tests/test_protocol.py)、[test_security_directory.py](../tests/test_security_directory.py)、[test_client_integration.py](../tests/test_client_integration.py)、[test_desktop_multihost.py](../tests/test_desktop_multihost.py)、[test_workspace_runtime.py](../tests/test_workspace_runtime.py)、[test_resize_recovery.py](../tests/test_resize_recovery.py)。测试证明本地隔离实现行为；远端生产 TLS/owner enrollment 需要单独配置、迁移和验证。
 
 官方 Orca Mobile 的 E2EE/RPC 协议未在此实现；官方 App 不能直接当作本项目客户端。学习资料见 [study/NOTES.md](../study/NOTES.md)。

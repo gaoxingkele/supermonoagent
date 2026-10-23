@@ -1,5 +1,13 @@
 # 修改 TODO
 
+## 2026-10-23：远程 Codex/Claude 显示颜色
+
+- [x] 对 JINLONG3090 做只读颜色统计：3 个历史快照及采样期间 2 个活跃流只有 reset/bold/dim/underline，无前景/背景色码；没有发送输入、调整尺寸或重启终端。证据 `.omx/artifacts/remote-terminal-colors/live-readonly.json`。
+- [x] Windows 与 Android 共用显示层文本高亮；Windows 默认开启，可在底部“文本高亮”切换并保存选择；保留原生 ANSI 配色和终端字节。真实 Relay 下 DOM/WebGL 双端的实时/快照、开关与释放回归通过。
+- [x] 后端有界历史保留裁剪点的 SGR 状态，避免重连历史丢色，能力标记 `snapshot_sgr:true`；远端旧 daemon 仍需正常升级才具备此能力，不自动重启现有终端。
+- [x] 0.2.19 双端签名界面包已正式发布到现有 HTTPS 更新频道，公网重新下载、CNG 验签及 ZIP 校验通过（Windows 11 文件、Android 10 文件）；设备需执行“检查更新”并安装，未替用户强制重载。Windows 包 `dist/windows/0.2.19/` 已重建验证。
+- [x] 最终全量回归 340 passed、1 skipped、55 subtests passed；Node 34 passed。证据 `.omx/artifacts/remote-terminal-colors/{full-suite.xml,publication-verified.json}`。没有重启 JINLONG3090 后台或向现有终端输入命令。
+
 ## 2026-10-23：Windows 机器与窗口两级列表
 
 - [x] 每台机器只列一次，机器名下显示对应房间号；本机若收到多个中继房间则一起显示，没有提供房间号时明确标注。

@@ -188,7 +188,8 @@ class Hub:
                     "group": window.group_id,
                     "focused": window.focused,
                     "sessions": [
-                        {"id": item.id, "shell": item.shell, "cwd": item.cwd}
+                        {"id": item.id, "shell": item.shell, "cwd": item.cwd,
+                         **({"agent": item.task_detector.app} if item.task_detector.app else {})}
                         for item in window.sessions.values()
                     ],
                 }
@@ -612,7 +613,7 @@ class Hub:
         session = self.view(client)
         if session is None:
             return b""
-        return fit_payload(session.pump.snapshot())
+        return fit_payload(session.pump.snapshot(), snapshot=True)
 
     def view(self, client: Client) -> Session | None:
         with self._lock:
@@ -686,7 +687,10 @@ class Hub:
         session = self.sessions.get(session_id)
         if session is None:
             return
+        previous_app = session.task_detector.app
         completed = session.task_detector.feed(data)
+        if session.task_detector.app != previous_app:
+            self._catalog()
         window = self.windows.get(session.window_id)
         group = self.groups.get(window.group_id) if window is not None else None
         if group is None:
@@ -707,7 +711,7 @@ class Hub:
         # A direct pane must get raw terminal bytes, or the id is painted on the prompt.
         if client.multiplex or client.key.startswith("relay-"):
             return pack_feed(op, session_id, data)
-        return pack(op, fit_payload(data))
+        return pack(op, fit_payload(data, snapshot=op == OP_SNAPSHOT))
 
     def _feed_snapshot(self, client: Client) -> bytes:
         session = self.view(client)

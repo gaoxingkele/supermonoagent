@@ -63,6 +63,8 @@ class Frontend:
         self.version = revision()
         key = hashlib.sha256(self.backend.encode()).hexdigest()[:12]
         self.theme_file = theme_file or Path.home() / ".supermonoagent" / f"frontend-themes-{key}.json"
+        from .console_snapshot import FooterRecovery
+        self.footer_recovery = FooterRecovery(self.theme_file.parent, self.backend)
         try:
             saved = json.loads(self.theme_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -407,14 +409,29 @@ class Frontend:
                         input_timers[session] = asyncio.create_task(flush_later())
 
                 async def receive():
+                    recovery_waiting = set()
                     async for message in upstream:
+                        op = None
                         if isinstance(message, bytes):
                             op, payload = unpack(message)
                             if op in {2, 7}:
                                 state = unpack_json(payload)
                                 self.views[client] = state
                                 message = pack_json(op, self.themed_state(state))
+                            elif op == 8:
+                                sid, separator, _raw = payload.partition(b'\0')
+                                if separator and len(recovery_waiting) < 64:
+                                    recovery_waiting.add(sid)
                         await client.send(message)
+                        if op in {2, 7, 8}:
+                            current = self.views.get(client) or {}
+                            for sid in tuple(recovery_waiting):
+                                if sid.decode('utf-8', 'replace') not in current.get('controls', {}):
+                                    continue
+                                recovery_waiting.discard(sid)
+                                supplement = await asyncio.to_thread(self.footer_recovery.supplement, pack(8, sid+b'\0'), current)
+                                if supplement is not None:
+                                    await client.send(supplement)
 
                 async def transmit():
                     async for message in client:

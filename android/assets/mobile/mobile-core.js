@@ -1,60 +1,7 @@
 (function(root){
   'use strict';
-  // Decorate parsed cells instead of rewriting the PTY stream. In particular,
-  // split UTF-8, SGR/OSC sequences and cursor-addressed TUI output stay intact.
-  const PLAIN_TOKEN=/`[^`\n]+`|\*\*[^*\n]+\*\*|"[^"\n]*"|'[^'\n]*'|(?:错误|失败|异常|警告)|\b(?:Error|Exception|ERROR|FAIL|FAILED|Warning)\b|[\p{L}\p{N}_./\\:-]+\.(?:py|js|jsx|ts|tsx|css|html|json|md|exe|ps1|sh|yaml|yml|toml|java|go|rs|cpp|h)(?::\d+)?|\b[A-Za-z_][\w]*\(\)|\b\d+(?:\.\d+)?(?:\s?(?:KiB|MiB|ms|字节))?/gu;
-  function highlightSpans(line,cols){
-    let text='';const columns=[],plain=[];
-    for(let x=0;x<cols;x++){
-      const cell=line.getCell(x);if(!cell||!cell.getWidth())continue;
-      const chars=cell.getChars()||' ',width=cell.getWidth();
-      for(let i=0;i<chars.length;i++)columns[text.length+i]=x;
-      text+=chars;columns[text.length]=x+width;
-      const eligible=cell.isFgDefault()&&cell.isBgDefault()&&!cell.isInverse()&&!cell.isInvisible();
-      for(let i=0;i<width;i++)plain[x+i]=eligible;
-    }
-    const spans=[];
-    for(const match of text.matchAll(PLAIN_TOKEN)){
-      const token=match[0],start=columns[match.index],end=columns[match.index+token.length];
-      let color='#c792ea';
-      if(token[0]==='`'||token.endsWith('()'))color='#89ddff';
-      else if(token[0]==='"'||token[0]==="'")color='#c3e88d';
-      else if(token[0]==='*'||/^(?:错误|失败|异常|警告|Error|Exception|ERROR|FAIL|FAILED|Warning)$/.test(token))color='#f07178';
-      else if(/\.(?:[a-z]+)/i.test(token))color='#ffcb6b';
-      // Split around explicitly styled cells; never replace application colors.
-      let run=start;
-      while(run<end){while(run<end&&!plain[run])run++;let stop=run;while(stop<end&&plain[stop])stop++;
-        if(stop>run)spans.push({x:run,width:stop-run,foregroundColor:color});run=stop;}
-    }
-    return spans;
-  }
-  function createHighlighter(term,{enabled=true,schedule=requestAnimationFrame,cancel=cancelAnimationFrame}={}){
-    let entries=[],buffer=null,frame=null,dead=false;
-    const remove=entry=>{for(const decoration of entry.decorations)decoration.dispose();entry.marker.dispose();};
-    function clear(){for(const entry of entries)remove(entry);entries=[];}
-    function refresh(){
-      frame=null;if(dead)return;
-      const active=term.buffer.active;if(buffer!==active){clear();buffer=active;}
-      if(!enabled){clear();term.refresh(0,term.rows-1);return;}
-      const previous=new Map(entries.filter(e=>!e.marker.isDisposed).map(e=>[e.marker.line,e]));
-      entries=[];let changed=false;
-      for(let row=active.viewportY;row<Math.min(active.length,active.viewportY+term.rows);row++){
-        const line=active.getLine(row);if(!line)continue;
-        const spans=highlightSpans(line,term.cols),signature=JSON.stringify(spans),old=previous.get(row);previous.delete(row);
-        if(old&&old.signature===signature){entries.push(old);continue;}
-        if(old){remove(old);changed=true;}if(!spans.length)continue;
-        const marker=term.registerMarker(row-active.baseY-active.cursorY);if(!marker)continue;
-        const decorations=spans.map(span=>term.registerDecoration({marker,...span})).filter(Boolean);
-        entries.push({marker,decorations,signature});changed=true;
-      }
-      for(const entry of previous.values()){remove(entry);changed=true;}
-      if(changed)term.refresh(0,term.rows-1);
-    }
-    function request(){if(!dead&&frame===null)frame=schedule(refresh);}
-    const listeners=[term.onWriteParsed(request),term.onScroll(request),term.onResize(request),term.buffer.onBufferChange(()=>{clear();buffer=null;request();})];
-    request();
-    return {setEnabled(value){enabled=!!value;request();},dispose(){dead=true;if(frame!==null)cancel(frame);for(const listener of listeners)listener.dispose();clear();}};
-  }
+  const {highlightSpans,createHighlighter}=typeof module!=='undefined'&&module.exports
+    ?require('../../../src/supermonoagent/static/terminal-client.js'):root.TerminalClient;
   function createWriter({write,schedule,cancel,onOverflow=()=>{},limit=524288,chunk=32768}){
     let queue=[],pending=0,busy=false,frame=null,dead=false;
     function drain(){
@@ -138,10 +85,13 @@
   function sessionState(connected,lastOutput,now){
     return !connected?'disconnected':lastOutput!==undefined&&now-lastOutput<1800?'refreshing':'waiting';
   }
-  function agentType(session){
-    const text=[session.agent,session.title,session.shell].filter(Boolean).join(' ');
-    for(const [pattern,label] of [[/codex/i,'Codex'],[/claude/i,'Claude'],[/kimi/i,'Kimi'],[/gemini/i,'Gemini'],[/opencode/i,'OpenCode'],[/copilot/i,'Copilot'],[/aider/i,'Aider']])if(pattern.test(text))return label;
-    return session.shell||'终端';
+  function agentType(session,windowTitle=''){
+    const values=[session.agent,session.learnedAgent,session.command,session.argv,session.title,windowTitle,session.shell];
+    for(const value of values){
+      const text=Array.isArray(value)?value.join(' '):String(value||'');
+      for(const [pattern,label] of [[/\bcodex\b/i,'Codex'],[/\bclaude(?:[ _-]code)?\b/i,'Claude Code'],[/\bkimi\b/i,'Kimi'],[/\bgemini\b/i,'Gemini'],[/\bopen[ -]?code\b/i,'OpenCode'],[/\bcopilot\b/i,'Copilot'],[/\baider\b/i,'Aider']])if(pattern.test(text))return label;
+    }
+    return '其他';
   }
   const api={highlightSpans,createHighlighter,createWriter,createGesture,controlKey,composerAction,createComposerSubmitter,createComposerEcho,alternateScroll,closeForRecovery,sessionState,agentType};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.MobileCore=api;

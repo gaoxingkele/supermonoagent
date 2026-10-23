@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import threading
 
+from .ansi_state import SgrState, bounded_snapshot
+
 RING_BYTES = 256 * 1024
 PENDING_BYTES = 128 * 1024
 COALESCE_S = 0.02
@@ -20,14 +22,19 @@ class OutputPump:
         self._position = 0
         self._pending_end = 0
         self.flushed_position = 0
+        self._head_style = SgrState()
+        self._cropped = False
+
+    def _snapshot_locked(self) -> bytes:
+        return bounded_snapshot(bytes(self._ring), RING_BYTES, self._head_style, cropped=self._cropped)
 
     def snapshot(self) -> bytes:
         with self._lock:
-            return bytes(self._ring)
+            return self._snapshot_locked()
 
     def snapshot_position(self) -> tuple[bytes, int]:
         with self._lock:
-            return bytes(self._ring), self._position
+            return self._snapshot_locked(), self._position
 
     def remember(self, data: bytes) -> None:
         if not data:
@@ -37,7 +44,9 @@ class OutputPump:
             self._position += len(data)
             extra = len(self._ring) - RING_BYTES
             if extra > 0:
+                self._head_style.feed(bytes(self._ring[:extra]))
                 del self._ring[:extra]
+                self._cropped = True
 
     def stage(self, data: bytes, loop, on_flush) -> None:
         if not data:
@@ -66,7 +75,7 @@ class OutputPump:
         with self._lock:
             overflow = self._overflow
             data = bytes(self._pending)
-            snap = bytes(self._ring) if overflow else b""
+            snap = self._snapshot_locked() if overflow else b""
             self._pending.clear()
             self._overflow = False
             self._armed = False

@@ -24,7 +24,7 @@ from urllib.parse import urlsplit, urlunsplit
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
-from .protocol import OP_HELLO, OP_HELLO_OK, OP_SESSIONS, pack_json, unpack, unpack_json
+from .protocol import OP_HELLO, OP_HELLO_OK, OP_SESSIONS, pack, pack_json, unpack, unpack_json
 from .security import loopback, request_allowed
 from .web import text_response
 from .defaults import DEFAULT_RELAY
@@ -73,6 +73,7 @@ class RelayBridge:
         self.relay_connected = False
         self.relay_endpoint = ""
         self.phones: dict[int, Phone] = {}
+        self.footer_recovery = None
 
     def authorized(self, token) -> bool:
         return isinstance(token, str) and hmac.compare_digest(token.encode(), self.token.encode())
@@ -133,11 +134,27 @@ class RelayBridge:
                         await local.send(frame)
 
                 async def replies():
+                    state = {}
+                    recovery_waiting = set()
                     async for frame in local:
                         if not isinstance(frame, bytes):
                             raise ValueError("Binary daemon frames required")
-                        unpack(frame)
+                        opcode, payload = unpack(frame)
+                        if opcode in {OP_HELLO_OK, OP_SESSIONS}:
+                            state = unpack_json(payload)
+                        elif opcode == 8:
+                            sid, separator, _raw = payload.partition(b'\0')
+                            if separator and len(recovery_waiting) < 64:
+                                recovery_waiting.add(sid)
                         await outbound.put((phone_id, route, struct.pack("<I", phone_id) + frame))
+                        if opcode in {OP_HELLO_OK, OP_SESSIONS, 8} and self.footer_recovery is not None:
+                            for sid in tuple(recovery_waiting):
+                                if sid.decode('utf-8', 'replace') not in state.get('controls', {}):
+                                    continue
+                                recovery_waiting.discard(sid)
+                                supplement = await asyncio.to_thread(self.footer_recovery.supplement, pack(8, sid+b'\0'), state)
+                                if supplement is not None:
+                                    await outbound.put((phone_id, route, struct.pack("<I", phone_id) + supplement))
 
                 jobs = [asyncio.create_task(inbound()), asyncio.create_task(replies())]
                 done, _ = await asyncio.wait(jobs, return_when=asyncio.FIRST_COMPLETED)
@@ -335,6 +352,8 @@ async def run(args):
     token = (args.state_dir / "token").read_text(encoding="utf8").strip()
     code = args.code_file.read_text(encoding="utf8").strip()
     bridge = RelayBridge(args.backend, token)
+    from .console_snapshot import FooterRecovery
+    bridge.footer_recovery = FooterRecovery(args.state_dir, args.backend)
     # Validate configuration before creating long-lived tasks.
     socket_url(args.relay)
     async def reject(ws):

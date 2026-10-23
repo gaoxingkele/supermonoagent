@@ -1,5 +1,13 @@
 # Three Windows clients, one daemon
 
+## Remote terminal colors
+
+The modern workspace now shares Android's display-only text highlighter, enabled by default. The footer's “文本高亮” button toggles it and saves the local preference. Files, numbers, quoted strings, inline code, function names and error labels can receive color when the application supplied none. This is auxiliary text highlighting, not a complete programming-language parser. It never rewrites terminal bytes or replaces explicit ANSI foreground/background colors. Closing a view releases its decorations without stopping the terminal.
+
+The 2026-10-23 read-only JINLONG3090 sample contained reset/bold/dim/underline SGR parameters, with no foreground/background colors in its three bounded histories or the two active streams observed. No input or resize frames were sent. Actual relay regressions preserve 16-color, 256-color and truecolor output on both desktop and Android in DOM and WebGL; color loss is not inherent to the relay. A separate backend correction preserves SGR state when old history is cropped, advertised by `snapshot_sgr:true`. That correction requires updating the computer hosting the daemon; existing live terminals are not restarted automatically.
+
+The desktop and Android UI fix was published as **0.2.19** to the existing HTTPS update channel and downloaded again for signature and archive verification. Use “检查更新” and install the update on each client. This publication does not force-reload any open view or restart a remote daemon. Evidence: `.omx/artifacts/remote-terminal-colors/publication-verified.json`.
+
 The current Windows release is **0.2.19**, matching Android, in `dist/windows/0.2.19/`. Windows releases use the same numeric version as Android, never feature-based names. The build reads Android's manifest version and embeds it in EXE FileVersion/ProductVersion, `version.txt` and `build-manifest.json`; the default output is `dist/windows/<version>/`. When building both platforms, build Android first because its existing build advances the release version, then build Windows. Older named folders below are historical artifacts.
 
 The sidebar lists each machine once with its room code and all open windows directly underneath, without a search box. Use the arrow beside a machine to collapse or expand its window list; the state survives page reloads in the same browser session. Collapsing affects only the sidebar and keeps its terminals running. Project and terminal-group headings and the create-group button are removed. Existing windows from every backend group remain listed; status dots, colors, rename and per-machine connection settings remain available. For direct connections without a supplied room code, it displays that no room is configured.

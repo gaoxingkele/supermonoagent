@@ -64,6 +64,8 @@ async def check_phone_fit(playwright, renderer):
                     page.on("pageerror", lambda error: errors.append(str(error)))
                     await page.goto(origin + "/mobile/index.html#" + config)
                     await page.wait_for_function("window.MobileTerminal?.ready")
+                    expected_grid = (158, 44)
+                    short_grid_evidence = []
                     geometry = """() => {
                         const m=MobileTerminal,t=m.terminal,r=document.getElementById('screen').getBoundingClientRect(),
                         e=t.element.getBoundingClientRect(),cell=t._core._renderService.dimensions.css.cell,
@@ -81,19 +83,27 @@ async def check_phone_fit(playwright, renderer):
                     async def assert_filled():
                         try:
                             await page.wait_for_function("""() => {
-                                const t=MobileTerminal.terminal,e=t.element.getBoundingClientRect(),r=document.getElementById('screen').getBoundingClientRect();
+                                const t=MobileTerminal.terminal,e=t.element.getBoundingClientRect(),r=document.getElementById('screen').getBoundingClientRect(),
+                                    gridHeight=t.rows*t._core._renderService.dimensions.css.cell.height+5;
+                                // ResizeObserver applies row spacing on the next frame.
+                                // An already oversized outer box alone is not proof that
+                                // the freshly rotated viewport has been fitted.
                                 return e.width>=r.width*.95&&e.height>=r.height*.95&&
+                                    gridHeight>=r.height-6&&
+                                    (gridHeight<=r.height+24||t.options.lineHeight===1)&&
                                     document.getElementById('screen').dataset.scale==='1';
                             }""", timeout=3000)
                         except Exception:
                             raise AssertionError(await page.evaluate(geometry)) from None
                         value = await page.evaluate(geometry)
-                        assert value["cols"] == 158 and value["rows"] == 44 and not value["owner"]
+                        assert (value["cols"], value["rows"]) == expected_grid and not value["owner"]
                         assert value["effectiveFont"] == value["font"] and value["effectiveFont"] >= 14, value
                         assert not value["documentOverflow"], value
-                        assert value["lineHeight"] == 1 and value["letterSpacing"] == 0, value
+                        assert value["lineHeight"] >= 1 and value["letterSpacing"] == 0, value
+                        if value["gridHeight"] > value["screenHeight"] + 24:
+                            assert value["lineHeight"] == 1, value
                         assert value["scaleX"] == value["scaleY"], value
-                        assert (session.resize_owner, session.cols, session.rows) == (desktop.key, 158, 44)
+                        assert (session.resize_owner, session.cols, session.rows) == (desktop.key, *expected_grid)
                         observed = await page.evaluate(UI_PROBE.GEOMETRY)
                         assert observed["viewportMode"] == "readable"
                         assert observed["effectiveFontSize"] == value["font"]
@@ -162,6 +172,25 @@ async def check_phone_fit(playwright, renderer):
                     await page.locator("#options").click()
                     await page.locator("#sizing").select_option("phone")
                     await page.locator("#settings-close").click()
+                    await assert_filled()
+                    # A short desktop grid must fill the actual rendered row surface,
+                    # rather than only enlarging its outer background container.
+                    expected_grid = (84, 24)
+                    assert daemon.hub.resize_session(desktop, session.id, *expected_grid, False)
+                    await page.wait_for_function("MobileTerminal.terminal.rows===24")
+                    for viewport in ({"width": 718, "height": 748}, {"width": 390, "height": 844},
+                                     {"width": 844, "height": 390}, {"width": 390, "height": 500}):
+                        await page.set_viewport_size(viewport)
+                        await assert_filled()
+                        value = await page.evaluate(geometry)
+                        rendered = await page.locator(".xterm-screen").bounding_box()
+                        assert rendered["height"] >= value["screenHeight"] - 6, value
+                        assert value["effectiveFont"] == 18, value
+                        short_grid_evidence.append({"viewport": viewport, **value, "renderedHeight": rendered["height"]})
+                    artifact = ROOT / ".omx/artifacts/mobile-short-grid"
+                    artifact.mkdir(parents=True, exist_ok=True)
+                    (artifact / f"{renderer}.json").write_text(json.dumps(short_grid_evidence, indent=2), encoding="utf8")
+                    await page.set_viewport_size({"width": 718, "height": 748})
                     await assert_filled()
                     # Explicit takeover uses unadapted 18px cells, not expanded viewer row gaps.
                     await page.locator("#control").click()

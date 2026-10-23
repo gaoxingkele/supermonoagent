@@ -1,8 +1,10 @@
 # Wiki Index
 
-> 5 pages | Last updated: 2026-10-22
+> 6 pages | Last updated: 2026-10-23
 
 ## decision
+
+- [Terminal readability and discovery](terminal-readability.md) — 自动发现、单行智能体名称、高度适配及 Codex 底栏回放缺字
 
 - [Free terminal task notifications](task-notifications.md) — 现有中继、原生通知、旧后台兼容与实测边界
 

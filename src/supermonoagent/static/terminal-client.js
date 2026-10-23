@@ -2,6 +2,62 @@
 (function (root) {
   'use strict';
   const encoder = new TextEncoder();
+  // Decorate parsed cells instead of rewriting the PTY stream. In particular,
+  // split UTF-8, SGR/OSC sequences and cursor-addressed TUI output stay intact.
+  const PLAIN_TOKEN=/`[^`\n]+`|\*\*[^*\n]+\*\*|"[^"\n]*"|'[^'\n]*'|(?:错误|失败|异常|警告)|\b(?:Error|Exception|ERROR|FAIL|FAILED|Warning)\b|[\p{L}\p{N}_./\\:-]+\.(?:py|js|jsx|ts|tsx|css|html|json|md|exe|ps1|sh|yaml|yml|toml|java|go|rs|cpp|h)(?::\d+)?|\b[A-Za-z_][\w]*\(\)|\b\d+(?:\.\d+)?(?:\s?(?:KiB|MiB|ms|字节))?/gu;
+  function highlightSpans(line,cols){
+    let text='';const columns=[],plain=[];
+    for(let x=0;x<cols;x++){
+      const cell=line.getCell(x);if(!cell||!cell.getWidth())continue;
+      const chars=cell.getChars()||' ',width=cell.getWidth();
+      for(let i=0;i<chars.length;i++)columns[text.length+i]=x;
+      text+=chars;columns[text.length]=x+width;
+      const eligible=cell.isFgDefault()&&cell.isBgDefault()&&!cell.isInverse()&&!cell.isInvisible();
+      for(let i=0;i<width;i++)plain[x+i]=eligible;
+    }
+    const spans=[];
+    for(const match of text.matchAll(PLAIN_TOKEN)){
+      const token=match[0],start=columns[match.index],end=columns[match.index+token.length];
+      let color='#c792ea';
+      if(token[0]==='`'||token.endsWith('()'))color='#89ddff';
+      else if(token[0]==='"'||token[0]==="'")color='#c3e88d';
+      else if(token[0]==='*'||/^(?:错误|失败|异常|警告|Error|Exception|ERROR|FAIL|FAILED|Warning)$/.test(token))color='#f07178';
+      else if(/\.(?:[a-z]+)/i.test(token))color='#ffcb6b';
+      // Split around explicitly styled cells; never replace application colors.
+      let run=start;
+      while(run<end){while(run<end&&!plain[run])run++;let stop=run;while(stop<end&&plain[stop])stop++;
+        if(stop>run)spans.push({x:run,width:stop-run,foregroundColor:color});run=stop;}
+    }
+    return spans;
+  }
+  function createHighlighter(term,{enabled=true,schedule=requestAnimationFrame,cancel=cancelAnimationFrame}={}){
+    let entries=[],buffer=null,frame=null,dead=false;
+    const remove=entry=>{for(const decoration of entry.decorations)decoration.dispose();entry.marker.dispose();};
+    function clear(){for(const entry of entries)remove(entry);entries=[];}
+    function refresh(){
+      frame=null;if(dead)return;
+      const active=term.buffer.active;if(buffer!==active){clear();buffer=active;}
+      if(!enabled){clear();term.refresh(0,term.rows-1);return;}
+      const previous=new Map(entries.filter(e=>!e.marker.isDisposed).map(e=>[e.marker.line,e]));
+      entries=[];let changed=false;
+      for(let row=active.viewportY;row<Math.min(active.length,active.viewportY+term.rows);row++){
+        const line=active.getLine(row);if(!line)continue;
+        const spans=highlightSpans(line,term.cols),signature=JSON.stringify(spans),old=previous.get(row);previous.delete(row);
+        if(old&&old.signature===signature){entries.push(old);continue;}
+        if(old){remove(old);changed=true;}if(!spans.length)continue;
+        const marker=term.registerMarker(row-active.baseY-active.cursorY);if(!marker)continue;
+        const decorations=spans.map(span=>term.registerDecoration({marker,...span})).filter(Boolean);
+        entries.push({marker,decorations,signature});changed=true;
+      }
+      for(const entry of previous.values()){remove(entry);changed=true;}
+      if(changed)term.refresh(0,term.rows-1);
+    }
+    function request(){if(!dead&&frame===null)frame=schedule(refresh);}
+    const listeners=[term.onWriteParsed(request),term.onScroll(request),term.onResize(request),term.buffer.onBufferChange(()=>{clear();buffer=null;request();})];
+    request();
+    return {setEnabled(value){enabled=!!value;request();},dispose(){dead=true;if(frame!==null)cancel(frame);for(const listener of listeners)listener.dispose();clear();}};
+  }
+
   function pack(op, payload = new Uint8Array()) {
     if(payload.length + 1 > 262144)throw new Error('Oversized frame');
     const result=new Uint8Array(payload.length+5);
@@ -33,7 +89,8 @@
     // Restrict this to complete DA/DSR answers; arrows, paste, Esc and Ctrl remain intact.
     return text.replace(/\x1b\[(?:[?>]?[0-9;]*c|[0-9]+;[0-9]+R|[0-9]+n)/g,'');
   }
-  function snapshotBytes(bytes, session) {
+  function snapshotBytes(bytes, session, preservesStyle=false) {
+    if(preservesStyle)return bytes;
     // A full bounded history may begin midway through UTF-8, CSI or OSC output.
     const limit=262144-2-encoder.encode(session).length;
     if(bytes.length<limit-3)return bytes;
@@ -81,7 +138,7 @@
     // This only releases the local view. It has no socket or process-close operation.
     panes.delete(session);pane.ready=false;if(pane.redrawTimer)clearTimeout(pane.redrawTimer);if(pane.resizeRequest)clearTimeout(pane.resizeRequest.timer);pane.observer.disconnect();
     const addon=pane.webgl;pane.webgl=null;if(addon)addon.dispose();
-    pane.term.dispose();pane.el.remove();return true;
+    pane.highlighter?.dispose();pane.term.dispose();pane.el.remove();return true;
   }
   function secureEndpoint(value) {
     const url=new URL(value),authority=String(value).match(/^[a-z]+:\/\/([^/?#]*)/i)?.[1]||'';
@@ -103,7 +160,7 @@
     url.search = ''; url.hash = '';
     return url.toString();
   }
-  const api = {pack, unpack, targetFrame, sessionPayload, terminalInput, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,
+  const api = {highlightSpans, createHighlighter, pack, unpack, targetFrame, sessionPayload, terminalInput, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,
     retryDelay: attempt => Math.min(15000, 500 * 2 ** Math.min(10, attempt)),
     rendererName: name => ['auto', 'dom', 'webgl'].includes(name) ? name : 'auto'};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
