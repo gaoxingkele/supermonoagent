@@ -42,6 +42,7 @@ class Room:
     next_id: int = 1
     machine: str = ""
     project: str = "默认"
+    service: str = "terminal"
 
 
 def group_hosts(hosts: list[dict]) -> list[dict]:
@@ -68,6 +69,7 @@ class Relay:
         self.enrollment_file = Path(enrollment_file) if enrollment_file else None
         self.enrolled = json.loads(self.enrollment_file.read_text()) if self.enrollment_file and self.enrollment_file.exists() else {}
         self.watchers = {}
+        self.token_watchers = {}
         self.revision = 0
         self.identity = RelayIdentity(identity_file) if identity_file else None
         self.public_url = normalize_public_url(public_url) if public_url else ''
@@ -224,7 +226,16 @@ class Relay:
             return bool(secret) and hmac.compare_digest(verifier, hashlib.sha256(secret.encode()).hexdigest())
         return self.development and loopback(ws.remote_address[0])
 
-    def _snapshot(self, rooms):
+    def _secure_token_discovery(self, ws):
+        transport = getattr(ws, 'transport', None)
+        if transport and transport.get_extra_info('ssl_object'):
+            return True
+        peer = ws.remote_address[0]
+        return (loopback(peer) and not self.reverse_proxy_tls or
+                self.reverse_proxy_tls and peer in self.trusted_proxies and
+                ws.request.headers.get('X-Forwarded-Proto') == 'https')
+
+    def _snapshot(self, rooms, tokens=()):
         hosts = []
         for code, token in rooms:
             room = self.rooms.get(code)
@@ -232,20 +243,41 @@ class Relay:
             if room and room.host is not None and token and token in room.tokens:
                 item.update(online=True, machine=room.machine, project=room.project)
             hosts.append(item)
+        for code, room in self.rooms.items():
+            if room.host is None or room.service != 'terminal':
+                continue
+            index = next((i for i, token in enumerate(tokens) if token in room.tokens), None)
+            if index is None:
+                continue
+            existing = next((item for item in hosts if item['code'] == code and item['online']), None)
+            if existing is not None:
+                existing['token_index'] = index
+            elif len(hosts) < 64:
+                hosts.append(dict(code=code, online=True, machine=room.machine,
+                                  project=room.project, token_index=index))
         return json.dumps({'op': 'directory', 'revision': self.revision,
-                           'capabilities': {'known_rooms': True, 'directory_push': True, 'host_enrollment': True, 'protocol_version': 2, 'relay_accounts': bool(self.identity and self.public_url)}, 'hosts': hosts})
+                           'capabilities': {'known_rooms': True, 'directory_push': True, 'token_discovery': True, 'host_enrollment': True, 'protocol_version': 2, 'relay_accounts': bool(self.identity and self.public_url)}, 'hosts': hosts})
 
     def _publish(self):
         self.revision += 1
-        for rooms, queue in self.watchers.values():
+        for ws, (rooms, queue) in self.watchers.items():
             # Replace pending snapshots, especially identities invalidated by rotation.
             while not queue.empty():
                 queue.get_nowait()
-            queue.put_nowait(self._snapshot(rooms))
+            queue.put_nowait(self._snapshot(rooms, self.token_watchers.get(ws, ())))
         for session, queue, _sender in self.account_watchers.values():
             while not queue.empty():
                 queue.get_nowait()
             queue.put_nowait(self._account_snapshot(session))
+
+    @staticmethod
+    def _watch_tokens(hello):
+        tokens = hello.get('tokens', [])
+        if (not isinstance(tokens, list) or len(tokens) > 32 or
+                any(not isinstance(token, str) or not token or len(token) > 4096 for token in tokens) or
+                len(set(tokens)) != len(tokens)):
+            raise ValueError('Invalid discovery credentials')
+        return tokens
 
     @staticmethod
     def _watch_rooms(hello):
@@ -274,14 +306,20 @@ class Relay:
                     raise ValueError('Watch rate exceeded')
                 updates.append(now)
                 if 'session' in hello:
-                    if 'rooms' in hello or not self.identity or not self.public_url or not self._secure_accounts(ws) or not self.identity.authenticate(hello['session']):
+                    if 'rooms' in hello or 'tokens' in hello or not self.identity or not self.public_url or not self._secure_accounts(ws) or not self.identity.authenticate(hello['session']):
                         await ws.close(code=4001)
                         return
                     self.watchers.pop(ws, None)
+                    self.token_watchers.pop(ws, None)
                     self.account_watchers[ws] = (hello['session'], queue, sender)
                 else:
+                    tokens = self._watch_tokens(hello)
+                    if 'tokens' in hello and not self._secure_token_discovery(ws):
+                        await ws.close(code=4001)
+                        return
                     self.account_watchers.pop(ws, None)
-                    self.watchers[ws] = (self._watch_rooms(hello), queue)
+                    self.watchers[ws] = (self._watch_rooms({**hello, 'rooms': hello.get('rooms', [])}), queue)
+                    self.token_watchers[ws] = tokens
                 self._publish()
                 raw = await ws.recv()
                 if len(raw) > 1024 * 1024:
@@ -295,6 +333,7 @@ class Relay:
             await ws.close(code=4000)
         finally:
             self.watchers.pop(ws, None)
+            self.token_watchers.pop(ws, None)
             self.account_watchers.pop(ws, None)
             sender.cancel()
             await asyncio.gather(sender, return_exceptions=True)
@@ -392,6 +431,7 @@ class Relay:
                 room.tokens = {item for item in tokens if isinstance(item, str) and item}
                 room.machine = str(hello.get("machine") or "")[:40]
                 room.project = str(hello.get("project") or "默认")[:40] or "默认"
+                room.service = 'notifications' if hello.get('service') == 'notifications' else 'terminal'
             await self._host(ws, code, room)
         elif role in {"register", "login", "rotate"}:
             await self._account(ws, code, hello)

@@ -1,6 +1,6 @@
 # Three Windows clients, one daemon
 
-The current Windows release is **0.2.18**, matching Android, in `dist/windows/0.2.18/`. Windows releases use the same numeric version as Android, never feature-based names. The build reads Android's manifest version and embeds it in EXE FileVersion/ProductVersion, `version.txt` and `build-manifest.json`; the default output is `dist/windows/<version>/`. When building both platforms, build Android first because its existing build advances the release version, then build Windows. Older named folders below are historical artifacts.
+The current Windows release is **0.2.19**, matching Android, in `dist/windows/0.2.19/`. Windows releases use the same numeric version as Android, never feature-based names. The build reads Android's manifest version and embeds it in EXE FileVersion/ProductVersion, `version.txt` and `build-manifest.json`; the default output is `dist/windows/<version>/`. When building both platforms, build Android first because its existing build advances the release version, then build Windows. Older named folders below are historical artifacts.
 
 The sidebar lists each machine once with its room code and all open windows directly underneath, without a search box. Use the arrow beside a machine to collapse or expand its window list; the state survives page reloads in the same browser session. Collapsing affects only the sidebar and keeps its terminals running. Project and terminal-group headings and the create-group button are removed. Existing windows from every backend group remain listed; status dots, colors, rename and per-machine connection settings remain available. For direct connections without a supplied room code, it displays that no room is configured.
 
@@ -9,6 +9,29 @@ This release includes the unified-account and sidebar features below, signed UI-
 The unified-account build is `dist/windows-relay-accounts/`. It includes selectable/manual default relay addresses, relay account login and authorized-computer discovery with automatic endpoint/room/session filling. Public login requires the new HTTPS/WSS relay and explicit room grants/local host bindings; the old public service has not been automatically migrated. See [setup and current deployment state](relay-account-setup.md).
 
 The latest sidebar-lamp build is `dist/windows-sidebar-status/`, including the global workspace features below. Its window rows use red/yellow/pulsing green status dots and deeper group indentation. See [status meanings and verification](sidebar-activity.md).
+
+## Automatic same-token discovery
+
+The sidebar subscribes to the configured relay over WSS using the current token.
+New online terminal rooms accepting that token appear automatically, including
+their current windows. Other tokens and notification-service rooms remain hidden.
+Host and window removal, identity changes and token revocation update the list.
+Discovery does not open a terminal, send input, take resize control or change the
+current layout. Discovered credentials remain in memory; manual connections stay
+available. Automatic discovery is limited to the same explicitly configured relay.
+
+The local authenticated daemon advertises its configured relay targets. Older
+frozen daemons without room codes use token-only discovery; matching authenticated
+machine identity and complete terminal inventories prevent a duplicate local
+computer. A matching machine name alone never causes deduplication. Changing the
+local relay configuration updates subscriptions immediately. Servers without the
+new capability keep existing manual connections working.
+
+The current public relay uses the documented legacy compatibility adapter in
+[deploy/relay/token-discovery-compat.md](../deploy/relay/token-discovery-compat.md).
+It retains its previous host enrollment limitations; this feature does not upgrade
+that legacy relay to account-based host ownership. Public WSS tests cover new room
+push, token isolation, notification exclusion, identity updates and revocation.
 
 ## Current global workspace build
 

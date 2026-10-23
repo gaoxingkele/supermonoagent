@@ -597,6 +597,9 @@ class Daemon:
     def _state(self, client, error: str | None = None, resize_ack: dict | None = None) -> bytes:
         visible = self.hub.summary(client.token)
         service = self.service_status()
+        if client.token == self.token and not client.delegated:
+            service['relays'] = [{**status, 'code': target['code']}
+                                 for status, target in zip(service['relays'], self.relay_targets)]
         service["windows"] = len(visible["windows"])
         service["sessions"] = sum(len(item["sessions"]) for item in visible["windows"])
         body = {**visible, "selected": client.window_id or "", "session": client.session_id or "", "service": service,

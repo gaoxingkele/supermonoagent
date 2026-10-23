@@ -134,6 +134,14 @@ OP2/OP7 的共同字段如下；OP2 另有当前选择和 service，resize 的 O
 
 桌面每个 relay 一个 watcher，终端连接保持独立；旧 relay 拒绝 watch 时仅标记目录不可用。客户端不轮询 `/health` 发现电脑。[relay.py:_watch_rooms/_watch/_snapshot/_publish](../src/supermonoagent/relay.py)、[workspace.js:refreshDirectories](../src/supermonoagent/static/workspace.js)。
 
+### 同 Token 的在线电脑发现
+
+客户端可以在已加密的 watch 连接发送 `{"op":"watch","rooms":[],"tokens":["…"]}`，无需预先知道同 Token 电脑的房间码。`tokens` 最多包含 32 个不重复的非空字符串，每个最多 4096 字符；可以与已有 `rooms` 合用，不能与中继账号 `session` 混用。公网必须使用 TLS；可信反向代理模式仅接受配置的代理地址及其 `X-Forwarded-Proto:https`。loopback 隔离测试可以使用 WS。
+
+支持此扩展的目录返回 `capabilities.token_discovery:true`。新增的在线电脑项为 `{code,online:true,machine,project,token_index}`，其中 `token_index` 是请求 `tokens` 数组中首个匹配凭据的下标，响应不包含凭据。只返回在线、接受该 Token 且声明为终端服务的房间，最多 64 项；`host` 首帧可声明 `service:"notifications"`，排除通知专用房间，未声明时为 `terminal`。原有 `rooms` 查询语义保持不变；同一在线房间已由 `rooms` 返回时，只补充 `token_index`，不新增重复项。
+
+上线、离线、身份更新和 Token 撤销复用原有 revision 推送及最新快照队列。无匹配凭据返回空列表，不公开其他电脑身份。此扩展只复用已经由主机接受的访问 Token，不授予房间所有权，也不创建跨主机的新授权。来源：[relay.py:_watch_tokens/_secure_token_discovery/_snapshot](../src/supermonoagent/relay.py)、[test_relay_token_discovery.py](../tests/test_relay_token_discovery.py)。
+
 ### owner enrollment 与撤销
 
 生产 relay 的 `--enroll ROOM --enrollment-file FILE` 创建并保存 owner secret 的 SHA-256 verifier，原 secret 只交给对应 daemon（`--relay-owner-secret` 或受保护的 `relays.json`）。终端访问 Token 不能作为 owner secret；未登记、错误 secret 或重复 host 都不能替换已有身份与 Token 集。显式 `--development` 仅允许 loopback 监听及 loopback fixture host 首次声明，不是公网自动认领策略。

@@ -165,7 +165,12 @@
     if(info.capabilities)host.capabilities=info.capabilities;
     for(const field of ['machine','project'])if(typeof info[field]==='string')host.identity[field]=info[field].slice(0,40);
     if(info.controls){host.controls=info.controls;for(const pane of panes.values())if(pane.host===host){acceptResize(pane,info,greeting);if(pane.resumeControl&&host.controls[pane.raw]){pane.resumeControl=false;pane.redrawAfterReplay=true;pane.wantControl=host.controls[pane.raw].owner===true||host.controls[pane.raw].busy===false;}}}
-    if(info.windows){host.catalog=info.windows;const sessions=new Set(host.catalog.flatMap(win=>(win.sessions||[]).map(session=>session.id)));for(const id of host.activity.keys())if(!sessions.has(id))host.activity.delete(id);}if(info.groups)host.groups=info.groups;aggregateCatalog();
+    if(info.windows){host.catalog=info.windows;const sessions=new Set(host.catalog.flatMap(win=>(win.sessions||[]).map(session=>session.id)));for(const id of host.activity.keys())if(!sessions.has(id))host.activity.delete(id);}if(info.groups)host.groups=info.groups;
+    if(host.autoDirectory&&isLocalRelayCopy(host)){
+      const directory=directories.get(host.autoDirectory);if(directory){directory.selfRooms??=new Set();directory.selfRooms.add(host.config.code);}
+      detachHost(host);renderTree();renderTabs();renderLayout();return;
+    }
+    aggregateCatalog();
     restorePaneViews(host);
     const valid=new Set(host.catalog.flatMap(win=>(win.sessions||[]).map(session=>key(host,session.id))));
     let layoutChanged=false;
@@ -178,7 +183,7 @@
     }
     if(host.nextSplit==='new'){const created=host.catalog.flatMap(win=>win.sessions||[]).find(session=>!host.sessionsBeforeOpen.has(session.id));if(created){host.nextSplit='';openView(key(host,created.id));}}
     for(const pane of panes.values())if(pane.host===host){pane.ready=true;pane.term.options.disableStdin=false;const data=sessionInfo(pane.sid);if(data){pane.title.textContent=data.win.title+' · '+data.session.shell;TabThemes.apply(pane.title.parentElement,data.win.tab_theme);}drainPane(pane);}
-    renderTree();renderTabs();renderHosts();if(layoutChanged)renderLayout();subscribe();updateConnection();updateFooter();if(greeting)refreshDirectories();
+    renderTree();renderTabs();renderHosts();if(layoutChanged)renderLayout();subscribe();updateConnection();updateFooter();if(greeting||host.id==='local')refreshDirectories();
     scheduleVisibleFit();
   }
   function drainPane(pane){
@@ -554,7 +559,7 @@
       pick.append(node('span','workspace-host-name',host.identity.machine||host.name),node('small','muted',rooms.length?'房间号：'+rooms.join('、'):'未配置房间号'));
       pick.append(node('span','workspace-host-status',(host.connected?'已连接':host.phase)+' · '+(host.meter.rtt===null?'—':Math.round(host.meter.rtt)+' ms')),
         node('small','host-rates','↑ '+C.formatRate(host.rates.tx)+' ↓ '+C.formatRate(host.rates.rx)));row.append(pick);
-      if(host.id!=='local'){const edit=button('···','编辑工作区 '+host.name,()=>showWorkspace(host.id));edit.className='workspace-host-edit';row.append(edit);}return row;
+      if(host.id!=='local'&&!host.autoDirectory){const edit=button('···','编辑工作区 '+host.name,()=>showWorkspace(host.id));edit.className='workspace-host-edit';row.append(edit);}return row;
   }
   function renderHosts(){
     for(const computer of $('tree').querySelectorAll('.computer-tree')){
@@ -805,16 +810,25 @@
   }
   function refreshDirectories(){
     const wanted=new Map();
-    for(const host of [...hosts.values()].sort((a,b)=>Number(b.connected)-Number(a.connected)))if(host.config.authMode!=='account'&&host.config.code&&host.config.token){
+    for(const host of [...hosts.values()].sort((a,b)=>Number(b.connected)-Number(a.connected)))if(!host.autoDirectory&&host.config.authMode!=='account'&&host.config.code&&host.config.token){
       const url=JSON.parse(endpoint(host.config))[0];if(!wanted.has(url))wanted.set(url,[]);
       const rooms=wanted.get(url);if(!rooms.some(room=>room.code===host.config.code)&&rooms.length<64)rooms.push({code:host.config.code,token:host.config.token});
     }
-    for(const [url,directory] of directories)if(!wanted.has(url)){stopDirectory(directory);directories.delete(url);}
+    const local=hosts.get('local');
+    if(homeRelayAccess()&&local?.config.token)for(const relay of homeRelays){
+      if(typeof relay.url!=='string')continue;
+      const code=typeof relay.code==='string'?relay.code:'';
+      let url;try{url=JSON.parse(endpoint({relay:relay.url,code}))[0];}catch{continue;}
+      if(!wanted.has(url))wanted.set(url,[]);const rooms=wanted.get(url);
+      if(!rooms.some(room=>room.code===code)&&rooms.length<64)rooms.push({code,token:local.config.token});
+    }
+    for(const [url,directory] of directories)if(!wanted.has(url)){stopDirectory(directory);syncDiscoveredHosts(directory,[]);directories.delete(url);}
     for(const [url,rooms] of wanted){
       let directory=directories.get(url);
       if(!directory){directory={url,rooms:[],generation:0,ws:null,retry:0,retryTimer:0,signature:'',hosts:[],phase:'connecting',revision:0};directories.set(url,directory);}
       const signature=JSON.stringify(rooms);if(directory.signature===signature)continue;
-      directory.rooms=rooms;directory.signature=signature;directory.hosts=[];directory.revision=0;
+      directory.rooms=rooms.filter(room=>room.code);directory.tokens=[...new Set(rooms.map(room=>room.token))].slice(0,32);directory.signature=signature;directory.hosts=[];directory.selfRooms=new Set();directory.revision=0;
+      syncDiscoveredHosts(directory,[]);
       // Close before replacing credentials, so stale authorized metadata cannot be displayed.
       connectDirectory(directory);
     }
@@ -824,23 +838,55 @@
     stopDirectory(directory);const generation=directory.generation;directory.phase='connecting';
     const live=()=>directories.get(directory.url)===directory&&directory.generation===generation;
     const socket=new WebSocket(directory.url);directory.ws=socket;
-    socket.onopen=()=>{if(live())socket.send(JSON.stringify({op:'watch',rooms:directory.rooms}));};
+    socket.onopen=()=>{if(live())socket.send(JSON.stringify({op:'watch',rooms:directory.rooms,tokens:directory.tokens}));};
     socket.onmessage=event=>{
       if(!live()||typeof event.data!=='string'||event.data.length>1048576)return;
       try{
         const data=JSON.parse(event.data);
         if(data.op!=='directory'||!Array.isArray(data.hosts)||data.hosts.length>64||!Number.isSafeInteger(data.revision)||data.revision<directory.revision)return;
         const known=new Set(directory.rooms.map(room=>room.code));
-        directory.hosts=data.hosts.filter(host=>known.has(host.code)).map(host=>({code:host.code,online:host.online===true,
+        const discovery=data.capabilities?.token_discovery===true;
+        directory.hosts=data.hosts.filter(host=>typeof host.code==='string'&&host.code.length>0&&host.code.length<=128&&(known.has(host.code)||(discovery&&Number.isInteger(host.token_index)&&host.token_index>=0&&host.token_index<directory.tokens.length))).map(host=>({code:host.code,online:host.online===true,
+          ...(discovery&&Number.isInteger(host.token_index)&&host.token_index>=0&&host.token_index<directory.tokens.length?{token_index:host.token_index}:{}),
           ...(host.online===true?{machine:String(host.machine||'').slice(0,40),project:String(host.project||'').slice(0,40)}:{})}));
-        directory.revision=data.revision;directory.phase='connected';directory.retry=0;renderDiscovery();
-      }catch{directory.phase='unsupported';directory.hosts=[];renderDiscovery();}
+        directory.revision=data.revision;directory.phase='connected';directory.retry=0;syncDiscoveredHosts(directory,directory.hosts);renderDiscovery();
+      }catch{directory.phase='unsupported';directory.hosts=[];syncDiscoveredHosts(directory,[]);renderDiscovery();}
     };
     socket.onerror=()=>{};
     socket.onclose=event=>{
-      if(!live())return;directory.hosts=[];directory.phase=[4000,4001,4003].includes(event.code)?'unsupported':'offline';renderDiscovery();
+      if(!live())return;directory.hosts=[];directory.phase=[4000,4001,4003].includes(event.code)?'unsupported':'offline';syncDiscoveredHosts(directory,[]);renderDiscovery();
       if(directory.phase!=='unsupported')directory.retryTimer=setTimeout(()=>{if(live())connectDirectory(directory);},C.retryDelay(directory.retry++));
     };
+  }
+  function homeRelayAccess(){
+    const local=hosts.get('local');if(!local||local.config.code||local.config.authMode==='account')return false;
+    try{return ['localhost','127.0.0.1','[::1]','::1'].includes(new URL(C.socketURL(local.config.relay,location.origin)).hostname);}catch{return false;}
+  }
+  function isLocalRelayCopy(host){
+    // Frozen hosts omitted their room code. Recognize the same authenticated
+    // terminal inventory rather than treating a matching computer name as proof.
+    const local=hosts.get('local');if(!homeRelayAccess()||!local?.connected||!host.catalog.length)return false;
+    if(!homeRelays.some(relay=>{try{return JSON.parse(endpoint({relay:relay.url,code:''}))[0]===host.autoDirectory;}catch{return false;}}))return false;
+    if(!local.identity.machine||host.identity.machine!==local.identity.machine||host.identity.project!==local.identity.project)return false;
+    const inventory=value=>JSON.stringify(value.map(win=>[win.id,(win.sessions||[]).map(session=>session.id).sort()]).sort((a,b)=>a[0].localeCompare(b[0])));
+    return inventory(host.catalog)===inventory(local.catalog);
+  }
+  function syncDiscoveredHosts(directory,items){
+    const wanted=new Set();let changed=false;
+    for(const item of items){
+      if(!item.online||directory.selfRooms?.has(item.code)||!Number.isInteger(item.token_index)||!directory.tokens?.[item.token_index])continue;
+      const token=directory.tokens[item.token_index],target=JSON.stringify([directory.url,item.code]);
+      if([...hosts.values()].some(host=>!host.autoDirectory&&endpoint(host.config)===target))continue;
+      if(homeRelayAccess()&&homeRelays.some(relay=>{try{return endpoint({relay:relay.url,code:relay.code})===target;}catch{return false;}}))continue;
+      const id='discovered:'+target;wanted.add(id);let host=hosts.get(id);
+      if(!host){if(hosts.size>=64)continue;host=new HostConnection(id,item.machine||item.code,{relay:directory.url,code:item.code,token,authMode:'manual'});host.autoDirectory=directory.url;hosts.set(id,host);changed=true;connect(host);}
+      else if(host.config.token!==token||host.phase==='offline'){host.config.token=token;connect(host);}
+      host.name=item.machine||item.code;host.identity={machine:item.machine,project:item.project};
+    }
+    for(const host of [...hosts.values()])if(host.autoDirectory===directory.url&&!wanted.has(host.id)){
+      detachHost(host);changed=true;if(selectedHost===host.id){selectedHost='local';save(sessionStorage,'sma.workspace.activeHost','local');}
+    }
+    if(changed){aggregateCatalog();renderTree();renderTabs();renderLayout();subscribe();updateConnection();updateFooter();}
   }
   function renderDiscovery(){
     const list=$('workspace-known');if(!list)return;const selected=list.value;list.replaceChildren();
@@ -866,6 +912,7 @@
     const [url,code]=choice,directory=directories.get(url),host=directory?.hosts.find(host=>host.code===code&&host.online);
     const enrolled=[...hosts.values()].find(host=>host.config.authMode!=='account'&&host.config.code===code&&relayURL(host.config.relay)===url);
     if(!host||!enrolled)return;
+    if(enrolled.autoDirectory){$('workspace-dialog').close();switchHost(enrolled.id);return;}
     showWorkspace(enrolled.id);$('workspace-verification').textContent='已授权在线电脑：'+[host.machine,host.project].filter(Boolean).join(' / ');
   };
   $('workspace-verify').onclick=()=>{

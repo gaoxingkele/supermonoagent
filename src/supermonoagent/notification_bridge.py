@@ -221,7 +221,7 @@ class NotificationBridge:
             queues, jobs = {}, {}
             try:
                 async with connect(endpoint, max_size=1024 * 1024) as ws:
-                    await ws.send(json.dumps({"op": "host", "code": code,
+                    await ws.send(json.dumps({"op": "host", "code": code, "service": "notifications",
                         "tokens": [self.token], "machine": self.catalog.get("machine", ""),
                         "project": self.catalog.get("project", "")}))
                     if json.loads(await ws.recv()).get("op") != "ready":
