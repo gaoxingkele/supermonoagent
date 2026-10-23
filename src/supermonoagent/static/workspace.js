@@ -796,6 +796,7 @@
   $('new-project').onclick=()=>showRelayProfiles('workspace');
   $('app-menu-toggle').onclick=()=>{closeRoomMenu();const menu=$('app-menu');menu.hidden=!menu.hidden;$('app-menu-toggle').setAttribute('aria-expanded',String(!menu.hidden));if(!menu.hidden)menu.querySelector('button')?.focus();};
   $('menu-connect').onclick=()=>showRelayProfiles();
+  $('refresh-relays').onclick=()=>refreshRelayCatalogs();
   $('relay-profiles-close').onclick=()=>$('relay-profiles-dialog').close();
   $('relay-profiles-advanced').onclick=()=>{$('relay-profiles-dialog').close();profileLegacy==='workspace'?showWorkspace():showConnection();};
   $('relay-profile-form').onsubmit=event=>{
@@ -1002,6 +1003,31 @@
   function stopDirectory(directory){
     directory.generation++;clearTimeout(directory.retryTimer);
     if(directory.ws){directory.ws.onclose=null;directory.ws.close();directory.ws=null;}
+  }
+  let lastRelayRefresh=-Infinity;
+  function refreshRelayCatalogs(){
+    const now=performance.now();if(now-lastRelayRefresh<1000)return;lastRelayRefresh=now;
+    refreshDirectories();
+    for(const directory of directories.values()){
+      if(directory.ws?.readyState===WebSocket.OPEN){
+        directory.ws.send(JSON.stringify({op:'watch',rooms:directory.rooms,tokens:directory.tokens}));
+      }else if(directory.ws?.readyState!==WebSocket.CONNECTING){
+        directory.revision=0;connectDirectory(directory);
+      }
+    }
+    for(const account of relayAccounts.values()){
+      if(account.ws?.readyState===WebSocket.OPEN){
+        account.ws.send(JSON.stringify({op:'watch',session:account.session}));
+      }else if(account.ws?.readyState!==WebSocket.CONNECTING)connectAccountDirectory(account);
+    }
+    for(const host of hosts.values()){
+      if(host.connected){
+        const sessions=openTabs.map(id=>panes.get(id)).filter(pane=>pane?.host===host&&sessionInfo(pane.sid)).map(pane=>pane.raw);
+        send(owner(host),16,{sessions});
+      }else if((host.config.token||accountFor(host.config.relay))&&(!host.ws||host.ws.readyState>=WebSocket.CLOSING))connect(host);
+    }
+    const count=directories.size+relayAccounts.size;
+    status(count?'已请求刷新 '+count+' 个中继的授权房间及窗口列表。':'尚未配置可用中继，请先连接工作区。');
   }
   function refreshDirectories(){
     const wanted=new Map();
