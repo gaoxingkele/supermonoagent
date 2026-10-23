@@ -2073,6 +2073,12 @@ if (token) connectControl();
 """
 
 STATIC = {
+    "/agent-modes/codex.json": ("agent-modes/codex.json", "application/json; charset=utf-8"),
+    "/agent-modes/claude-code.json": ("agent-modes/claude-code.json", "application/json; charset=utf-8"),
+    "/agent-modes/grok.json": ("agent-modes/grok.json", "application/json; charset=utf-8"),
+    "/agent-modes/kimi.json": ("agent-modes/kimi.json", "application/json; charset=utf-8"),
+    "/agent-modes/pi-dev.json": ("agent-modes/pi-dev.json", "application/json; charset=utf-8"),
+    "/agent-modes/cursor-cli.json": ("agent-modes/cursor-cli.json", "application/json; charset=utf-8"),
     "/tab-themes.js": ("tab-themes.js", "text/javascript; charset=utf-8"),
     "/tab-themes.css": ("tab-themes.css", "text/css; charset=utf-8"),
     "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),

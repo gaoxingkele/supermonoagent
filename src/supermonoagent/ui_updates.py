@@ -26,14 +26,14 @@ import zipfile
 
 TRUST_PATH = Path(__file__).with_name('static') / 'update-trust.json'
 DEFAULT_FEED = 'https://117.50.48.22/updates/stable/manifest.json'
-NATIVE_API = 1
+NATIVE_API = 2
 MAX_MANIFEST = 128 * 1024
 MAX_ARCHIVE = 8 * 1024 * 1024
 MAX_SNAPSHOT = 5 * 1024 * 1024
 MAX_FILE = 4 * 1024 * 1024
 FILES = {
-    'desktop': frozenset(('workspace.html','workspace.js','workspace.css','terminal-client.js','tab-themes.js','tab-themes.css','xterm.js','xterm.css','xterm-fit.js','xterm-unicode11.js','xterm-webgl.js')),
-    'android': frozenset(('mobile/index.html','mobile/app.js','mobile/app.css','mobile/mobile-core.js','mobile/vendor/xterm.js','mobile/vendor/xterm.css','mobile/vendor/xterm-fit.js','mobile/vendor/xterm-unicode11.js','mobile/vendor/xterm-webgl.js','mobile/vendor/terminal-client.js')),
+    'desktop': frozenset(('workspace.html','workspace.js','workspace.css','terminal-client.js','tab-themes.js','tab-themes.css','xterm.js','xterm.css','xterm-fit.js','xterm-unicode11.js','xterm-webgl.js','agent-modes/codex.json','agent-modes/claude-code.json','agent-modes/grok.json','agent-modes/kimi.json','agent-modes/pi-dev.json','agent-modes/cursor-cli.json')),
+    'android': frozenset(('mobile/index.html','mobile/app.js','mobile/app.css','mobile/mobile-core.js','mobile/vendor/xterm.js','mobile/vendor/xterm.css','mobile/vendor/xterm-fit.js','mobile/vendor/xterm-unicode11.js','mobile/vendor/xterm-webgl.js','mobile/vendor/terminal-client.js','mobile/agent-modes/codex.json','mobile/agent-modes/claude-code.json','mobile/agent-modes/grok.json','mobile/agent-modes/kimi.json','mobile/agent-modes/pi-dev.json','mobile/agent-modes/cursor-cli.json')),
 }
 _LOCKS = {}
 _LOCKS_GUARD = threading.Lock()
@@ -218,7 +218,7 @@ def _verify_envelope(raw,trust,platform,native_api,now,check_time=True):
     return payload
 
 
-def verify_envelope(raw,trust,platform,native_api=1,now=None):
+def verify_envelope(raw,trust,platform,native_api=NATIVE_API,now=None):
     return _verify_envelope(raw,trust,platform,native_api,time.time() if now is None else now)
 
 
@@ -334,7 +334,7 @@ def _process_identity(pid):
 
 
 class UpdateStore:
-    def __init__(self,root,platform,bundled_files,trust=None,native_api=1):
+    def __init__(self,root,platform,bundled_files,trust=None,native_api=NATIVE_API):
         self.root=Path(root).resolve(); self.root.mkdir(parents=True,exist_ok=True)
         self.platform=platform; self.native_api=native_api
         self.bundled_files=dict(bundled_files)
@@ -397,6 +397,38 @@ class UpdateStore:
     def status(self):
         with self._locked():
             return self._state()
+
+    def inherit_floor(self,sources,*,bundle_fingerprint=None):
+        """Merge trusted local observation floors without changing UI pointers or boot state."""
+        with self._locked():
+            state=self._state()
+            floors=[state,*sources]
+            hashes={}; failed=set(); highest=0
+            for floor in floors:
+                if not isinstance(floor,dict) or not _integer(floor.get('highest_sequence')):
+                    raise UpdateError('Invalid inherited update sequence')
+                sequence=floor['highest_sequence']; digest=floor.get('observed_hash')
+                if (sequence and (not isinstance(digest,str) or not re.fullmatch(r'[0-9a-f]{64}',digest))) or (not sequence and digest is not None):
+                    raise UpdateError('Invalid inherited update hash')
+                quarantined=floor.get('failed_sequences')
+                if not isinstance(quarantined,list) or any(not _integer(value,1) or value>sequence for value in quarantined):
+                    raise UpdateError('Invalid inherited update quarantine')
+                if sequence in hashes and hashes[sequence]!=digest:
+                    raise UpdateError('Conflicting inherited update sequence')
+                hashes[sequence]=digest; highest=max(highest,sequence); failed.update(quarantined)
+            updated=dict(state)
+            updated.update(highest_sequence=highest,observed_hash=hashes[highest],failed_sequences=sorted(failed))
+            if bundle_fingerprint is not None:
+                if not isinstance(bundle_fingerprint,str) or not re.fullmatch(r'[0-9a-f]{64}',bundle_fingerprint):
+                    raise UpdateError('Invalid native bundle fingerprint')
+                if state.get('bundle_fingerprint',bundle_fingerprint)!=bundle_fingerprint:
+                    raise UpdateError('Native bundle namespace mismatch')
+                updated.setdefault('bundle_fingerprint',bundle_fingerprint)
+                updated.setdefault('native_bundle_floor',highest)
+                updated.setdefault('native_bundle_migrated_at',int(time.time()))
+            if updated!=state:
+                self._save(updated)
+            return updated
 
     def _observe(self,state,raw,payload):
         sequence=payload['sequence']; digest=hashlib.sha256(_b64(_json(raw)['payload'],MAX_MANIFEST)).hexdigest()

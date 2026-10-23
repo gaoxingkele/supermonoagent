@@ -1,0 +1,11 @@
+﻿{
+    "version":  "0.2.13",
+    "version_code":  15,
+    "apk_sha256":  "f1f9afd671ddd33e1f6cd066ddbef92a2d63ab081411956f4f9de72597ed32f6",
+    "packaged_assets_verified":  12,
+    "source_assets_match":  true,
+    "generic_connection_defaults_empty":  true,
+    "signature":  "v2 and v3 verified by apksigner",
+    "test_summary":  "19 passed, 1 skipped, 15 subtests; Node 10 passed; latest multihost/hierarchy browser regression passed",
+    "physical_device":  "Current 0.2.13 install -r remains live (session 56125). Normal installer confirmations completed; Honor requires device owner fingerprint/password locally. Installed version still 0.2.4; data preserved; no terminal input sent."
+}

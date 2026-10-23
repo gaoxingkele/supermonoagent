@@ -11,7 +11,9 @@ public final class LocalAssets {
     private static final Set<String> FILES = new HashSet<String>(Arrays.asList(
         "mobile/index.html", "mobile/app.js", "mobile/app.css", "mobile/mobile-core.js",
         "mobile/vendor/xterm.js", "mobile/vendor/xterm.css", "mobile/vendor/xterm-fit.js",
-        "mobile/vendor/xterm-unicode11.js", "mobile/vendor/xterm-webgl.js", "mobile/vendor/terminal-client.js"));
+        "mobile/vendor/xterm-unicode11.js", "mobile/vendor/xterm-webgl.js", "mobile/vendor/terminal-client.js",
+        "mobile/agent-modes/codex.json", "mobile/agent-modes/claude-code.json", "mobile/agent-modes/grok.json",
+        "mobile/agent-modes/kimi.json", "mobile/agent-modes/pi-dev.json", "mobile/agent-modes/cursor-cli.json"));
     private LocalAssets() { }
 
     /** Match Chromium's serialized origin, including default-port canonicalization. */
@@ -50,6 +52,7 @@ public final class LocalAssets {
     }
 
     public static String mime(String path) {
+        if (path.endsWith(".json")) return "application/json";
         if (path.endsWith(".html")) return "text/html";
         if (path.endsWith(".css")) return "text/css";
         return "text/javascript";

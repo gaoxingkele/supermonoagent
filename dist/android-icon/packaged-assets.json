@@ -1,0 +1,50 @@
+[
+  {
+    "path": "CHANGELOG.txt",
+    "sha256": "27def58df17469a5034ea1f472e1669e280a74114b46ae54a0795e09e68f1e84"
+  },
+  {
+    "path": "connection-defaults.json",
+    "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  },
+  {
+    "path": "mobile/app.css",
+    "sha256": "af215833ec0fef7320d627bbfe083860adc0600511c7b7c26a9ef179acbd2a3f"
+  },
+  {
+    "path": "mobile/app.js",
+    "sha256": "ff357b36bbca092a6ea7d7842e0bce9b90aa4fc6676c212f7e6cbff928693a66"
+  },
+  {
+    "path": "mobile/index.html",
+    "sha256": "2aed7fb3b944990e693a3df0d8b00971139ae3639155be2349d560bfd8451239"
+  },
+  {
+    "path": "mobile/mobile-core.js",
+    "sha256": "372e72ea175627756d4960b4c74be48eace608bfba87fe2d5407a0c960cffa27"
+  },
+  {
+    "path": "mobile/vendor/terminal-client.js",
+    "sha256": "9d5be85da2e4f854d8421847e4db4a549fa9c2b8a9f785dadfef2ba3573644c5"
+  },
+  {
+    "path": "mobile/vendor/xterm.css",
+    "sha256": "ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6"
+  },
+  {
+    "path": "mobile/vendor/xterm.js",
+    "sha256": "1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495"
+  },
+  {
+    "path": "mobile/vendor/xterm-fit.js",
+    "sha256": "bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089"
+  },
+  {
+    "path": "mobile/vendor/xterm-unicode11.js",
+    "sha256": "b0c3be540a9984713aea996966c24ed1a639d11f60d44986b22661e3a8a148d0"
+  },
+  {
+    "path": "mobile/vendor/xterm-webgl.js",
+    "sha256": "9ffa9ac3ff6d47d4e6216ed1972ca8e0b5336cef744f50ebdc3f67b0ed727cdb"
+  }
+]

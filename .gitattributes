@@ -1,0 +1,2 @@
+# Distribution checksums and signed resources require byte-identical checkout.
+dist/** -text -diff

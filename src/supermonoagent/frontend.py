@@ -29,10 +29,12 @@ from .hub import TAB_THEMES
 from .protocol import ProtocolError, OP_HELLO, OP_GROUP, OP_SESSIONS, OP_INPUT_SESSION, pack, pack_json, unpack, unpack_json
 from .pty import ConptyInputFilter
 
-NATIVE_UPDATE_API = 1
+NATIVE_UPDATE_API = 2
 UPDATE_CHECK_SECONDS = 6 * 60 * 60
 UI_FILES = ("workspace.html", "workspace.js", "workspace.css", "terminal-client.js", "tab-themes.js", "tab-themes.css",
-            "xterm.js", "xterm.css", "xterm-fit.js", "xterm-unicode11.js", "xterm-webgl.js")
+            "xterm.js", "xterm.css", "xterm-fit.js", "xterm-unicode11.js", "xterm-webgl.js",
+            "agent-modes/codex.json", "agent-modes/claude-code.json", "agent-modes/grok.json",
+            "agent-modes/kimi.json", "agent-modes/pi-dev.json", "agent-modes/cursor-cli.json")
 STATIC_ROOT = Path(__file__).parent / "static"
 WORKSPACE_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; base-uri 'none'; frame-src 'none'; frame-ancestors 'none'; object-src 'none'"
 
@@ -40,6 +42,31 @@ WORKSPACE_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe
 def bundled_ui_files() -> dict[str, bytes]:
     from .workspace import PAGE
     return {name: PAGE.encode("utf-8") if name == "workspace.html" else (STATIC_ROOT / name).read_bytes() for name in UI_FILES}
+
+
+def bundled_ui_fingerprint(files: dict[str, bytes]) -> str:
+    digest=hashlib.sha256()
+    for name in sorted(files):
+        content=files[name]
+        digest.update(name.encode('utf-8')+b'\0'+len(content).to_bytes(8,'big')+content)
+    return digest.hexdigest()
+
+
+def inherited_update_floors(base: Path) -> list[dict]:
+    from .ui_updates import MAX_MANIFEST, UpdateError
+    paths=[base/'state.json',*sorted((base/'native').glob('*/state.json'))]
+    result=[]
+    for path in paths:
+        if not path.is_file():
+            continue
+        raw=path.read_bytes()
+        if len(raw)>MAX_MANIFEST:
+            raise UpdateError('Oversized inherited update state')
+        try:
+            result.append(json.loads(raw))
+        except (ValueError,UnicodeError) as exc:
+            raise UpdateError('Invalid inherited update state') from exc
+    return result
 
 
 def revision() -> str:
@@ -72,9 +99,15 @@ class Frontend:
         self.themes = {key: value for key, value in saved.items() if isinstance(value, str) and value in TAB_THEMES} if isinstance(saved, dict) else {}
         self.views: dict = {}
         from .ui_updates import UpdateStore
-        self.update_root = Path(update_root) if update_root is not None else (theme_file.parent / "ui-updates" if theme_file is not None else Path.home() / ".supermonoagent" / "ui-updates" / "desktop")
+        bundled_files = bundled_ui_files()
+        self.bundle_fingerprint = bundled_ui_fingerprint(bundled_files)
+        native_namespace = update_root is None and theme_file is None
+        update_base = Path.home() / ".supermonoagent" / "ui-updates" / "desktop"
+        self.update_root = Path(update_root) if update_root is not None else (theme_file.parent / "ui-updates" if theme_file is not None else update_base / "native" / self.bundle_fingerprint)
         self.update_feed = update_feed if update_feed is not None else default_update_feed()
-        self.update_store = UpdateStore(self.update_root, "desktop", bundled_ui_files(), update_trust, native_api=NATIVE_UPDATE_API)
+        self.update_store = UpdateStore(self.update_root, "desktop", bundled_files, update_trust, native_api=NATIVE_UPDATE_API)
+        if native_namespace:
+            self.update_store.inherit_floor(inherited_update_floors(update_base), bundle_fingerprint=self.bundle_fingerprint)
         self.update_store.recover_pending()
         self.update_nonce = secrets.token_urlsafe(32)
         self.update_bridge = (STATIC_ROOT / "native-updates.js").read_bytes()
@@ -178,7 +211,7 @@ class Frontend:
             return self._workspace_document(window_id=window_id)
         assets = "|".join(re.escape(name) for name in UI_FILES if name != "workspace.html")
         html = re.sub(r'((?:src|href)\s*=\s*["\'])/?(?:__ui/[A-Za-z0-9._-]+/)?(' + assets + r')((?:[?#][^"\']*)?)(["\'])',
-                      lambda match: match[1] + "/__ui/" + revision + "/" + match[2] + match[3] + match[4], html)
+                      lambda match: match[1] + "/__ui/" + revision + "/" + match[2] + self._bundled_asset_query(revision, match[3]) + match[4], html)
         sequence = status.get("active_sequence", 0) if revision == status["active_revision"] else status.get("previous_sequence", 0) if revision == status.get("previous_revision") else 0
         values = {"nonce": self.update_nonce, "revision": revision, "sequence": sequence,
                   "ticket": boot["ticket"] if boot else "", "generation": boot.get("generation", 0) if boot else 0}
@@ -190,6 +223,12 @@ class Frontend:
         bridge = '<script src="/__updates/native-updates.js" ' + attributes + '></script>'
         html = re.sub(r'^\s*<!doctype[^>]*>', '', html, count=1, flags=re.IGNORECASE)
         return "<!doctype html>" + bridge + html
+
+    def _bundled_asset_query(self, revision, suffix):
+        if revision != 'bundled':
+            return suffix
+        path, marker, fragment = suffix.partition('#')
+        return path + ('&' if '?' in path else '?') + 'bundle=' + self.bundle_fingerprint + (marker + fragment if marker else '')
 
     async def _check_update(self, automatic=False):
         from . import ui_updates
@@ -207,8 +246,10 @@ class Frontend:
                     self.update_candidate = self.update_envelope = None
                     self.update_phase, self.update_message = "current", "失败的界面版本已隔离，等待后续更新。"
                 else:
-                    candidate = await asyncio.to_thread(self.update_store.observe, raw)
-                    if candidate["sequence"] <= status.get("active_sequence", 0):
+                    native_current = status.get("active_revision") == "bundled" and candidate["sequence"] <= status.get("native_bundle_floor", 0)
+                    if not native_current or candidate["sequence"] >= status.get("highest_sequence", 0):
+                        candidate = await asyncio.to_thread(self.update_store.observe, raw)
+                    if native_current or candidate["sequence"] <= status.get("active_sequence", 0):
                         self.update_candidate = self.update_envelope = None
                         self.update_phase, self.update_message = "current", "界面已是当前版本。"
                     else:
@@ -323,7 +364,7 @@ class Frontend:
             response.headers["Content-Security-Policy"] = WORKSPACE_CSP
             return response
         if path.startswith("/__ui/"):
-            parts = path.split("/")
+            parts = path.split("/", 3)
             if len(parts) != 4 or not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", parts[2]) or parts[3] not in UI_FILES:
                 return self._response(connection, 404, "Unknown UI asset", "text/plain")
             try:
@@ -333,8 +374,8 @@ class Frontend:
                     body = self.update_store.snapshot(parts[2])[parts[3]]
             except (KeyError, ValueError, OSError):
                 return self._response(connection, 404, "Unknown UI revision", "text/plain")
-            content_type = "text/javascript; charset=utf-8" if parts[3].endswith(".js") else "text/css; charset=utf-8" if parts[3].endswith(".css") else "text/html; charset=utf-8"
-            response = self._response(connection, 200, body, content_type, immutable=parts[3] != "workspace.html")
+            content_type = "application/json; charset=utf-8" if parts[3].endswith(".json") else "text/javascript; charset=utf-8" if parts[3].endswith(".js") else "text/css; charset=utf-8" if parts[3].endswith(".css") else "text/html; charset=utf-8"
+            response = self._response(connection, 200, body, content_type, immutable=parts[3] != "workspace.html" and parts[2] != "bundled")
             if parts[3] == "workspace.html":
                 response.headers["Content-Security-Policy"] = WORKSPACE_CSP
             return response

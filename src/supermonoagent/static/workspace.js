@@ -5,6 +5,7 @@
   const C = window.TerminalClient;
   const encoder = new TextEncoder(), decoder = new TextDecoder();
   const params = new URLSearchParams(location.search);
+  const agentAssetBase=new URL('agent-modes/',document.currentScript.src),agentAssetQuery=new URL(document.currentScript.src).search;
   const launch = new URLSearchParams(location.hash.slice(1));
   const explicitToken=launch.has('token')||params.has('token');
   const read = (storage, key) => { try { return storage.getItem(key) || ''; } catch { return ''; } };
@@ -19,6 +20,7 @@
   let userConnectedOnce = false, maximized = false, ctrl = false;
   let renameWindow = null, terminateSession = null, connectionOwner = null;
   let homeConfig={...config}, savedHosts=loadHosts(), selectedHost='local', editingHost='', homeRelays=[];
+  let relayProfiles=loadRelayProfiles(),profileLegacy='connection',roomMenu=null;
   const hosts=new Map(), directories=new Map(), relayAccounts=new Map();
   let restoredUI=null;
   try{const raw=read(sessionStorage,'sma.workspace.ui-state');if(raw.length<=65536){const value=JSON.parse(raw||'null');if(value&&Array.isArray(value.tabs))restoredUI=value;}}catch{}
@@ -103,7 +105,7 @@
   }
   function connect(host){
     stopHost(host);const context=owner(host);
-    host.helloSent=false;host.subscriptionSignature='';host.phase='connecting';host.error='';host.meter.reset(performance.now(),host.retry);host.pingSentAt=null;
+    host.helloSent=false;host.subscriptionSignature='';host.phase='connecting';host.error='';host.meter.reset(performance.now(),host.retry);host.rates={tx:0,rx:0};host.pingSentAt=null;
     for(const pane of panes.values())if(pane.host===host){
       pane.resumeControl=pane.resumeControl||host.controls[pane.raw]?.owner===true;
       pane.generation=host.generation;pane.bindHeader();pane.bindInput();pane.bindObserver();pane.writing=false;pane.lastSize='';pane.lastAttempt='';pane.limitedSize=null;pane.resizePaused=false;pane.frames=[];pane.replayPending=0;
@@ -147,7 +149,7 @@
       if(!validOwner(context))return;
       host.connected=false;host.supported=false;clearInterval(host.pingTimer);
       for(const pane of panes.values())if(pane.host===host){pane.ready=false;pane.term.options.disableStdin=true;}
-      host.phase=event.code===4001?'auth-failed':'reconnecting';host.meter.reset(performance.now());
+      host.phase=event.code===4001?'auth-failed':'reconnecting';host.meter.reset(performance.now());host.rates={tx:0,rx:0};
       host.error=event.code===4001?(host.config.authMode==='account'?'账号未获此电脑授权，或主机尚未绑定此账号；请联系管理员。':'访问验证失败，请编辑此电脑的房间码和 Token。'):event.code===4004?'对应电脑尚未上线，正在等待。':event.reason||'连接已断开；此电脑输入已暂停';
       updateConnection();renderHosts();updateFooter();updateSessionDots();
       if(host.config.authMode==='account'&&!accountFor(url)){stopAccountHost(host,'账号会话已过期，请重新登录。');return;}
@@ -183,7 +185,7 @@
       }
     }
     if(host.nextSplit==='new'){const created=host.catalog.flatMap(win=>win.sessions||[]).find(session=>!host.sessionsBeforeOpen.has(session.id));if(created){host.nextSplit='';openView(key(host,created.id));}}
-    for(const pane of panes.values())if(pane.host===host){pane.ready=true;pane.term.options.disableStdin=false;const data=sessionInfo(pane.sid);if(data){pane.title.textContent=data.win.title+'（'+agentType(data.session,data.win.title)+'）';TabThemes.apply(pane.title.parentElement,data.win.tab_theme);}drainPane(pane);}
+    for(const pane of panes.values())if(pane.host===host){pane.ready=true;pane.term.options.disableStdin=false;const data=sessionInfo(pane.sid);if(data){pane.title.textContent=data.win.title+'（'+agentType(data.session,data.win.title)+'）';TabThemes.apply(pane.title.parentElement,data.win.tab_theme);updateAgentMode(pane);}drainPane(pane);}
     renderTree();renderTabs();renderHosts();if(layoutChanged)renderLayout();subscribe();updateConnection();updateFooter();if(greeting||host.id==='local')refreshDirectories();
     scheduleVisibleFit();
   }
@@ -213,7 +215,7 @@
     const own=node('span','pane-control','');header.append(title,own);
     TabThemes.apply(header,data.win.tab_theme);
     const screen=node('div','terminal-screen');const history=node('div','history-note','已恢复有限输出历史 · 全屏程序画面可能需要刷新');history.hidden=true;
-    el.append(header,screen,history);$('stage').append(el);
+    history.title=history.textContent;el.append(header,screen);$('stage').append(el);
     const term=new Terminal({allowProposedApi:true,convertEol:false,disableStdin:!data.win.host.connected,cursorBlink:true,
       fontFamily:'"Cascadia Mono", "Cascadia Code", Consolas, monospace',fontSize:mobile()?13:14,scrollback:5000,minimumContrastRatio:4.5,
       theme:{background:'#121212',foreground:'#dedede',cursor:'#ddd',selectionBackground:'#55555588'},rendererType:'dom'});
@@ -232,7 +234,7 @@
       session.learnedAgent=next;aggregateCatalog();const info=sessionInfo(pane.sid);if(info)pane.title.textContent=info.win.title+'（'+agentType(info.session,info.win.title)+'）';renderTree();return false;
     });
     pane.highlighter=C.createHighlighter(term,{enabled:highlightEnabled});
-    panes.set(sid,pane);setRenderer(pane);
+    panes.set(sid,pane);setRenderer(pane);updateAgentMode(pane);
     pane.followOutput=true;pane.followFrame=0;pane.followGeometry=viewportGeometry(pane);pane.userScrollUntil=0;
     const scrollIntent=event=>{
       const buffer=term.buffer.active;if(event.type==='wheel'&&event.deltaY>=0&&buffer.viewportY===buffer.baseY)return;
@@ -268,6 +270,7 @@
       };
     };
     scrollBar.append(
+      history,
       button('▲ 上翻屏','向上翻动一页历史',scrollAction(()=>{pane.followOutput=false;term.scrollPages(-1);})),
       button('▼ 下翻屏','向下翻动一页历史',scrollAction(()=>{term.scrollPages(1);const buffer=term.buffer.active;pane.followOutput=buffer.viewportY===buffer.baseY;if(pane.followOutput)keepFollowing(pane);})),
       button('⤒ 到开头','翻到最早的历史输出',scrollAction(()=>{pane.followOutput=false;term.scrollToTop();})),
@@ -304,6 +307,26 @@
         gl.onContextLoss(()=>{if(pane.webgl!==gl)return;pane.webgl=null;gl.dispose();pane.renderer='dom';metrics.rendererFallbacks++;notice('WebGL 上下文已丢失，已切换为 DOM 渲染。');updateFooter();});
       }catch(error){pane.renderer='dom';metrics.rendererFallbacks++;if(renderer==='webgl')notice('WebGL 不可用，已使用 DOM 渲染：'+error.message);}
     }else if(renderer==='webgl'){metrics.rendererFallbacks++;notice('此浏览器不支持 WebGL 附加组件，已使用 DOM 渲染。');}
+  }
+  const agentModeKey=pane=>'sma.workspace.agent-mode.'+JSON.stringify([endpoint(pane.host.config),pane.raw]);
+  function updateAgentMode(pane){
+    const info=sessionInfo(pane.sid);if(!info)return;
+    const saved=read(localStorage,agentModeKey(pane)),mode=C.agentProfiles.some(profile=>profile.id===saved)?saved:'auto';
+    const detected=mode==='auto'?C.agentModeFromSession(info.session,info.win.title):mode;
+    pane.agentMode=mode;if(pane.agentRequested===detected)return;
+    pane.agentRequested=detected;const generation=pane.agentGeneration=(pane.agentGeneration||0)+1;
+    const apply=profile=>{
+      if(!livePane(pane)||pane.agentGeneration!==generation)return;
+      pane.term.options.theme={background:'#121212',foreground:'#dedede',cursor:'#ddd',selectionBackground:'#55555588',...profile.theme};
+      pane.highlighter.setProfile(profile);pane.agentProfile=profile.id;
+      if(active===pane.sid)updateFooter();
+    };
+    if(detected==='auto'){apply(C.commonAgentProfile);return;}
+    const url=new URL(detected+'.json',agentAssetBase);url.search=agentAssetQuery;
+    C.loadAgentProfile(url.href,detected).then(apply).catch(()=>{
+      if(!livePane(pane)||pane.agentGeneration!==generation)return;apply(C.commonAgentProfile);
+      if(active===pane.sid)notice('该模式暂时无法加载，已使用默认配色。');
+    });
   }
   function viewportGeometry(pane){
     const rect=pane.screen.getBoundingClientRect();return [rect.width,rect.height,devicePixelRatio].join(':');
@@ -453,7 +476,7 @@
       divider.onpointerdown=e=>{e.preventDefault();divider.setPointerCapture(e.pointerId);divider.classList.add('dragging');divider.onpointermove=event=>{const rect=box.getBoundingClientRect();apply(tree.direction==='vertical'?(event.clientY-rect.top)/rect.height*100:(event.clientX-rect.left)/rect.width*100);};divider.onpointerup=()=>{divider.onpointermove=null;divider.classList.remove('dragging');};};
     };
     draw(mobile()||maximized?active:layout,$('stage'));
-    scheduleVisibleFit();
+    scheduleVisibleFit();updateFooter();
   }
   function subscribe(){
     for(const host of hosts.values()){
@@ -489,6 +512,8 @@
     }
   }
   function agentType(session,windowTitle=''){
+    for(const [pattern,label] of [[/\bgemini\b/i,'Gemini'],[/\bopen[ -]?code\b/i,'OpenCode'],[/\bcopilot\b/i,'Copilot'],[/\baider\b/i,'Aider']])if(pattern.test(String(session.agent||'')))return label;
+    const profile=C.agentProfiles.find(profile=>profile.id===C.agentModeFromSession(session,windowTitle));if(profile)return profile.label;
     const values=[session.agent,session.learnedAgent,session.command,session.argv,session.title,windowTitle,session.shell];
     for(const value of values){
       const text=Array.isArray(value)?value.join(' '):String(value||'');
@@ -520,10 +545,12 @@
     if(host?.connected)status((info?.session.cwd||'工作区已连接')+(host.meter.rtt===null?'':' · '+Math.round(host.meter.rtt)+' ms'));
     for(const pane of panes.values()){const lease=pane.host.controls[pane.raw];pane.own.textContent=lease?(lease.owner?'尺寸主控':'共享观看'):'';}
     $('take-control').disabled=!pane||!pane.host.connected;
+    $('agent-mode').value=pane?.agentMode||'auto';$('agent-mode').disabled=!pane;
     for(const id of ['new-session','empty-new'])$(id).disabled=!host?.connected;
   }
-  function newSession(){
-    const host=currentHost();if(!host?.connected)return;
+  function newSession(){newSessionFor(currentHost());}
+  function newSessionFor(host){
+    if(!host?.connected)return;
     host.sessionsBeforeOpen=new Set(host.catalog.flatMap(win=>win.sessions||[]).map(session=>session.id));host.nextSplit='new';
     const group=host.groups.find(group=>key(host,group.id)===host.selectedGroup)?.id||host.groups[0]?.id||'default';
     send(owner(host),6,{shell:$('preset').value,group});
@@ -553,6 +580,77 @@
       try{C.socketURL(host.relay,location.origin);seen.add(host.id);return true;}catch{return false;}
     }).slice(0,31).map(({id,name,code,relay,authMode})=>({id,name:name.slice(0,40),code,relay,authMode:authMode==='account'?'account':'manual'}));}catch{return [];}
   }
+  function profileToken(profile){
+    const key='sma.workspace.profile-token.'+profile.id;
+    for(const storage of [sessionStorage,localStorage])if(read(storage,key+'.target')===profile.endpoint){const value=read(storage,key);if(value)return value;}
+    return '';
+  }
+  function loadRelayProfiles(){
+    try{return JSON.parse(read(localStorage,'sma.workspace.relay-profiles')||'[]').filter((profile,index,all)=>{
+      if(!profile||typeof profile.id!=='string'||!profile.id||profile.id.length>128||typeof profile.endpoint!=='string'||all.findIndex(item=>item?.id===profile.id)!==index)return false;
+      try{return C.socketURL(profile.endpoint,location.origin)===profile.endpoint;}catch{return false;}
+    }).slice(0,32).map(({id,endpoint})=>({id,endpoint}));}catch{return [];}
+  }
+  function profileEndpoint(address,port){
+    address=address.trim();if(!address)throw new Error('请填写 IP 或服务器地址。');
+    if(port&&(!/^\d+$/.test(port)||Number(port)<1||Number(port)>65535))throw new Error('端口应为 1～65535。');
+    const explicit=/^[a-z]+:\/\//i.test(address),url=new URL(explicit?address:'https://'+address);
+    if(!explicit&&['localhost','127.0.0.1','[::1]'].includes(url.hostname))url.protocol='http:';
+    if(port)url.port=port;
+    if(url.hostname==='117.50.48.22'&&url.port==='8817'&&!explicit)url.protocol='http:';
+    return C.socketURL(url.toString(),location.origin);
+  }
+  function renderRelayProfiles(){
+    const list=$('relay-profile-list');if(!list)return;list.replaceChildren();
+    relayProfiles.forEach((profile,index)=>{
+      const directory=directories.get(profile.endpoint),token=profileToken(profile);
+      const count=(directory?.hosts||[]).filter(host=>host.online&&directory.tokens[host.token_index]===token).length;
+      const row=node('div','relay-profile-row');row.append(node('span','',profile.endpoint),node('small','muted','凭据 '+(index+1)+' · '+(!token?'需要填写 Token':directory?.phase==='connected'?count+' 个房间':directory?.phase==='unsupported'?'中继暂不支持此凭据的自动发现':'正在连接…')));
+      row.append(button('移除','移除连接 '+(index+1),()=>{
+        relayProfiles=relayProfiles.filter(item=>item.id!==profile.id);save(localStorage,'sma.workspace.relay-profiles',JSON.stringify(relayProfiles));
+        for(const storage of [localStorage,sessionStorage])for(const suffix of ['', '.target'])save(storage,'sma.workspace.profile-token.'+profile.id+suffix,'');
+        refreshDirectories();renderRelayProfiles();
+      }));list.append(row);
+    });
+    $('relay-profile-status').textContent=relayProfiles.length?'房间会自动显示在左侧，无需填写房间号。':'添加连接后，将自动显示此 Token 有权访问的房间。';
+  }
+  function showRelayProfiles(legacy='connection'){
+    profileLegacy=legacy;closeAppMenu();$('relay-profile-error').textContent='';
+    $('relay-profiles-dialog').querySelector('details').open=false;
+    let url;try{url=new URL(C.socketURL(currentHost()?.config.relay||$('default-relay').value,location.origin));}catch{url=new URL(C.socketURL($('default-relay').value,location.origin));}
+    $('relay-profile-address').value=url.hostname;$('relay-profile-port').value=url.port||(url.protocol==='wss:'?'443':'80');$('relay-profile-token').value='';$('relay-profile-remember').checked=false;
+    renderRelayProfiles();$('relay-profiles-dialog').showModal();$('relay-profile-address').focus();
+  }
+  function closeAppMenu(){const menu=$('app-menu');if(menu)menu.hidden=true;$('app-menu-toggle')?.setAttribute('aria-expanded','false');}
+  function closeRoomMenu(){roomMenu?.remove();roomMenu=null;}
+  async function closeRoomWindows(context,windows){
+    const host=context.host;
+    for(const id of windows){
+      if(!validOwner(context)||!host.connected)return;
+      if(!host.catalog.some(win=>win.id===id))continue;
+      if(!send(context,9,{window:id}))return;
+      const deadline=performance.now()+10000;
+      while(validOwner(context)&&host.connected&&host.catalog.some(win=>win.id===id)&&performance.now()<deadline)await new Promise(resolve=>setTimeout(resolve,40));
+      if(host.catalog.some(win=>win.id===id)){notice('部分窗口暂未确认关闭，请检查连接后重试。');return;}
+    }
+  }
+  function showRoomMenu(event,host){
+    closeRoomMenu();closeAppMenu();const context=owner(host),windows=host.catalog.map(win=>win.id);
+    const menu=node('div','room-menu');menu.setAttribute('role','menu');roomMenu=menu;
+    const add=(label,action,disabled=false,requiresConnection=true)=>{const item=button(label,label,()=>{closeRoomMenu();if(validOwner(context)&&(!requiresConnection||host.connected))action();});item.setAttribute('role','menuitem');item.disabled=disabled;menu.append(item);};
+    add('新增窗口',()=>newSessionFor(host),!host.connected);
+    add('刷新所有窗口',()=>{
+      const sessions=openTabs.map(id=>panes.get(id)).filter(pane=>pane?.host===host).map(pane=>pane.raw);
+      send(context,16,{sessions,refresh:true});for(const pane of panes.values())if(pane.host===host)pane.term.refresh(0,pane.term.rows-1);
+    },!host.connected);
+    add('关闭所有窗口',()=>{
+      if(!confirm('关闭 '+(host.identity.machine||host.name)+' 的这 '+windows.length+' 个窗口？其中运行的终端进程也会结束。'))return;
+      if(!validOwner(context)||!host.connected)return;
+      closeRoomWindows(context,windows);
+    },!host.connected||!windows.length);
+    if(host.id!=='local'&&!host.autoDirectory)add('编辑工作区 '+host.name,()=>showWorkspace(host.id),false,false);
+    document.body.append(menu);const rect=event.currentTarget.getBoundingClientRect();Object.assign(menu.style,{position:'fixed',left:Math.max(4,Math.min(rect.left,innerWidth-menu.offsetWidth-4))+'px',top:Math.max(4,Math.min(rect.bottom,innerHeight-menu.offsetHeight-4))+'px'});menu.querySelector('button:not(:disabled)')?.focus();
+  }
   const hostTokenKey=id=>'sma.workspace.host-token.'+id;
   function boundToken(id,settings){
     const tokenKey=id==='local'?'sma.workspace.token':hostTokenKey(id),target=endpoint(settings);
@@ -579,7 +677,7 @@
       pick.append(node('span','workspace-host-name',host.identity.machine||host.name),node('small','muted',rooms.length?'房间号：'+rooms.join('、'):'未配置房间号'));
       pick.append(node('span','workspace-host-status',(host.connected?'已连接':host.phase)+' · '+(host.meter.rtt===null?'—':Math.round(host.meter.rtt)+' ms')),
         node('small','host-rates','↑ '+C.formatRate(host.rates.tx)+' ↓ '+C.formatRate(host.rates.rx)));row.append(pick);
-      if(host.id!=='local'&&!host.autoDirectory){const edit=button('···','编辑工作区 '+host.name,()=>showWorkspace(host.id));edit.className='workspace-host-edit';row.append(edit);}return row;
+      const actions=button('···','房间菜单 '+(host.identity.machine||host.name),event=>showRoomMenu(event,host));actions.className='workspace-host-edit';row.append(actions);return row;
   }
   function renderHosts(){
     for(const computer of $('tree').querySelectorAll('.computer-tree')){
@@ -650,16 +748,39 @@
     }
     host.config={relay,code,token,authMode};$('connection-dialog').close();connect(host);refreshDirectories();renderTree();renderTabs();renderLayout();
   };
-  $('connection-close').onclick=()=>{cancelAccountLogin();returnToWorkspace=false;$('connection-dialog').close();};$('connect-button').onclick=showConnection;
+  $('connection-close').onclick=()=>{cancelAccountLogin();returnToWorkspace=false;$('connection-dialog').close();};$('connect-button').onclick=()=>showRelayProfiles();
   $('rename-cancel').onclick=()=>$('rename-dialog').close();$('rename-form').onsubmit=e=>{e.preventDefault();send(renameWindow,15,{action:'title',window:renameWindow?.id,title:$('rename-value').value.trim()});$('rename-dialog').close();};
   $('terminate-cancel').onclick=()=>$('terminate-dialog').close();$('terminate-form').onsubmit=e=>{e.preventDefault();send(terminateSession,9,{session:terminateSession?.id});$('terminate-dialog').close();};
-  $('new-project').onclick=()=>showWorkspace();
+  $('new-project').onclick=()=>showRelayProfiles('workspace');
+  $('app-menu-toggle').onclick=()=>{closeRoomMenu();const menu=$('app-menu');menu.hidden=!menu.hidden;$('app-menu-toggle').setAttribute('aria-expanded',String(!menu.hidden));if(!menu.hidden)menu.querySelector('button')?.focus();};
+  $('menu-connect').onclick=()=>showRelayProfiles();
+  $('relay-profiles-close').onclick=()=>$('relay-profiles-dialog').close();
+  $('relay-profiles-advanced').onclick=()=>{$('relay-profiles-dialog').close();profileLegacy==='workspace'?showWorkspace():showConnection();};
+  $('relay-profile-form').onsubmit=event=>{
+    event.preventDefault();try{
+      const target=profileEndpoint($('relay-profile-address').value,$('relay-profile-port').value.trim()),token=$('relay-profile-token').value.trim();
+      if(!token||token.length>4096)throw new Error('请填写有效的 Token。');
+      let profile=relayProfiles.find(item=>item.endpoint===target&&(profileToken(item)===token||!profileToken(item)));
+      if(!profile){if(relayProfiles.length>=32)throw new Error('最多添加 32 组连接。');profile={id:crypto.randomUUID(),endpoint:target};relayProfiles.push(profile);}
+      const key='sma.workspace.profile-token.'+profile.id;save(sessionStorage,key,token);save(sessionStorage,key+'.target',target);
+      save(localStorage,key,$('relay-profile-remember').checked?token:'');save(localStorage,key+'.target',$('relay-profile-remember').checked?target:'');
+      save(localStorage,'sma.workspace.relay-profiles',JSON.stringify(relayProfiles));$('relay-profile-token').value='';$('relay-profile-error').textContent='';refreshDirectories();renderRelayProfiles();
+    }catch(error){$('relay-profile-error').textContent=error.message;}
+  };
+  document.addEventListener('click',event=>{if(!event.target.closest('#app-menu,#app-menu-toggle')||event.target.closest('#app-menu button'))closeAppMenu();if(roomMenu&&!event.target.closest('.room-menu,.workspace-host-edit'))closeRoomMenu();});
+  document.addEventListener('keydown',event=>{
+    const menu=roomMenu||(!$('app-menu').hidden?$('app-menu'):null);if(!menu)return;
+    if(event.key==='Escape'){event.preventDefault();closeRoomMenu();closeAppMenu();$('app-menu-toggle').focus();}
+    if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){event.preventDefault();const items=[...menu.querySelectorAll('button:not(:disabled)')];if(!items.length)return;const index=items.indexOf(document.activeElement);items[event.key==='Home'?0:event.key==='End'?items.length-1:(index+(event.key==='ArrowUp'?-1:1)+items.length)%items.length].focus();}
+  });
   for(const [command,label] of presets){const option=node('option','',label);option.value=command;$('preset').append(option);}
   $('new-session').onclick=newSession;$('empty-new').onclick=newSession;
   $('split-horizontal').onclick=()=>split('horizontal');$('split-vertical').onclick=()=>split('vertical');
   $('maximize').onclick=()=>{if(!active)return;maximized=!maximized;$('maximize').setAttribute('aria-pressed',String(maximized));renderLayout();};
   $('take-control').onclick=()=>takeControl();$('renderer').value=renderer;
+  $('agent-mode').onchange=()=>{const pane=panes.get(active);if(!pane)return;save(localStorage,agentModeKey(pane),$('agent-mode').value);pane.agentRequested=null;updateAgentMode(pane);};
   $('highlight-toggle').setAttribute('aria-pressed',String(highlightEnabled));
+  if(!window.NativeUpdates)$('check-updates').onclick=()=>alert('此窗口未接入本机更新服务。请从 Windows 桌面版的启动入口打开，再检查更新。');
   $('highlight-toggle').onclick=()=>{
     highlightEnabled=!highlightEnabled;save(localStorage,'sma.workspace.highlight',highlightEnabled?'on':'off');
     $('highlight-toggle').setAttribute('aria-pressed',String(highlightEnabled));
@@ -836,6 +957,7 @@
   }
   function refreshDirectories(){
     const wanted=new Map();
+    for(const profile of relayProfiles){const token=profileToken(profile);if(!token)continue;if(!wanted.has(profile.endpoint))wanted.set(profile.endpoint,[]);wanted.get(profile.endpoint).push({code:'',token});}
     for(const host of [...hosts.values()].sort((a,b)=>Number(b.connected)-Number(a.connected)))if(!host.autoDirectory&&host.config.authMode!=='account'&&host.config.code&&host.config.token){
       const url=JSON.parse(endpoint(host.config))[0];if(!wanted.has(url))wanted.set(url,[]);
       const rooms=wanted.get(url);if(!rooms.some(room=>room.code===host.config.code)&&rooms.length<64)rooms.push({code:host.config.code,token:host.config.token});
@@ -846,15 +968,17 @@
       const code=typeof relay.code==='string'?relay.code:'';
       let url;try{url=JSON.parse(endpoint({relay:relay.url,code}))[0];}catch{continue;}
       if(!wanted.has(url))wanted.set(url,[]);const rooms=wanted.get(url);
-      if(!rooms.some(room=>room.code===code)&&rooms.length<64)rooms.push({code,token:local.config.token});
+      if(!rooms.some(room=>room.code===code&&room.token===local.config.token)&&rooms.length<64)rooms.push({code,token:local.config.token});
     }
     for(const [url,directory] of directories)if(!wanted.has(url)){stopDirectory(directory);syncDiscoveredHosts(directory,[]);directories.delete(url);}
     for(const [url,rooms] of wanted){
       let directory=directories.get(url);
       if(!directory){directory={url,rooms:[],generation:0,ws:null,retry:0,retryTimer:0,signature:'',hosts:[],phase:'connecting',revision:0};directories.set(url,directory);}
       const signature=JSON.stringify(rooms);if(directory.signature===signature)continue;
-      directory.rooms=rooms.filter(room=>room.code);directory.tokens=[...new Set(rooms.map(room=>room.token))].slice(0,32);directory.signature=signature;directory.hosts=[];directory.selfRooms=new Set();directory.revision=0;
-      syncDiscoveredHosts(directory,[]);
+      const oldTokens=directory.tokens||[],tokens=[...new Set(rooms.map(room=>room.token))].slice(0,32);
+      const retained=(directory.hosts||[]).filter(host=>Number.isInteger(host.token_index)&&tokens.includes(oldTokens[host.token_index])).map(host=>({...host,token_index:tokens.indexOf(oldTokens[host.token_index])}));
+      directory.rooms=rooms.filter(room=>room.code);directory.tokens=tokens;directory.signature=signature;directory.hosts=retained;directory.selfRooms??=new Set();directory.revision=0;
+      syncDiscoveredHosts(directory,retained);
       // Close before replacing credentials, so stale authorized metadata cannot be displayed.
       connectDirectory(directory);
     }
@@ -915,6 +1039,7 @@
     if(changed){aggregateCatalog();renderTree();renderTabs();renderLayout();subscribe();updateConnection();updateFooter();}
   }
   function renderDiscovery(){
+    renderRelayProfiles();
     const list=$('workspace-known');if(!list)return;const selected=list.value;list.replaceChildren();
     const placeholder=node('option','','选择已授权电脑');placeholder.value='';list.append(placeholder);
     for(const account of relayAccounts.values())if(accountFor(account.url)===account)for(const host of account.hosts)if(host.online){
@@ -992,7 +1117,7 @@
     for(const saved of savedHosts)hosts.set(saved.id,new HostConnection(saved.id,saved.name,{relay:saved.relay,code:saved.code,token:saved.authMode==='account'?'':boundToken(saved.id,saved),authMode:saved.authMode}));
     const selected=restoredUI?.selectedHost||read(sessionStorage,'sma.workspace.activeHost');selectedHost=hosts.has(selected)?selected:'local';
     for(const host of hosts.values())connect(host);for(const account of relayAccounts.values())connectAccountDirectory(account);refreshDirectories();renderTree();updateFooter();
-    if(!config.token&&!config.code)setTimeout(()=>{if(!userConnectedOnce)showConnection();},1500);
+    if(!config.token&&!config.code)setTimeout(()=>{if(!userConnectedOnce)showRelayProfiles();},1500);
   }
   bootstrap();
   window.NativeUpdates?.uiReady();

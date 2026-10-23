@@ -1,5 +1,23 @@
 # 修改 TODO
 
+## 2026-10-23：底部历史提示与翻屏反馈
+
+- [x] “已恢复有限输出历史……”合并到上翻屏/下翻屏所在操作栏，长提示省略显示并保留完整悬停文字，不再单独占一行。
+- [ ] 用户反馈底部翻屏按钮没有效果；需继续区分普通历史缓冲区与 agent 全屏/备用屏的行为并验证，尚不标记为已修复。
+
+## 2026-10-23：0.2.22 菜单、多中继与独立 Agent 模板
+
+- [x] 左上角折叠按钮右侧、supermono 左侧加入“菜单”，含检查更新、下载并更新、连接工作区；旧小图标入口兼容为明确文字。
+- [x] 简单连接表单仅需地址/IP、端口、Token；支持多组凭据自动发现，移除一组不影响仍由其他 Token 授权的房间；默认不长期保存 Token，高级账户/房间设置保留为折叠入口。
+- [x] 每个房间有省略号菜单：新增窗口、刷新所有窗口、关闭所有窗口；批量关闭有进程终止确认及固定目标集合/代际校验，其他房间不受影响。
+- [x] 六种 Agent 各有 Windows/Android 独立 JSON 模板：Codex、Claude Code、Grok、Kimi、pi.dev、Cursor CLI；模式按电脑和会话保存，切换不清屏、不发送输入或 resize。见 [独立模板与调试](agent-render-modes.md)。
+- [x] 修复“0.2.20 外壳仍显示旧 r4 UI”：默认缓存按内置快照哈希分代，继承序号保护但不继承旧活动指针；已有缓存/进程不修改。
+- [x] 新模板资源使用 Native API 2（Windows 17、Android 16 文件），首次需安装新外壳。旧 API 1 明确拒绝新包；USB 完整快照同步升级并对旧覆盖整体回退。
+- [x] 全量 390 passed、1 skipped、55 subtests passed；仅剩一个旧用例仍按旧按钮位置查找，更新菜单选择器后相关 4 项定向通过。Node 42 passed。证据 `.omx/artifacts/ui-menu-profiles/`。
+- [x] 0.2.22 Windows/APK 已构建；实际 EXE 的 45 个源文件 hash、账号/发现/隔离 CMD 输入验证通过。17/16 文件 API2 界面包已发布并从 HTTPS 公网重新下载验签。
+- [x] 已另开 0.2.22 Windows 可见窗口（PID 53576、frontend 6779），实际服务使用新 bundled 命名空间，菜单位置、三个菜单项、简单连接框、六模式和高亮入口均在新界面中；旧 0.2.20 窗口及 daemon/Codex/Kimi 继续运行。证据 `.omx/artifacts/ui-menu-profiles/live-new-frontend.json`。
+- [ ] Android 真机本轮未安装：adb 当前无设备；APK 为 `dist/android/0.2.22/SuperMonoAgent.apk`。首次需覆盖安装 API2 外壳后才能热更新模板，不把 JVM/Chromium 验证当作真机已升级。
+
 ## 2026-10-23：远程 Codex/Claude 显示颜色
 
 - [x] 对 JINLONG3090 做只读颜色统计：3 个历史快照及采样期间 2 个活跃流只有 reset/bold/dim/underline，无前景/背景色码；没有发送输入、调整尺寸或重启终端。证据 `.omx/artifacts/remote-terminal-colors/live-readonly.json`。

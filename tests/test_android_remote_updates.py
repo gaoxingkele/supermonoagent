@@ -36,7 +36,20 @@ public class RemoteCheck {
    java.net.Authenticator.setDefault(new java.net.Authenticator(){protected java.net.PasswordAuthentication getPasswordAuthentication(){return new java.net.PasswordAuthentication("account","MUST-NOT-SEND".toCharArray());}});
    byte[] result=RemoteUpdates.download(URI.create(a[1]),Integer.parseInt(a[2]));System.out.println(RemoteUpdates.hash(result));return;}
   if(a[0].equals("html")){System.out.print(UpdateDocument.html(bytes(a[1]),new String(bytes(a[2]),"UTF-8"),"native-fixture-ticket","fixture-iframe",1,"http://native-fixture.test"));return;}
+  if(a[0].equals("upgrade")){
+   try{RemoteUpdates.verify(bytes(a[4]),bytes(a[1]),URI.create(a[2]),Long.parseLong(a[3]),true);throw new AssertionError("Incompatible native API accepted");}
+   catch(java.io.IOException error){check(error.getMessage().contains("Native shell upgrade required"),"Missing native upgrade message");System.out.println("native-shell-upgrade-required");}return;
+  }
   if(a[0].equals("document")){
+   check(RemoteUpdates.NATIVE_API==2&&RemoteUpdates.FILES.size()==16,"API2 asset baseline missing");
+   String profileOrigin="https://terminal.example.test",profileRevision="test-2";
+   for(String mode:Arrays.asList("codex","claude-code","grok","kimi","pi-dev","cursor-cli")){
+    String path="mobile/agent-modes/"+mode+".json";
+    check(path.equals(UpdateDocument.asset(profileOrigin,profileOrigin+"/"+path+"?ui_revision="+profileRevision,profileRevision)),"Fixed JSON revision refused");
+    check(UpdateDocument.asset(profileOrigin,profileOrigin+"/"+path+"?ui_revision=old",profileRevision)==null,"Mixed JSON revision accepted");
+    check("application/json".equals(LocalAssets.mime(path)),"JSON MIME missing");
+   }
+   check(UpdateDocument.asset(profileOrigin,profileOrigin+"/mobile/agent-modes/unknown.json?ui_revision="+profileRevision,profileRevision)==null,"Unknown JSON accepted");
    String origin="https://terminal.example.test",rev="test-2",ticket="native-secret",doc=origin+"/mobile/index.html?ui_revision="+rev;
    String good="sma-update://ready?ticket="+ticket+"&revision="+rev+"&generation=7";
    check("ready".equals(UpdateDocument.action(origin,doc,good,true,ticket,rev,7)),"Valid main-frame bridge denied");
@@ -48,6 +61,7 @@ public class RemoteCheck {
    check(UpdateDocument.action(origin,doc,good.replace("ready","delete"),true,ticket,rev,7)==null,"Unexpected command accepted");
    String html=UpdateDocument.html("<html><head><script src=\"app.js\"></script></head><body></body></html>".getBytes("UTF-8"),"function(c){}",ticket,rev,7,"https://terminal.example.test");
    check(html.contains("frame-src 'none'")&&html.contains("object-src 'none'")&&html.contains("X-Frame") == false,"Frame policy missing");
+   check(html.contains("connect-src 'self' ws: wss:"),"Same-origin JSON fetch blocked by CSP");
    check(html.indexOf("function(c)")<html.indexOf("src=\"/mobile/app.js?ui_revision="),"Bridge not immutable/pre-app");
    check(UpdateDocument.asset(origin,origin+"/mobile/app.js?ui_revision=old",rev)==null,"Mixed revision accepted");
    byte[] safe=UpdateDocument.state("{\"version\":1,\"hostId\":\"host:other\",\"activeSid\":\"sameid\",\"drafts\":[[\"[\\\"host:other\\\",\\\"sameid\\\"]\",\"unsent\"]],\"modes\":[],\"token\":\"MUST-NOT-EXPORT\",\"accounts\":{\"secret\":true}}".getBytes("UTF-8"));
@@ -69,7 +83,7 @@ public class RemoteCheck {
    }finally{pool.shutdown();}
    RemoteUpdates.Boot boot2=store.beginBoot();check(!store.acknowledge(boot1.ticket,boot1.revision,boot1.generation),"Late previous ready accepted");check(!store.acknowledge(boot2.ticket,boot2.revision,"old-generation"),"Wrong install generation accepted");clock.addAndGet(20001L);check(!store.acknowledge(boot2.ticket,boot2.revision,boot2.generation),"Late ready committed after persistent deadline");
    check(store.active().equals(boot1.revision)&&store.highest()==2,"Rollback downgraded highest or lost previous");reject(()->store.install(two,zip2,baseline,now));
-   reject(()->RemoteUpdates.verify(one,trust,feed,now+10000000L,true));check(store.snapshot(boot1.revision).size()==10,"Known good naturally expired snapshot unavailable");
+   reject(()->RemoteUpdates.verify(one,trust,feed,now+10000000L,true));check(store.snapshot(boot1.revision).size()==RemoteUpdates.FILES.size(),"Known good naturally expired snapshot unavailable");
    store.install(three,zip3,baseline,now);store.beginBoot();RemoteUpdates.Store restarted=new RemoteUpdates.Store(root,trust,feed);
    check(restarted.active().equals(boot1.revision)&&restarted.highest()==3,"Unfinished startup was not recovered");
    Files.createDirectories(root.resolve("snapshots/stage-interrupted"));new RemoteUpdates.Store(root,trust,feed).snapshot(restarted.active());
@@ -351,3 +365,12 @@ def test_native_healthy_navigation_reuses_webview_and_separates_crash_recovery()
     assert 'addJavascriptInterface(' not in source
     assert 'ui-bundled-only' in source and 'First save the old developer UI drafts from EVERY window' in source
     assert 'getExternalFilesDir' in source and 'active.txt' not in source,'Native recovery must not edit the USB active pointer'
+
+
+def test_api2_legacy_missing_profiles_reports_native_upgrade(jvm,signing,vectors,tmp_path):
+    _,private,trust,payload=signing
+    legacy=copy.deepcopy(payload);legacy['artifacts']['android']['native_api']=1
+    legacy['artifacts']['android']['files']={name:info for name,info in legacy['artifacts']['android']['files'].items() if '/agent-modes/' not in name}
+    envelope=tmp_path/'legacy-api1.json';envelope.write_bytes(signed(legacy,private))
+    result=jvm[0]('upgrade',trust,FEED,vectors['now'],envelope)
+    assert 'native-shell-upgrade-required' in result.stdout

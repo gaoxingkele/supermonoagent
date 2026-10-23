@@ -52,6 +52,8 @@ async def _check_hosts(playwright, edge):
                         await page.goto(f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/workspace?direct=1&renderer=dom#token={local.token}")
                         await page.wait_for_function("window.smaWorkspace?.connected")
                         await page.locator("#new-project").click()
+                        await page.locator('#relay-profiles-dialog summary').click()
+                        await page.locator('#relay-profiles-advanced').click()
                         await page.locator("#workspace-name").fill("Office computer")
                         await page.locator("#workspace-code").fill("office-room")
                         assert await page.locator("#workspace-relay").input_value() == relay
@@ -88,6 +90,8 @@ async def _check_hosts(playwright, edge):
                         assert "LOCAL-ONLY" not in await page.evaluate("Array.from({length:smaWorkspace.terminal.buffer.active.length},(_,i)=>smaWorkspace.terminal.buffer.active.getLine(i).translateToString(true)).join('\\n')")
                         assert remote.token not in await page.evaluate("localStorage.getItem('sma.workspace.hosts')")
                         await page.locator("#connect-button").click()
+                        await page.locator('#relay-profiles-dialog summary').click()
+                        await page.locator('#relay-profiles-advanced').click()
                         assert await page.locator("#access-token").input_value() == remote.token
                         assert not await page.locator("#remember-token").is_checked()
                         await page.locator("#connection-close").click()
@@ -107,7 +111,8 @@ async def _check_hosts(playwright, edge):
                         assert await remote_tree.locator('.computer-windows').is_hidden()
                         await remote_tree.locator('.workspace-host-toggle').click()
                         assert await remote_tree.locator('.computer-windows').is_visible()
-                        await page.get_by_role("button", name="编辑工作区 Office computer").click()
+                        await page.locator('#tree > .computer-tree').nth(1).locator('.workspace-host-edit').click()
+                        await page.get_by_role("menuitem", name="编辑工作区 Office computer").click()
                         await page.locator("#workspace-remove").click()
                         await page.wait_for_function("smaWorkspace.connected && smaWorkspace.activePane?.title.textContent.includes('Local terminal')")
                         assert await page.get_by_role("button", name="切换到 Office computer", exact=True).count() == 0

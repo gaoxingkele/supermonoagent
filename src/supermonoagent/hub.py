@@ -497,6 +497,14 @@ class Hub:
         if released:
             self._catalog()
 
+    def refresh_subscriptions(self, client: Client, session_ids) -> None:
+        """Replay snapshots for still-authorized open views without releasing their leases."""
+        selected = {sid for sid in session_ids if isinstance(sid, str)} & client.subscriptions
+        for sid in sorted(selected):
+            session = self.subscribed_session(client, sid)
+            if session is not None:
+                self._send(client, self._session_snapshot(client, session))
+
     def subscribed_session(self, client: Client, session_id: str) -> Session | None:
         if (client.failure or self.clients.get(client.key) is not client
                 or (client.authorize is not None and not client.authorize())):

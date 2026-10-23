@@ -1,0 +1,46 @@
+:root{color-scheme:dark;--bg:#141414;--panel:#202020;--line:#343434;--text:#ededed;--muted:#aaa;font:14px/1.4 system-ui,"Segoe UI",sans-serif}*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;overscroll-behavior:none}body{display:flex;flex-direction:column;background:var(--bg);color:var(--text)}button,select,input,textarea{font:inherit;color:inherit}button,select{border:1px solid var(--line);border-radius:7px;background:var(--panel);padding:6px 10px;min-height:40px;touch-action:manipulation}button:disabled{opacity:.45}button:focus-visible,a:focus-visible{outline:2px solid #bbb}header{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--line);flex:none}.heading{flex:1;min-width:0}.heading strong,.heading small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.heading strong{font-size:13px;font-weight:500}.heading small{font-size:10px;color:var(--muted)}header button{padding:3px 10px}#screen{flex:1;min-height:0;min-width:0;padding:5px 4px 0;overflow:hidden;touch-action:none}#screen>.xterm{height:100%;padding:0 2px}#screen .xterm-viewport{overscroll-behavior:none}#notice{padding:6px 10px;background:#332b1d;color:#e7cf9c;font-size:11px;flex:none}#keys{display:flex;gap:4px;padding:5px 5px max(5px,env(safe-area-inset-bottom));background:var(--panel);border-top:1px solid var(--line);flex:none}#keys button{flex:1;min-width:0;padding:3px 1px;font-size:12px}#ctrl[aria-pressed=true]{background:#ddd;color:#111}#composer{display:flex;gap:6px;padding:6px;background:var(--panel);flex:none}textarea{min-width:0;resize:none;background:#181818;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:16px}#draft{flex:1;max-height:130px}#resume{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:3px 9px;font-size:11px;background:var(--panel);flex:none}#resume button{min-height:28px;font-size:11px}dialog{width:min(94vw,480px);max-height:80vh;overflow:auto;border:1px solid #555;border-radius:12px;padding:16px;background:var(--panel);color:var(--text)}dialog::backdrop{background:#0009}h2{font-size:16px;font-weight:500;margin:0 0 14px}dialog label{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:16px 0}dialog a{display:block;color:inherit;padding:12px 0}dialog>button{margin:5px 4px 0 0}.session{display:flex;flex-direction:column;align-items:start;text-align:left;width:100%;margin:6px 0}.session small{color:var(--muted);max-width:100%;overflow:hidden;text-overflow:ellipsis}.session[aria-current=true]{border-color:#ccc}.new{display:flex;gap:7px;margin:14px 0}.new select{flex:1;min-width:0}#copy-text{width:100%}[hidden]{display:none!important}@media(max-height:430px){header{padding:3px 6px}header button{min-height:32px}#keys{padding-top:3px;padding-bottom:3px}#keys button{min-height:32px}.heading small{display:none}}
+/* Keep narrow cover displays and resized multi-window dialogs within the viewport. */
+#screen{padding:0}
+/* FitAddon subtracts xterm padding, but cannot subtract parent border-box padding. */
+#screen>.xterm{padding:5px 6px 0}
+#notice{overflow-wrap:anywhere;max-height:20%;overflow:auto}
+.session span{max-width:100%;overflow-wrap:anywhere}
+dialog{max-width:calc(100% - 16px);max-height:80dvh}
+dialog label{flex-wrap:wrap}
+dialog input,dialog select{min-width:0;max-width:100%}
+@media(max-height:430px){#draft{max-height:64px}#keys{padding-bottom:max(3px,env(safe-area-inset-bottom))}}
+
+/* Workspace navigation separates saved computers from daemon-owned windows. */
+#session-dialog{width:min(94vw,560px);padding:16px;max-height:90dvh}
+.dialog-heading,.section-heading,.host-row,.host-label,.form-actions{display:flex;align-items:center;gap:8px}
+.dialog-heading{justify-content:space-between;align-items:flex-start;margin-bottom:18px}.dialog-heading h2{margin:0 0 4px}.dialog-heading>div{min-width:0}.hint{font-size:11px;color:var(--muted);overflow-wrap:anywhere;margin:0}
+#session-dialog section+section{border-top:1px solid var(--line);margin-top:16px;padding-top:14px}.section-heading{justify-content:space-between;margin-bottom:8px}.section-heading h3{margin:0;font-size:12px;font-weight:500;color:var(--muted)}.section-heading button{font-size:12px;min-height:32px;padding:4px 8px}
+.host-row{margin:5px 0}.host-button{flex:1;min-width:0;text-align:left;padding:9px 10px}.host-label{justify-content:space-between}.host-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-button small{display:block;color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.host-button[aria-current=true]{border-color:#999;background:#292929}.badge{font-size:10px;background:#414141;border-radius:4px;padding:2px 5px;white-space:nowrap}.host-remove{font-size:11px;padding:4px 6px;min-height:32px}
+.search-label{display:block;font-size:11px;color:var(--muted);margin:8px 0 5px}#session-search{width:100%;border:1px solid var(--line);border-radius:7px;background:#181818;padding:9px;font-size:16px}.window-heading{font-size:12px;color:var(--muted);margin:14px 0 4px;overflow-wrap:anywhere}.session{padding:10px;gap:3px}.session>span{display:flex;gap:6px;align-items:center;width:100%;justify-content:space-between}.session-name{min-width:0;overflow-wrap:anywhere}.session small{font-size:11px;text-overflow:ellipsis;white-space:nowrap}.empty-state{padding:20px 4px;color:var(--muted);font-size:12px}.new{border-top:1px solid var(--line);padding-top:14px;margin-bottom:0}.new button{font-size:12px;white-space:nowrap}
+#host-form label{display:block;font-size:12px;margin:14px 0}#host-form input{display:block;width:100%;margin-top:5px;padding:9px;border:1px solid var(--line);border-radius:6px;background:#181818;font-size:16px}#host-error{color:#e7cf9c;font-size:12px;overflow-wrap:anywhere}.form-actions{justify-content:flex-end;margin-top:16px}#host-identity{max-width:350px}
+@media(max-width:340px){#session-dialog{padding:12px}.new{gap:4px}.new button{padding:5px}.dialog-heading{gap:4px}.badge{font-size:9px}}
+
+/* One terminal per row; status stays visible when a long name is ellipsized. */
+#session-list h3{font-size:11px;color:var(--muted);margin:12px 0 3px}
+#session-list h4{font-size:11px;font-weight:500;color:var(--muted);margin:7px 0 4px}
+#session-list .session{flex-direction:row;align-items:center;gap:8px;min-height:34px;padding:5px 8px;margin:3px 0}
+#session-list .session-name{display:block;flex:1;min-width:0;width:auto;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#session-list .session-agent{flex:none;font-size:11px;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session-dot{display:block;flex:none;width:8px;height:8px;border-radius:50%;background:#f4cf55}
+.session[data-state=refreshing] .session-dot{background:#5edc8b;animation:session-pulse 1s ease-in-out infinite}
+.session[data-state=disconnected] .session-dot{background:#ed6b68}
+@keyframes session-pulse{50%{opacity:.25}}
+@media(prefers-reduced-motion:reduce){.session[data-state=refreshing] .session-dot{animation:none}}
+
+/* The editor floats over the terminal without changing its canonical grid. */
+#composer{display:none;width:min(94vw,560px);padding:16px;max-height:calc(100dvh - 16px);overflow:auto;box-shadow:0 18px 60px #0008}
+#composer[open]{display:block}
+#composer .dialog-heading{margin-bottom:12px}
+#composer #draft{display:block;width:100%;max-height:32dvh;min-height:72px;margin-bottom:10px}
+#composer-status{min-height:2.8em}
+#composer .form-actions{margin-top:10px}
+#composer #send{min-width:108px;background:#d8eadf;color:#11261a;border-color:#b5d6c1}
+#keys{display:grid;grid-template-columns:repeat(8,minmax(0,1fr))}
+#keys #mode,#keys #github{grid-column:span 4}
+@media(min-width:600px){#keys{display:flex}#keys #github{flex:2}}
+@media(max-height:430px){#composer{padding:10px}#composer .dialog-heading{margin-bottom:6px}#composer #draft{min-height:52px;max-height:25dvh}#composer-status{min-height:0}#composer .form-actions{margin-top:6px}}

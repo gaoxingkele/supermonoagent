@@ -20,10 +20,12 @@ import uuid
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-DESKTOP = ('workspace.html','workspace.js','workspace.css','terminal-client.js','tab-themes.js','tab-themes.css','xterm.js','xterm.css','xterm-fit.js','xterm-unicode11.js','xterm-webgl.js')
+AGENT_MODES = ('codex','claude-code','grok','kimi','pi-dev','cursor-cli')
+NATIVE_API = 2
+DESKTOP = ('workspace.html','workspace.js','workspace.css','terminal-client.js','tab-themes.js','tab-themes.css','xterm.js','xterm.css','xterm-fit.js','xterm-unicode11.js','xterm-webgl.js') + tuple('agent-modes/'+name+'.json' for name in AGENT_MODES)
 VENDOR = ('xterm.js','xterm.css','xterm-fit.js','xterm-unicode11.js','xterm-webgl.js','terminal-client.js')
 MOBILE = ('index.html','app.js','app.css','mobile-core.js')
-ANDROID = tuple('mobile/'+name for name in MOBILE) + tuple('mobile/vendor/'+name for name in VENDOR)
+ANDROID = tuple('mobile/'+name for name in MOBILE) + tuple('mobile/vendor/'+name for name in VENDOR) + tuple('mobile/agent-modes/'+name+'.json' for name in AGENT_MODES)
 SAFE_INTEGER = 9007199254740991
 MAX_SNAPSHOT, MAX_ARCHIVE, MAX_FILE = 5*1024**2, 8*1024**2, 4*1024**2
 
@@ -130,6 +132,7 @@ def files_for_platform(root,platform,feed):
     else:
         files={'mobile/'+name:(root/'android/assets/mobile'/name).read_bytes() for name in MOBILE}
         files.update({'mobile/vendor/'+name:(static/name).read_bytes() for name in VENDOR})
+        files.update({'mobile/agent-modes/'+name+'.json':(root/'android/assets/mobile/agent-modes'/(name+'.json')).read_bytes() for name in AGENT_MODES})
     if sum(map(len,files.values()))>MAX_SNAPSHOT or any(len(data)>MAX_FILE for data in files.values()):
         raise ValueError('UI snapshot exceeds size limit')
     return files
@@ -138,6 +141,7 @@ def source_fingerprint(root):
     paths=[root/'src/supermonoagent/workspace.py',root/'src/supermonoagent/defaults.py']
     paths += [root/'src/supermonoagent/static'/name for name in DESKTOP if name!='workspace.html']
     paths += [root/'android/assets/mobile'/name for name in MOBILE]
+    paths += [root/'android/assets/mobile/agent-modes'/(name+'.json') for name in AGENT_MODES]
     return {str(path.relative_to(root)):digest(path.read_bytes()) for path in paths}
 
 def make_archive(path,files):
@@ -168,7 +172,7 @@ def verify_local(directory,trust,openssl=None,now=None):
     for platform,allowed in [('desktop',DESKTOP),('android',ANDROID)]:
         item=value['artifacts'][platform]
         expected='releases/'+rev+'/'+platform+'.zip'
-        if item['url']!=expected or item['native_api']!=1 or set(item['files'])!=set(allowed):raise ValueError('Invalid artifact catalog')
+        if item['url']!=expected or item['native_api']!=NATIVE_API or set(item['files'])!=set(allowed):raise ValueError('Invalid artifact catalog')
         data=(directory/(platform+'.zip')).read_bytes()
         if len(data)>MAX_ARCHIVE or len(data)!=item['size'] or digest(data)!=item['sha256']:raise ValueError('Archive hash/size mismatch')
         with zipfile.ZipFile(directory/(platform+'.zip')) as archive:
@@ -225,7 +229,7 @@ def package(output,*,root=ROOT,revision=None,private_key=None,key_id=None,openss
             tmp=Path(tmp);artifacts={};before=source_fingerprint(root)
             for platform in ['desktop','android']:
                 files=files_for_platform(root,platform,feed);archive=tmp/(platform+'.zip');make_archive(archive,files);data=archive.read_bytes()
-                artifacts[platform]={'url':'releases/'+revision+'/'+platform+'.zip','sha256':digest(data),'size':len(data),'native_api':1,'files':{name:{'sha256':digest(content),'size':len(content)} for name,content in files.items()}}
+                artifacts[platform]={'url':'releases/'+revision+'/'+platform+'.zip','sha256':digest(data),'size':len(data),'native_api':NATIVE_API,'files':{name:{'sha256':digest(content),'size':len(content)} for name,content in files.items()}}
             if before!=source_fingerprint(root):raise ValueError('UI source changed during packaging; retry after edits finish')
             payload=json_bytes({'schema':1,'channel':'stable','revision':revision,'sequence':sequence,'created':created,'expires':created+lifetime_days*86400,'artifacts':artifacts})
             (tmp/'payload').write_bytes(payload)

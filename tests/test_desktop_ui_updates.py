@@ -26,6 +26,157 @@ EDGE=Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
 FEED='https://updates.example/updates/stable/manifest.json'
 
 
+def test_bundled_update_entry_is_visible_text():
+    from html.parser import HTMLParser
+    from supermonoagent.workspace import PAGE
+    class Entry(HTMLParser):
+        def __init__(self):super().__init__();self.ids={}
+        def handle_starttag(self,tag,attrs):
+            fields=dict(attrs)
+            if fields.get('id'):self.ids[fields['id']]=fields
+            if fields.get('id')=='check-updates':self.fields=fields
+    entry=Entry();entry.feed(PAGE)
+    assert 'hidden' not in entry.fields
+    assert entry.fields['aria-label']=='检查更新'
+    assert '>检查更新</button>' in PAGE
+    assert 'hidden' in entry.ids['app-menu']
+    assert entry.ids['app-menu-toggle']['aria-expanded']=='false'
+    assert PAGE.index('id="sidebar-toggle"')<PAGE.index('id="app-menu-toggle"')<PAGE.index('class="wordmark"')
+    assert entry.ids['relay-profile-token']['type']=='password'
+    assert entry.ids['relay-profile-port']['type']=='number'
+    assert entry.ids['agent-mode']['aria-label']=='Agent \u6e32\u67d3\u6a21\u5f0f'
+    assert PAGE.index('id="agent-mode"')<PAGE.index('id="highlight-toggle"')
+    for mode in ['auto','codex','claude-code','grok','kimi','pi-dev','cursor-cli']:
+        assert f'<option value="{mode}">' in PAGE
+    assert {'download-ui-update','menu-connect','relay-profiles-dialog','relay-profile-list','relay-profiles-advanced'}<=entry.ids.keys()
+
+
+def test_native_bridge_upgrades_legacy_glyph_entry_and_opens_menu(tmp_path,signer):
+    playwright=pytest.importorskip('playwright.async_api')
+    if not EDGE.exists():pytest.skip('Local Edge required')
+    asyncio.run(_check_legacy_entry(tmp_path,signer,playwright))
+
+
+async def _check_legacy_entry(tmp_path,signer,playwright):
+    import re
+    legacy=bundled_ui_files()
+    html=legacy['workspace.html'].decode()
+    html=re.sub(r'<button id="check-updates"[^>]*>.*?</button>','',html,count=1)
+    html=html.replace('<button id="connect-button"','<button id="check-updates" title="检查更新" aria-label="检查更新" hidden>↥</button><button id="connect-button"',1)
+    legacy['workspace.html']=html.encode()
+    legacy['workspace.css']=legacy['workspace.css'].replace(b'#check-updates{flex:none;width:auto;min-width:64px;padding:4px 7px;font-size:12px;white-space:nowrap}',b'#check-updates{flex:none;width:26px;min-width:26px;padding:3px;font-size:17px}')
+    assert 'hidden>↥</button>'.encode() in legacy['workspace.html']
+    with patch('supermonoagent.frontend.bundled_ui_files',return_value=legacy):
+        async with frontend_fixture(tmp_path,signer) as (_frontend,_feed,daemon,_session,_other,origin):
+            with patch.object(U,'fetch_manifest',side_effect=OSError('Isolated entry check')):
+                async with playwright.async_playwright() as runtime:
+                    browser=await runtime.chromium.launch(executable_path=str(EDGE),headless=True)
+                    try:
+                        page=await browser.new_page()
+                        await page.goto(origin+'/workspace?direct=1&renderer=dom#token='+daemon.token)
+                        await wait_ui(page,"window.NativeUpdates&&document.querySelector('#check-updates').textContent==='检查更新'")
+                        for width,height in [(1100,760),(390,844)]:
+                            await page.set_viewport_size({'width':width,'height':height})
+                            trigger=page.locator('#check-updates')
+                            assert await trigger.is_visible()
+                            assert await trigger.inner_text()=='检查更新'
+                            geometry=await trigger.evaluate("button=>{const r=button.getBoundingClientRect();return {width:r.width,right:r.right,textFits:button.scrollWidth<=button.clientWidth,font:getComputedStyle(button).fontSize,pageWidth:document.documentElement.scrollWidth};}")
+                            assert geometry['width']>=64 and geometry['textFits'],geometry
+                            assert geometry['right']<=width and geometry['pageWidth']<=width,geometry
+                            assert geometry['font']=='12px',geometry
+                            assert await page.locator('#connect-button').evaluate('button=>button.getBoundingClientRect().right<=innerWidth')
+                            await trigger.click()
+                            assert await page.locator('#native-updates-host').get_by_role('heading',name='界面更新').is_visible()
+                            artifacts=Path(__file__).parents[1]/'.omx'/'artifacts'/'ui-update-entry'
+                            artifacts.mkdir(parents=True,exist_ok=True)
+                            await page.screenshot(path=str(artifacts/f'legacy-entry-{width}.png'))
+                            await page.locator('#native-updates-host').get_by_role('button',name='关闭更新菜单').click()
+                    finally:
+                        await browser.close()
+
+
+def test_menu_entries_simple_dialog_and_download_without_candidate(tmp_path,signer):
+    playwright=pytest.importorskip('playwright.async_api')
+    if not EDGE.exists():pytest.skip('Local Edge required')
+    asyncio.run(_check_menu_and_profiles(tmp_path,signer,playwright))
+
+
+def test_download_api_checks_first_and_reports_no_candidate(tmp_path,signer):
+    playwright=pytest.importorskip('playwright.async_api')
+    if not EDGE.exists():pytest.skip('Local Edge required')
+    asyncio.run(_check_cold_download(tmp_path,signer,playwright))
+
+
+async def _check_cold_download(tmp_path,signer,playwright):
+    async with frontend_fixture(tmp_path,signer) as (_frontend,_feed,daemon,_session,_other,origin):
+        with patch.object(U,'fetch_manifest',side_effect=OSError('Isolated cold download')) as checks,patch.object(U,'fetch_archive') as archive:
+            async with playwright.async_playwright() as runtime:
+                browser=await runtime.chromium.launch(executable_path=str(EDGE),headless=True)
+                try:
+                    page=await browser.new_page()
+                    await page.goto(origin+'/workspace?direct=1&renderer=dom#token='+daemon.token)
+                    await wait_ui(page,"document.querySelector('#native-updates-host')?.shadowRoot.querySelector('p').textContent.includes('Isolated cold download')")
+                    before=checks.call_count
+                    await page.evaluate('NativeUpdates.downloadAndInstall()')
+                    assert checks.call_count==before+1
+                    archive.assert_not_called()
+                    assert await page.locator('#native-updates-host').get_by_role('heading',name='界面更新').is_visible()
+                    assert 'Isolated cold download' in await page.locator('#native-updates-host').locator('p').inner_text()
+                    assert not await page.locator('#download-ui-update').is_disabled()
+                finally:
+                    await browser.close()
+
+
+async def _check_menu_and_profiles(tmp_path,signer,playwright):
+    async with frontend_fixture(tmp_path,signer) as (_frontend,_feed,daemon,_session,_other,origin):
+        with patch.object(U,'fetch_manifest',side_effect=OSError('Isolated menu: no release')) as checks,patch.object(U,'fetch_archive') as archive:
+            async with playwright.async_playwright() as runtime:
+                browser=await runtime.chromium.launch(executable_path=str(EDGE),headless=True)
+                try:
+                    page=await browser.new_page()
+                    await page.goto(origin+'/workspace?direct=1&renderer=dom#token='+daemon.token)
+                    await wait_ui(page,'window.NativeUpdates&&window.smaWorkspace?.connected')
+                    artifacts=Path(__file__).parents[1]/'.omx'/'artifacts'/'ui-menu-profiles';artifacts.mkdir(parents=True,exist_ok=True)
+                    for width,height in [(1100,760),(390,844)]:
+                        await page.set_viewport_size({'width':width,'height':height})
+                        toggle=page.locator('#app-menu-toggle');await toggle.click()
+                        assert await toggle.get_attribute('aria-expanded')=='true'
+                        assert await page.locator('#app-menu').is_visible()
+                        for selector,text in [('#check-updates','检查更新'),('#download-ui-update','下载并更新'),('#menu-connect','连接工作区')]:
+                            assert await page.locator(selector).is_visible()
+                            assert await page.locator(selector).inner_text()==text
+                        assert await page.evaluate("document.documentElement.scrollWidth<=innerWidth&&document.querySelector('#connect-button').getBoundingClientRect().right<=innerWidth")
+                        await page.screenshot(path=str(artifacts/f'menu-{width}.png'))
+                        await page.locator('#menu-connect').click()
+                        assert await page.locator('#relay-profiles-dialog').is_visible()
+                        await page.locator('#relay-profile-address').fill('127.0.0.1')
+                        await page.locator('#relay-profile-port').fill('8817')
+                        await page.locator('#relay-profile-token').fill('test-credential')
+                        assert await page.locator('#relay-profile-token').get_attribute('type')=='password'
+                        assert await page.locator('#relay-profiles-dialog').evaluate('dialog=>dialog.scrollWidth<=dialog.clientWidth&&dialog.getBoundingClientRect().right<=innerWidth')
+                        await page.evaluate("""() => {const row=document.createElement('div');row.className='relay-profile-row';const address=document.createElement('span');address.textContent='wss://'+ 'long-address.'.repeat(30)+'example/ws';const status=document.createElement('small');status.textContent='Credential '+ 'long-label'.repeat(30);const remove=document.createElement('button');remove.textContent='Remove';row.append(address,status,remove);document.querySelector('#relay-profile-list').append(row);} """)
+                        assert await page.locator('#relay-profile-list').evaluate('list=>list.scrollWidth<=list.clientWidth')
+                        assert await page.locator('#agent-mode').evaluate('select=>select.getBoundingClientRect().right<=innerWidth')
+                        await page.screenshot(path=str(artifacts/f'profiles-{width}.png'))
+                        await page.locator('#relay-profiles-close').click()
+                    await page.locator('#app-menu-toggle').click()
+                    before=checks.call_count
+                    await page.locator('#check-updates').click()
+                    await wait_ui(page,"document.querySelector('#native-updates-host').shadowRoot.querySelector('p').textContent.includes('Isolated menu: no release')")
+                    assert checks.call_count>before
+                    await page.locator('#native-updates-host').get_by_role('button',name='关闭更新菜单').click()
+                    await page.locator('#app-menu-toggle').click()
+                    before=checks.call_count
+                    await page.locator('#download-ui-update').click()
+                    await wait_ui(page,"document.querySelector('#native-updates-host').shadowRoot.querySelector('p').textContent.includes('Isolated menu: no release')")
+                    async with asyncio.timeout(3):
+                        while checks.call_count<=before:await asyncio.sleep(.02)
+                    archive.assert_not_called()
+                    assert not await page.locator('#download-ui-update').is_disabled()
+                finally:
+                    await browser.close()
+
+
 @pytest.fixture(scope='module')
 def signer(tmp_path_factory):
     if not OPENSSL:
@@ -36,7 +187,7 @@ def signer(tmp_path_factory):
     return private,{'schema':1,'keys':{hashlib.sha256(der).hexdigest()[:16]:base64.b64encode(der).decode()}}
 
 
-def candidate(signer, sequence, *, broken=False, missing_ready=False, native_api=1):
+def candidate(signer, sequence, *, broken=False, missing_ready=False, native_api=U.NATIVE_API):
     private,trust=signer
     files=bundled_ui_files()
     files['workspace.html']=files['workspace.html'].replace(b'/workspace.js\"',b'/workspace.js?v=2#asset\"').replace(b'/xterm.css\"',b'/xterm.css#font\"')
@@ -171,7 +322,7 @@ async def _check_api(tmp_path,signer):
             rolled=await rpc(socket,frontend,'rollback')
             assert rolled['active_revision']=='desktop-ui-1'
             assert rolled['highest_sequence']==2
-            feed['release']=candidate(signer,3,native_api=2)
+            feed['release']=candidate(signer,3,native_api=U.NATIVE_API+1)
             incompatible=await rpc(socket,frontend,'check')
             assert incompatible['phase']=='incompatible' and incompatible['available'] is None
             assert frontend.update_store.status()['active_revision']=='desktop-ui-1'
@@ -201,6 +352,7 @@ async def _check_browser(tmp_path,signer,playwright):
                     while active_session.pty.written!=b'draft-already-owned-by-PTY':
                         await asyncio.sleep(.01)
                 await page.evaluate("smaWorkspace.terminal.textarea.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:'pending'}))")
+                await page.locator('#app-menu-toggle').click()
                 await page.locator('#check-updates').click()
                 menu=page.locator('#native-updates-host')
                 artifacts=Path(__file__).parents[1]/'.omx'/'artifacts'/'ui-updates'
@@ -227,7 +379,7 @@ async def _check_browser(tmp_path,signer,playwright):
                 assert set(daemon.hub.sessions)=={session.id,other.id}
                 for width,height in [(390,844),(600,760),(1100,760)]:
                     await page.set_viewport_size({'width':width,'height':height})
-                    assert await page.evaluate("document.querySelector('#connect-button').getBoundingClientRect().right<=innerWidth&&document.querySelector('#check-updates').getBoundingClientRect().right<=innerWidth&&document.documentElement.scrollWidth<=innerWidth")
+                    assert await page.evaluate("document.querySelector('#connect-button').getBoundingClientRect().right<=innerWidth&&document.querySelector('#app-menu-toggle').getBoundingClientRect().right<=innerWidth&&document.documentElement.scrollWidth<=innerWidth")
                     await page.screenshot(path=str(artifacts/f'desktop-updated-{width}.png'))
                 feed['release']=candidate(signer,2,broken=True)
                 await page.evaluate('NativeUpdates.check()')

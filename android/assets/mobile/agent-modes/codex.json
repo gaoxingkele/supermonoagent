@@ -1,0 +1,49 @@
+{
+  "id": "codex",
+  "label": "Codex",
+  "theme": {
+    "background": "#121723",
+    "foreground": "#eef2ff",
+    "cursor": "#aecfff",
+    "cursorAccent": "#121723",
+    "selectionBackground": "#39465c",
+    "black": "#121723",
+    "red": "#ef8d98",
+    "green": "#a9dca9",
+    "yellow": "#e7d18b",
+    "blue": "#94bcea",
+    "magenta": "#cca9e4",
+    "cyan": "#aecfff",
+    "white": "#eef2ff",
+    "brightBlack": "#8490a3",
+    "brightRed": "#ffb2bc",
+    "brightGreen": "#c5f4b9",
+    "brightYellow": "#ffedba",
+    "brightBlue": "#bdd9ff",
+    "brightMagenta": "#ebc7ff",
+    "brightCyan": "#bcf4f5",
+    "brightWhite": "#ffffff"
+  },
+  "tokens": [
+    {
+      "pattern": "\\b(?:Codex|apply_patch)\\b",
+      "flags": "iu",
+      "color": "#aecfff"
+    },
+    {
+      "pattern": "\\b(?:Thinking|Reasoning|Planning)\\b",
+      "flags": "iu",
+      "color": "#dbc4ff"
+    },
+    {
+      "pattern": "\\b(?:Added|Updated|Created)\\b",
+      "flags": "iu",
+      "color": "#b2efbd"
+    },
+    {
+      "pattern": "^\\s*[›>]\\s",
+      "flags": "iu",
+      "color": "#ffe0a8"
+    }
+  ]
+}

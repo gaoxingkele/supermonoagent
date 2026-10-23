@@ -1,0 +1,114 @@
+﻿{
+    "sources":  [
+                    {
+                        "sha256":  "8de77229ecf52ce3b3f8dc3b2b02bb578ca95ba5c6ca3d93f84fd26a528f7da9",
+                        "path":  "src/supermonoagent/accounts.py"
+                    },
+                    {
+                        "sha256":  "50185690fdc967509e47a4473f09ffd80836073c2ee25902954b3a65f6166772",
+                        "path":  "src/supermonoagent/daemon.py"
+                    },
+                    {
+                        "sha256":  "747c834b385d47fa321d4fc3f46913e02d2741b84d3284f0f02a7bbc5041558d",
+                        "path":  "src/supermonoagent/desktop.py"
+                    },
+                    {
+                        "sha256":  "ae43668e3cc766cf6a1f81e9714e9f1a88831b8ae210754d1d669f3dd2436f51",
+                        "path":  "src/supermonoagent/frontend.py"
+                    },
+                    {
+                        "sha256":  "9962f85aeeaede7aeb20969b4b05add48613fcc7f881a8aa89f5ff10193e1861",
+                        "path":  "src/supermonoagent/hub.py"
+                    },
+                    {
+                        "sha256":  "e1cc54bb8af473041f4a0aad87e77392a95d238c68c1a748558a80f2a0de870b",
+                        "path":  "src/supermonoagent/launcher.py"
+                    },
+                    {
+                        "sha256":  "4657f1ec05ddff46b7fa95fa7bf7afd6d99cd01588bfaf1b5abb74fd9df1208a",
+                        "path":  "src/supermonoagent/microsoft.py"
+                    },
+                    {
+                        "sha256":  "a9d7cf0fbc7481e8c0aa13d0e2f8150a554d62c1a9cee7323edd4afb224f41ed",
+                        "path":  "src/supermonoagent/native_attach.py"
+                    },
+                    {
+                        "sha256":  "f9674bd2812731cded4a7f2ba1a8c7c5cc49ca69b5722c76a96cd79e8bcd7d20",
+                        "path":  "src/supermonoagent/protocol.py"
+                    },
+                    {
+                        "sha256":  "35fd4dc5b9f57a481e385b9347729216a9a16cb91d5a80f100ae7784d5ffc546",
+                        "path":  "src/supermonoagent/pty.py"
+                    },
+                    {
+                        "sha256":  "61c10263ca28be9f2cbeef8790d6864bd3039b70449801ac70a00e51212dbfc6",
+                        "path":  "src/supermonoagent/pump.py"
+                    },
+                    {
+                        "sha256":  "b7e53a1f039770d07c2516518c97efd7d24e64be1b7b855843d049511c5662cc",
+                        "path":  "src/supermonoagent/relay.py"
+                    },
+                    {
+                        "sha256":  "057e21eb67d2e6e805a8ed581a33d818d160da72bfb386b3919673985cdd8237",
+                        "path":  "src/supermonoagent/security.py"
+                    },
+                    {
+                        "sha256":  "c92628ec62b650ceeb85a208938f82420cd4342e3ba7895a725c7daacd7aa849",
+                        "path":  "src/supermonoagent/web.py"
+                    },
+                    {
+                        "sha256":  "b150cae5536b2ed010b02fac9d908f13053d18127f1fa70d315e9e62c5fd6d0a",
+                        "path":  "src/supermonoagent/workspace.py"
+                    },
+                    {
+                        "sha256":  "91447944015cec709e8aa7655f7e9d64e1e4508e7023a57fe3746911c0fc6fed",
+                        "path":  "src/supermonoagent/__init__.py"
+                    },
+                    {
+                        "sha256":  "ac51882c8e8dd0e55a1cf27ab5d9fb1b5ee8ea8a3b099687f1d03a53c761433e",
+                        "path":  "src/supermonoagent/__main__.py"
+                    },
+                    {
+                        "sha256":  "e70f61e079de8bfd9e6633a9573d01a205d84ddba1f5933326801d9719521a50",
+                        "path":  "src/supermonoagent/static/tab-themes.css"
+                    },
+                    {
+                        "sha256":  "8ead6cd57da88965fb38b83e525aed1566a1a8da9c0035b04a5b5fc21a6d17ca",
+                        "path":  "src/supermonoagent/static/tab-themes.js"
+                    },
+                    {
+                        "sha256":  "9d5be85da2e4f854d8421847e4db4a549fa9c2b8a9f785dadfef2ba3573644c5",
+                        "path":  "src/supermonoagent/static/terminal-client.js"
+                    },
+                    {
+                        "sha256":  "ef13840d34f800fe803adf0d2b527ecb0eb2a23fc1fdfbc3640110baa8b936a5",
+                        "path":  "src/supermonoagent/static/workspace.css"
+                    },
+                    {
+                        "sha256":  "94ef7df9e5c5363036bc02c2710a552188cd4cfc562ebc9478b2df1f5434a342",
+                        "path":  "src/supermonoagent/static/workspace.js"
+                    },
+                    {
+                        "sha256":  "bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089",
+                        "path":  "src/supermonoagent/static/xterm-fit.js"
+                    },
+                    {
+                        "sha256":  "b0c3be540a9984713aea996966c24ed1a639d11f60d44986b22661e3a8a148d0",
+                        "path":  "src/supermonoagent/static/xterm-unicode11.js"
+                    },
+                    {
+                        "sha256":  "9ffa9ac3ff6d47d4e6216ed1972ca8e0b5336cef744f50ebdc3f67b0ed727cdb",
+                        "path":  "src/supermonoagent/static/xterm-webgl.js"
+                    },
+                    {
+                        "sha256":  "ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6",
+                        "path":  "src/supermonoagent/static/xterm.css"
+                    },
+                    {
+                        "sha256":  "1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495",
+                        "path":  "src/supermonoagent/static/xterm.js"
+                    }
+                ],
+    "exe_sha256":  "3c9dcd811e4150a0f5684b8cbfc43c4c61e9ea88c9801866d8ceceaf485b3a96",
+    "built_at":  "2026-10-21T16:37:41.5505774Z"
+}

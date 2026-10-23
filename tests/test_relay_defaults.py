@@ -110,6 +110,8 @@ async def _check_dialogs(playwright, edge, relay):
                     sockets_before = list(socket_urls)
                     generation = await page.evaluate("smaWorkspace.activeHost.generation")
                     await page.locator("#connect-button").click()
+                    await page.locator('#relay-profiles-dialog summary').click()
+                    await page.locator('#relay-profiles-advanced').click()
                     assert await page.locator("#relay-url").input_value() == ""
                     assert await page.locator("#relay-url").evaluate("input=>input.list.options[0].value") == relay
                     await page.locator("#relay-url").evaluate("""input=>{
@@ -122,6 +124,8 @@ async def _check_dialogs(playwright, edge, relay):
                     assert await page.locator("#relay-url").input_value() == "wss://hand-entered.example/ws"
                     await page.locator("#connection-close").click()
                     await page.locator("#new-project").click()
+                    await page.locator('#relay-profiles-dialog summary').click()
+                    await page.locator('#relay-profiles-advanced').click()
                     assert await page.locator("#workspace-relay").input_value() == relay
                     assert await page.locator("#workspace-token").input_value() == ""
                     await page.locator("#workspace-relay").fill("wss://another.example/ws")

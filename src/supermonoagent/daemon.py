@@ -380,7 +380,11 @@ class Daemon:
             body = unpack_json(payload)
             sessions = body.get("sessions")
             if isinstance(sessions, list) and len(sessions) <= 256:
+                existing = set(client.subscriptions) if body.get("refresh") is True else None
                 self.hub.set_subscriptions(client, sessions)
+                if existing is not None:
+                    # Newly added sessions already received their initial snapshot above.
+                    self.hub.refresh_subscriptions(client, existing)
             return [self._state(client)], None
         if op == OP_INPUT_SESSION:
             sid, separator, data = payload.partition(b"\0")

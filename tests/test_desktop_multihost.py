@@ -112,6 +112,8 @@ async def _parallel_hosts(playwright):
                         await page.evaluate("window.oldRemoteMessage=smaWorkspace.connections.get('office:machine:one').ws.onmessage")
                         local_generation = await page.evaluate("smaWorkspace.connections.get('local').generation")
                         await page.locator('#connect-button').click()
+                        await page.locator('#relay-profiles-dialog summary').click()
+                        await page.locator('#relay-profiles-advanced').click()
                         await page.locator('#connection-form').evaluate('(form)=>form.requestSubmit()')
                         await page.wait_for_function("smaWorkspace.connections.get('office:machine:one').connected && smaWorkspace.connections.get('office:machine:one').generation>1")
                         await page.evaluate("oldRemoteMessage({data:JSON.stringify({error:'STALE-CALLBACK'})})")
@@ -140,7 +142,8 @@ async def _parallel_hosts(playwright):
                             while left_session.pty.written != b'left-input-after-drop':
                                 await asyncio.sleep(.01)
                         # Editing room or endpoint clears the saved credential before it can be sent.
-                        await page.get_by_role('button', name='编辑工作区 Office computer').click()
+                        await page.locator('.computer-tree').filter(has=page.get_by_role('button',name='切换到 Office computer',exact=True)).locator('.workspace-host-edit').click()
+                        await page.get_by_role('menuitem', name='编辑工作区 Office computer').click()
                         assert await page.locator('#workspace-token').input_value() == remote.token
                         await page.locator('#workspace-code').fill('other-room')
                         assert await page.locator('#workspace-token').input_value() == ''
@@ -151,19 +154,22 @@ async def _parallel_hosts(playwright):
                         await page.locator('#workspace-cancel').click()
                         # Directory authorization exposes only enrolled known rooms, and no public health fetch.
                         await page.wait_for_function("[...smaWorkspace.directories.values()].some(d=>d.phase==='connected'&&d.hosts.some(h=>h.code==='office-room'&&h.online))")
-                        await page.get_by_role('button', name='编辑工作区 Office computer').click()
+                        await page.locator('.computer-tree[data-host="office:machine:one"] .workspace-host-edit').click()
+                        await page.get_by_role('menuitem', name='编辑工作区 Office computer').click()
                         await page.locator('#workspace-verify').click()
                         await page.wait_for_function("document.querySelector('#workspace-verification').textContent.includes('已验证在线电脑')")
                         await page.locator('#workspace-cancel').click()
                         # Programmatic form changes also cannot carry an old token to a different room.
-                        await page.get_by_role('button', name='编辑工作区 Office computer').click()
+                        await page.locator('.computer-tree[data-host="office:machine:one"] .workspace-host-edit').click()
+                        await page.get_by_role('menuitem', name='编辑工作区 Office computer').click()
                         await page.locator('#workspace-code').evaluate("input=>input.value='different-room'")
                         await page.locator('#workspace-form').evaluate('(form)=>form.requestSubmit()')
                         await page.wait_for_function("smaWorkspace.connections.get('office:machine:one').config.code==='different-room'")
                         assert await page.evaluate("smaWorkspace.connections.get('office:machine:one').config.token") == ''
                         assert await page.evaluate("sessionStorage.getItem('sma.workspace.host-token.office:machine:one')") is None
                         # Removing a computer releases its views and sockets, never its daemon PTY.
-                        await page.get_by_role('button', name='编辑工作区 Office computer').click()
+                        await page.locator('.computer-tree[data-host="office:machine:one"] .workspace-host-edit').click()
+                        await page.get_by_role('menuitem', name='编辑工作区 Office computer').click()
                         await page.locator('#workspace-remove').click()
                         await page.wait_for_function("!smaWorkspace.connections.has('office:machine:one')&&smaWorkspace.connections.get('local').connected")
                         assert right_session.id in remote.hub.sessions

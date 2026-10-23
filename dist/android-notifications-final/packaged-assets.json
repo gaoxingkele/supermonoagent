@@ -1,62 +1,62 @@
-﻿[
-    {
-        "path":  "CHANGELOG.txt",
-        "sha256":  "298562bb949fbec02373971a734c4be2006e3964ba7e7a671359a03f0415ffc3"
-    },
-    {
-        "path":  "connection-defaults.json",
-        "sha256":  "86ff2518e57d757b2b246ccd7449d7e94f3740b5cb4d58ea994a24c647d779f5"
-    },
-    {
-        "path":  "mobile/app.css",
-        "sha256":  "4e7d9c85f4849d08fa41f9c47c5e5f08fc21f5b3bb22a42fb85170ee8e704813"
-    },
-    {
-        "path":  "mobile/app.js",
-        "sha256":  "5bb5deaf363db3f1ce56e2ed7380f725a7b0cf0def8949ae19ccd8b364feae7c"
-    },
-    {
-        "path":  "mobile/index.html",
-        "sha256":  "d7eb2f3d6b2369749d736ff402b2d9e31e4091479760a21e2e6d8c9eee71dd13"
-    },
-    {
-        "path":  "mobile/mobile-core.js",
-        "sha256":  "11f40d4ae796a0bab328646537333689fc3b91a964f2f7233c66c8a29cbc2c81"
-    },
-    {
-        "path":  "mobile/vendor/terminal-client.js",
-        "sha256":  "9d5be85da2e4f854d8421847e4db4a549fa9c2b8a9f785dadfef2ba3573644c5"
-    },
-    {
-        "path":  "mobile/vendor/xterm.css",
-        "sha256":  "ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6"
-    },
-    {
-        "path":  "mobile/vendor/xterm.js",
-        "sha256":  "1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495"
-    },
-    {
-        "path":  "mobile/vendor/xterm-fit.js",
-        "sha256":  "bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089"
-    },
-    {
-        "path":  "mobile/vendor/xterm-unicode11.js",
-        "sha256":  "b0c3be540a9984713aea996966c24ed1a639d11f60d44986b22661e3a8a148d0"
-    },
-    {
-        "path":  "mobile/vendor/xterm-webgl.js",
-        "sha256":  "9ffa9ac3ff6d47d4e6216ed1972ca8e0b5336cef744f50ebdc3f67b0ed727cdb"
-    },
-    {
-        "path":  "update-api.json",
-        "sha256":  "920df8cb280992d86f6a01af9be95f432e4025d2f3c7ee8a71aa82ffa237ad05"
-    },
-    {
-        "path":  "update-bridge.js",
-        "sha256":  "d0442922548de0b0db30d602ffdb436396097e4c419594cc06bd20642c47f6f3"
-    },
-    {
-        "path":  "update-trust.json",
-        "sha256":  "7eb045b47b475b453ebd942157c771d7f6eee387d6f72e70859823d72efd601e"
-    }
+[
+  {
+    "path": "CHANGELOG.txt",
+    "sha256": "298562bb949fbec02373971a734c4be2006e3964ba7e7a671359a03f0415ffc3"
+  },
+  {
+    "path": "connection-defaults.json",
+    "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  },
+  {
+    "path": "mobile/app.css",
+    "sha256": "4e7d9c85f4849d08fa41f9c47c5e5f08fc21f5b3bb22a42fb85170ee8e704813"
+  },
+  {
+    "path": "mobile/app.js",
+    "sha256": "5bb5deaf363db3f1ce56e2ed7380f725a7b0cf0def8949ae19ccd8b364feae7c"
+  },
+  {
+    "path": "mobile/index.html",
+    "sha256": "d7eb2f3d6b2369749d736ff402b2d9e31e4091479760a21e2e6d8c9eee71dd13"
+  },
+  {
+    "path": "mobile/mobile-core.js",
+    "sha256": "11f40d4ae796a0bab328646537333689fc3b91a964f2f7233c66c8a29cbc2c81"
+  },
+  {
+    "path": "mobile/vendor/terminal-client.js",
+    "sha256": "9d5be85da2e4f854d8421847e4db4a549fa9c2b8a9f785dadfef2ba3573644c5"
+  },
+  {
+    "path": "mobile/vendor/xterm.css",
+    "sha256": "ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6"
+  },
+  {
+    "path": "mobile/vendor/xterm.js",
+    "sha256": "1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495"
+  },
+  {
+    "path": "mobile/vendor/xterm-fit.js",
+    "sha256": "bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089"
+  },
+  {
+    "path": "mobile/vendor/xterm-unicode11.js",
+    "sha256": "b0c3be540a9984713aea996966c24ed1a639d11f60d44986b22661e3a8a148d0"
+  },
+  {
+    "path": "mobile/vendor/xterm-webgl.js",
+    "sha256": "9ffa9ac3ff6d47d4e6216ed1972ca8e0b5336cef744f50ebdc3f67b0ed727cdb"
+  },
+  {
+    "path": "update-api.json",
+    "sha256": "920df8cb280992d86f6a01af9be95f432e4025d2f3c7ee8a71aa82ffa237ad05"
+  },
+  {
+    "path": "update-bridge.js",
+    "sha256": "d0442922548de0b0db30d602ffdb436396097e4c419594cc06bd20642c47f6f3"
+  },
+  {
+    "path": "update-trust.json",
+    "sha256": "7eb045b47b475b453ebd942157c771d7f6eee387d6f72e70859823d72efd601e"
+  }
 ]

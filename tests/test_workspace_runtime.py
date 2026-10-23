@@ -65,7 +65,7 @@ async def _check_browser(playwright, edge, legacy):
                     await page.goto(f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/workspace?direct=1&renderer=dom#token={daemon.token}")
                     await page.wait_for_function("window.smaWorkspace?.terminal && smaWorkspace.metrics.lastPongMs !== null")
                     assert await page.locator('#tabs [role="tab"]').all_text_contents() == ["Runtime probe"]
-                    assert await page.locator(".pane-title").inner_text() == "Runtime probe · cmd"
+                    assert await page.locator(".pane-title").inner_text() == "Runtime probe（其他）"
                     assert await page.locator("#tree .workspace-host-name").inner_text()
                     assert await page.locator('a[href="/legacy"]').count() == 0
                     await page.wait_for_function("smaWorkspace.terminal.cols === 77 && smaWorkspace.terminal.rows === 44")
@@ -121,6 +121,8 @@ async def _check_browser(playwright, edge, legacy):
                         await ws.close(code=4001)
                     async with serve(reject, "127.0.0.1", 0) as rejected:
                         await page.locator("#connect-button").click()
+                        await page.locator('#relay-profiles-dialog summary').click()
+                        await page.locator('#relay-profiles-advanced').click()
                         await page.locator("#relay-url").fill(f"ws://127.0.0.1:{rejected.sockets[0].getsockname()[1]}/ws")
                         await page.locator("#relay-code").fill("bad-room")
                         await page.locator("#connection-form").get_by_role("button", name="连接", exact=True).click()

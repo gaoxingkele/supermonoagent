@@ -22,6 +22,37 @@
   function connection(h){let c=connections.get(h.id);if(!c){c={host:h,socket:null,generation:0,retry:0,retryTimer:null,pingTimer:null,lastPing:0,connected:false,inventory:[],groups:[],activity:new Map(),agents:new Map(),controls:{},machine:'',project:'',subscription:'',status:'等待连接',createPending:false,beforeCreate:new Set()};connections.set(h.id,c);}return c;}
   let paused=false,connected=false;
   let inventory=[],active='',term=null,fit=null,writer=null,highlighter=null,webgl=null,renderer=config.renderer||'auto';
+  const agentModeIds=new Set(['auto','codex','claude-code','grok','kimi','pi-dev','cursor-cli']);
+  const agentModePreferences=new Map();
+  let agentModeGeneration=0,agentModeRequest=null;
+  try{for(const row of JSON.parse(localStorage.getItem('sma.mobile.agent-modes')||'[]')){
+    if(!Array.isArray(row)||row.length!==2||typeof row[0]!=='string'||row[0].length>4096||!agentModeIds.has(row[1]))continue;
+    const tuple=JSON.parse(row[0]);if(Array.isArray(tuple)&&tuple.length===4&&tuple.every(part=>typeof part==='string'))agentModePreferences.set(row[0],row[1]);
+  }}catch{}
+  function agentModeKey(){return JSON.stringify([safeEndpoint(selected().host),selected().host.code||'',hostId,active]);}
+  function agentModeRevision(){return new URL(location.href).searchParams.get('ui_revision')||config.uiRevision||'bundled';}
+  function saveAgentModes(){try{localStorage.setItem('sma.mobile.agent-modes',JSON.stringify([...agentModePreferences]));}catch{notice('Unable to save this terminal mode.');}}
+  function clearAgentModes(id){for(const key of agentModePreferences.keys())if(JSON.parse(key)[2]===id)agentModePreferences.delete(key);saveAgentModes();}
+  function refreshAgentMode(force=false){
+    if(!term||!highlighter||!active)return;
+    const current=term,decorator=highlighter,host=selected(),hostGeneration=host.generation,key=agentModeKey(),revision=agentModeRevision();
+    const preference=agentModePreferences.get(key)||'auto',session=host.inventory.find(item=>item.id===active);
+    const detected=C.agentModeFromSession(session||{},session?.title||'');
+    const mode=preference==='auto'?(agentModeIds.has(detected)?detected:'auto'):preference;
+    $('agent-mode').disabled=false;$('agent-mode').value=preference;
+    if(!force&&agentModeRequest?.term===current&&agentModeRequest.mode===mode&&agentModeRequest.key===key&&agentModeRequest.hostGeneration===hostGeneration&&agentModeRequest.revision===revision)return;
+    const generation=++agentModeGeneration;agentModeRequest={term:current,mode,key,hostGeneration,revision};
+    const valid=()=>generation===agentModeGeneration&&term===current&&highlighter===decorator&&selected()===host&&host.generation===hostGeneration&&agentModeKey()===key&&agentModeRevision()===revision;
+    const apply=profile=>{if(!valid())return;current.options.theme={...profile.theme};decorator.setProfile(profile);$('screen').dataset.agentMode=mode;$('screen').dataset.agentPreference=preference;$('agent-mode-status').textContent=(preference==='auto'?'Auto · ':'')+profile.label;};
+    if(mode==='auto'){apply(C.commonAgentProfile);return;}
+    const url=new URL('agent-modes/'+mode+'.json',location.href);url.search='';url.hash='';url.searchParams.set('ui_revision',revision);
+    $('agent-mode-status').textContent='Loading '+mode+'…';
+    C.loadAgentProfile(url.toString(),mode).then(apply).catch(()=>{
+      if(!valid())return;current.options.theme={...C.commonAgentProfile.theme};decorator.setProfile(C.commonAgentProfile);$('screen').dataset.agentMode='auto';$('agent-mode-status').textContent='Profile unavailable · '+C.commonAgentProfile.label;
+    });
+  }
+  $('agent-mode').disabled=true;
+  $('agent-mode').onchange=()=>{if(!term||!active)return;const value=$('agent-mode').value;if(!agentModeIds.has(value))return;agentModePreferences.set(agentModeKey(),value);saveAgentModes();refreshAgentMode(true);};
   $('highlight').checked=localStorage.getItem('sma.mobile.highlight')!=='off';
   $('highlight').onchange=()=>{localStorage.setItem('sma.mobile.highlight',$('highlight').checked?'on':'off');highlighter?.setEnabled($('highlight').checked);};
   let ready=false,replaying=0,fitFrame=null,lastSize='',control=false,ctrl=false,composing=false,pendingKeys=[];
@@ -47,7 +78,7 @@
       b.textContent=[c.project,c.machine||h.name,c.status].filter(Boolean).join(' · ');b.onclick=()=>chooseHost(h.id);row.append(b);
       if(!h.autoDirectory){const edit=document.createElement('button');edit.textContent='设置';edit.onclick=()=>editHost(h);row.append(edit);}
       const retryButton=document.createElement('button');retryButton.textContent='重连';retryButton.onclick=()=>connect(c);row.append(retryButton);
-      if(h.id!=='home'&&!h.autoDirectory){const remove=document.createElement('button');remove.className='host-remove';remove.textContent='移除';remove.setAttribute('aria-label','移除电脑 '+h.name);remove.onclick=()=>{stopSocket(c);connections.delete(h.id);hosts=hosts.filter(x=>x.id!==h.id);hostTokens.delete(h.id);saveSessionCredentials();for(const key of [...drafts.keys()])if(JSON.parse(key)[0]===h.id)drafts.delete(key);for(const key of [...modes.keys()])if(JSON.parse(key)[0]===h.id)modes.delete(key);if(h.id===hostId)chooseHost('home');saveHosts();refreshWatchers();renderHosts();renderList();};row.append(remove);}
+      if(h.id!=='home'&&!h.autoDirectory){const remove=document.createElement('button');remove.className='host-remove';remove.textContent='移除';remove.setAttribute('aria-label','移除电脑 '+h.name);remove.onclick=()=>{stopSocket(c);connections.delete(h.id);hosts=hosts.filter(x=>x.id!==h.id);hostTokens.delete(h.id);clearAgentModes(h.id);saveSessionCredentials();for(const key of [...drafts.keys()])if(JSON.parse(key)[0]===h.id)drafts.delete(key);for(const key of [...modes.keys()])if(JSON.parse(key)[0]===h.id)modes.delete(key);if(h.id===hostId)chooseHost('home');saveHosts();refreshWatchers();renderHosts();renderList();};row.append(remove);}
       $('host-list').append(row);
     }
     $('host-identity').textContent=[machine||selected().host.name,project].filter(Boolean).join(' · ');
@@ -188,7 +219,7 @@
     if(!inventory.some(s=>s.id===active)){if(inventory.length)activate(inventory[0].id);else{disposeTerminal();active='';}}
     if(controls[active]){const size=controls[active];control=!!size.owner;$('control').textContent=control?'主控':'接管';if(term&&(term.cols!==size.cols||term.rows!==size.rows))writer?.push(new Uint8Array(),false,scheduleFit,size);scheduleFit();}
     if(controls[active]&&waitingFeeds.length){const feeds=waitingFeeds;waitingFeeds=[];waitingBytes=0;for(const feed of feeds)consumeFeed(feed.sid,feed.bytes,feed.replay);}
-    subscribeSessions(c);
+    subscribeSessions(c);refreshAgentMode();
   }
   function updateSessionDots(){
     const labels={refreshing:'正在刷新',waiting:'等待输入（暂未收到新输出）',disconnected:'已断开'};
@@ -217,6 +248,8 @@
     updateSessionDots();
   }
   function disposeTerminal(){
+    agentModeGeneration++;agentModeRequest=null;$('agent-mode').disabled=true;
+    delete $('screen').dataset.agentMode;delete $('screen').dataset.agentPreference;
     composerSubmit.cancel();
     waitingFeeds=[];waitingBytes=0;
     ready=false;pendingKeys=[];composing=false;replaying=0;lastSize='';control=false;
@@ -241,14 +274,15 @@
       const session=agentHost.inventory.find(item=>item.id===sid);if(!session||session.agent)return false;
       const app=/(?:^|[;:])app=([a-zA-Z0-9_-]{1,40})(?:[;:]|$)/.exec(data)?.[1];
       const clear=/(?:^|[;:])state=clear(?:[;:]|$)/.test(data);
-      if(!clear&&!/^(codex|claude(?:[-_]code)?|kimi|gemini|opencode|copilot|aider)$/i.test(app||''))return false;
+      if(!clear&&!/^(codex|claude(?:[-_]code)?|grok|kimi|pi[-_]dev|cursor[-_]cli|gemini|opencode|copilot|aider)$/i.test(app||''))return false;
       const next=clear?'':app.toLowerCase().replace('_','-');if((agentHost.agents.get(sid)||'')===next)return false;
       if(next)agentHost.agents.set(sid,next);else agentHost.agents.delete(sid);
-      session.learnedAgent=next;renderList();return false;
+      session.learnedAgent=next;renderList();refreshAgentMode();return false;
     });
     fit=new FitAddon.FitAddon();term.loadAddon(fit);term.loadAddon(new Unicode11Addon.Unicode11Addon());term.unicode.activeVersion='11';term.open($('screen'));setRenderer();
     const current=term;
-    highlighter=M.createHighlighter(current,{enabled:$('highlight').checked});
+    highlighter=C.createHighlighter(current,{enabled:$('highlight').checked,profile:C.commonAgentProfile});
+    refreshAgentMode(true);
     writer=M.createWriter({write:(bytes,reset,done,grid)=>{if(term!==current)return;
       if(grid){const size=C.terminalSize(grid.cols,grid.rows);if(current.cols!==size.cols||current.rows!==size.rows)current.resize(size.cols,size.rows);}
       if(reset)current.reset();displayGrid();metrics.writes++;current.write(bytes,()=>{done();if(!reset&&bytes.length&&term===current)composerSubmit.output();});
@@ -384,8 +418,8 @@
     const name=$('host-name').value.trim();if(!name)throw new Error('请填写电脑名称');if(!editingHost&&hosts.filter(h=>!h.autoDirectory).length>=30)throw new Error('最多保存30台电脑');
     const h=editingHost||{id:'host-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-')};const old=editingHost&&targetKey(h);
     Object.assign(h,{name,endpoint:u.toString().replace(/\/+$/,''),code:$('host-code').value.trim()});if(old&&old!==targetKey(h)){
-      const c=connection(h);stopSocket(c);hostTokens.delete(h.id);
-      c.inventory=[];c.groups=[];c.controls={};c.machine='';c.project='';c.activity.clear();c.createPending=false;c.beforeCreate.clear();c.capabilities=null;c.directoryOnline=undefined;c.retry=0;
+      const c=connection(h);stopSocket(c);hostTokens.delete(h.id);clearAgentModes(h.id);
+      c.inventory=[];c.groups=[];c.controls={};c.machine='';c.project='';c.activity.clear();c.agents.clear();c.createPending=false;c.beforeCreate.clear();c.capabilities=null;c.directoryOnline=undefined;c.retry=0;
       for(const key of [...drafts.keys()])if(JSON.parse(key)[0]===h.id)drafts.delete(key);
       for(const key of [...modes.keys()])if(JSON.parse(key)[0]===h.id)modes.delete(key);
       if(h.id===hostId){disposeTerminal();active='';$('draft').value='';loadSelected();}

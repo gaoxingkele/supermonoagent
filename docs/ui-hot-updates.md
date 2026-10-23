@@ -1,12 +1,14 @@
 # 桌面与手机界面热更新
 
-本轮实现桌面和 Android 共用的签名界面更新渠道。首次需要安装包含更新能力的 Windows 外壳与 APK；之后兼容 Native API 1 的 HTML、CSS、JavaScript 与配套 vendor 更新不必重新打包外壳。Java/Python 原生能力、后台协议或签名信任锚变化仍需正常升级相应组件，不能通过页面包替换。
+桌面和 Android 共用签名界面更新渠道。当前为 Native API 2，新增了六种 Agent 的独立 JSON 模板；首次需要安装支持 API 2 的 Windows 外壳与 APK。之后同 API 的页面、样式、脚本及模式配置更新不必重新打包外壳。原生能力、后台协议或签名信任锚变化仍需正常升级，不能通过页面包替换。
 
-Windows 外壳 `dist/windows-ui-updates/` 与 Android 0.2.14(16) `dist/android-ui-updates/SuperMonoAgent.apk` 已构建；本地签名包为 `.omx/ui-releases/stable/releases/ui-20261022-bootstrap/`。公网目录、证书及首次发布尚未执行，缺少服务器管理连接。不要把本地签名测试包当成已上线更新。
+当前安装包使用数字版本目录，Windows `dist/windows/0.2.22/`，Android `dist/android/0.2.22/SuperMonoAgent.apk`。HTTPS 频道已上线；本轮发布和设备验证结果以 [TODO](TODO.md) 为准。早期 `windows-ui-updates`、`android-ui-updates` 与日期名称仅是历史构建，不是新版命名规则。
+
+0.2.22 的 17/16 文件 API2 频道已发布，公网回读验签及归档校验见 `.omx/artifacts/ui-menu-profiles/publication-verified.json`。实际 Windows 新窗口已打开并使用新的内置快照，旧窗口和终端保留；Android 本轮没有连接设备，尚未覆盖安装。
 
 ## 用户操作
 
-客户端在启动以及前台可见时每六小时检查一次。发现新版先提示，不会在输入中直接重载。顶部的“检查更新”可手动查看版本与状态；手机也可从原生连接设置进入。
+客户端在启动以及前台可见时每六小时检查一次。发现新版先提示，不会在输入中直接重载。Windows 左上角“菜单”位于侧栏折叠按钮右边、supermono 左边，提供“检查更新”“下载并更新”“连接工作区”；手机也可从原生连接设置进入。
 
 点击“下载并更新”后，先下载并校验完整包，再保存当前界面备份和导航/草稿状态，最后激活并重载。输入法正在组合时会延后激活；后台终端进程不结束。菜单中的“恢复上一版本”也先保存当前界面状态，再恢复本机旧版本。
 
@@ -21,7 +23,7 @@ Android API 29+ 可以终止本应用挂死的 renderer 后重建 WebView；API 
 仅本地打包、签名并验证：
 
 ```powershell
-.venv/Scripts/python.exe scripts/package-ui-update.py --revision ui-20261022-example
+.venv/Scripts/python.exe scripts/package-ui-update.py --revision 0.2.22
 ```
 
 服务器 SSH 与 HTTPS 配好以后，一条命令完成打包和正式发布：
@@ -43,7 +45,7 @@ Android API 29+ 可以终止本应用挂死的 renderer 后重建 WebView；API 
 
 签名信封包含原始 JSON payload 的 Base64 和 RSA PKCS#1 v1.5 SHA-256 签名。Windows 使用系统 CNG，Android 使用系统 Java 安全提供者；没有新增 Python 运行时依赖。可信公钥只在首次外壳包中提供，不属于热更新白名单。
 
-每个平台是一个完整快照：桌面 11 个文件，手机 10 个文件。校验签名、归档 hash、每个文件的大小/hash、平台与 Native API 后才安装。单文件最多 4MiB、展开快照最多 5MiB、下载归档最多 8MiB；路径越界、重复条目、大小写冲突、符号链接、缺失或额外文件均拒绝。
+每个平台是一个完整快照：桌面 17 个文件，手机 16 个文件，各含本端六份独立 Agent JSON。校验签名、归档 hash、每个文件的大小/hash、平台与 Native API 后才安装。单文件最多 4MiB、展开快照最多 5MiB、下载归档最多 8MiB；路径越界、重复条目、大小写冲突、符号链接、缺失或额外文件均拒绝。
 
 已观察的最高发布序号不因回滚降低；相同序号不能更换签名内容。失败版本被隔离，避免自动反复安装。首次更新会实体保存内置/当前有效旧界面；之后保留旧的已验证快照。旧页面所有资源固定到自己的 revision，不混用新版本文件。历史已验证版本即使频道签名时间自然过期，仍可在本机恢复；网络安装的新包必须在签名有效期内。
 
@@ -53,7 +55,7 @@ Android API 29+ 可以终止本应用挂死的 renderer 后重建 WebView；API 
 
 `deploy/relay/Caddyfile` 在 HTTPS 站点下增加 `/updates/*`，对应 `/var/lib/supermono-updates`。频道 manifest 不长期缓存，版本目录采用 immutable 缓存；暂存目录、锁文件和目录列表不对外暴露。明文 bootstrap 站点仅用于 ACME 验证，不分发更新。
 
-发布账号需要该更新目录的写权限，Caddy 仅需读取公共文件；签名私钥留在开发电脑。账号中继、TLS 和 SSH 的部署前提见 [统一中继账号配置](relay-account-setup.md)。当前 443 证书不覆盖公网 IP，新客户端会拒绝该连接，不能通过取消证书校验来伪造更新可用。
+发布账号需要该更新目录的写权限，Web 服务仅读公共文件；签名私钥留在开发电脑。HTTPS 下载与默认信任链验签已经验证，见 `.omx/artifacts/remote-terminal-colors/publication-verified.json`。客户端始终校验证书，不提供跳过校验的更新路径。
 
 ## 验证与限制
 

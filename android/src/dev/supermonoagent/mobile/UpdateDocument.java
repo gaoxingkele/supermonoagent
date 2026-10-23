@@ -48,7 +48,7 @@ public final class UpdateDocument {
             }attributes.appendTail(resourceTag);tags.appendReplacement(rewritten,Matcher.quoteReplacement(resourceTag.toString()));
         }tags.appendTail(rewritten);RemoteUpdates.require(foundHead,"Missing HTML head");String html=rewritten.toString();
         String settings="{ticket:"+RemoteUpdates.Json.render(ticket)+",revision:"+RemoteUpdates.Json.render(revision)+",generation:"+generation+"}";
-        String policy="default-src 'none'; script-src 'self' 'nonce-"+nonce+"'; style-src 'self' 'unsafe-inline'; connect-src ws: wss:; img-src data:; font-src 'self' data:; frame-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
+        String policy="default-src 'none'; script-src 'self' 'nonce-"+nonce+"'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src data:; font-src 'self' data:; frame-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
         String injection="<meta http-equiv=\"Content-Security-Policy\" content=\""+policy+"\"><script nonce=\""+nonce+"\">("+bridge+")("+settings+");</script>";
         Matcher head=TAG.matcher(html);while(head.find())if("head".equalsIgnoreCase(head.group(1)))return html.substring(0,head.end())+injection+html.substring(head.end());throw new IOException("Missing HTML head");
     }

@@ -33,7 +33,9 @@ public final class HotAssets {
             File directory = child(root, revision);
             Properties manifest = new Properties();
             manifest.load(new ByteArrayInputStream(read(child(directory, "manifest.properties"), 16384)));
-            if (!revision.equals(manifest.getProperty("revision")) || manifest.size() != 11) throw new IOException();
+            // API2 requires one complete 16-file snapshot. Legacy ten-file USB
+            // overrides fall back as a whole; never mix old scripts with APK JSON.
+            if (!revision.equals(manifest.getProperty("revision")) || manifest.size() != 17) throw new IOException();
             Map<String, byte[]> verified = new HashMap<>();
             int remaining = MAX_BYTES;
             for (String key : manifest.stringPropertyNames()) {
@@ -51,7 +53,7 @@ public final class HotAssets {
                 if (!expected.equals(hash.toString())) throw new IOException();
                 verified.put(path, bytes);
             }
-            if (verified.size() != 10) throw new IOException();
+            if (verified.size() != 16) throw new IOException();
             return new HotAssets(revision, verified);
         } catch (Exception error) {
             return new HotAssets("", new HashMap<String, byte[]>());

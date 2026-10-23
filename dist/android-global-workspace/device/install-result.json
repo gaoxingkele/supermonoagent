@@ -1,0 +1,14 @@
+﻿{
+    "attempted_version":  "0.2.9",
+    "attempted_version_code":  11,
+    "result":  "INSTALL_FAILED_ABORTED: User rejected permissions",
+    "installed_version":  "0.2.4",
+    "installed_version_code":  6,
+    "user_data_preserved":  true,
+    "terminal_input_sent":  false,
+    "pending_apk_version":  "0.2.13",
+    "pending_apk_version_code":  15,
+    "retry_session_id":  56125,
+    "retry_status":  "Normal per-install confirmations completed; Honor coauthservice now requires owner fingerprint to continue installation. adb install session remains live.",
+    "checked_at":  "2026-10-21T16:45:04.1969944Z"
+}

@@ -29,7 +29,7 @@ def sign(payload,private,trust):
     return json.dumps({'schema':1,'key_id':next(iter(trust['keys'])),'payload':base64.b64encode(raw).decode(),'signature':base64.b64encode(signature).decode()}).encode()
 
 
-def release(private,trust,sequence=1,revision=None,mutate=None,zip_mutate=None):
+def release(private,trust,sequence=1,revision=None,mutate=None,zip_mutate=None,native_api=U.NATIVE_API):
     revision=revision or 'test-'+str(sequence)
     now=int(time.time())
     payload={'schema':1,'channel':'stable','revision':revision,'sequence':sequence,'created':now-10,'expires':now+86400,'artifacts':{}}
@@ -45,7 +45,7 @@ def release(private,trust,sequence=1,revision=None,mutate=None,zip_mutate=None):
                     warnings.filterwarnings('ignore',message='Duplicate name:.*',category=UserWarning)
                     zip_mutate(archive,platform)
         archives[platform]=output.getvalue()
-        payload['artifacts'][platform]={'url':'releases/'+revision+'/'+platform+'.zip','sha256':hashlib.sha256(archives[platform]).hexdigest(),'size':len(archives[platform]),'native_api':1,'files':{name:{'sha256':hashlib.sha256(data).hexdigest(),'size':len(data)} for name,data in files[platform].items()}}
+        payload['artifacts'][platform]={'url':'releases/'+revision+'/'+platform+'.zip','sha256':hashlib.sha256(archives[platform]).hexdigest(),'size':len(archives[platform]),'native_api':native_api,'files':{name:{'sha256':hashlib.sha256(data).hexdigest(),'size':len(data)} for name,data in files[platform].items()}}
     if mutate:
         mutate(payload)
     return sign(payload,private,trust),archives,payload,files
@@ -87,12 +87,23 @@ class UiUpdatesTest(unittest.TestCase):
             U.verify_envelope(envelope.decode().encode('utf-16'),self.trust,'desktop')
 
     def test_signed_expiry_future_schema_sequence_native_and_allowlist_rejections(self):
-        mutations=[lambda p:p.update(expires=p['created']-1),lambda p:p.update(created=int(time.time())+301,expires=int(time.time())+86400),lambda p:p.update(schema=True),lambda p:p.update(sequence=True),lambda p:p.update(revision='../escape'),lambda p:p['artifacts']['desktop'].update(native_api=2),lambda p:p['artifacts']['desktop']['files'].update({'update-trust.json':{'size':0,'sha256':'0'*64}}),lambda p:p['artifacts']['desktop'].update(size=U.MAX_ARCHIVE+1),lambda p:p['artifacts']['desktop']['files']['workspace.js'].update(size=U.MAX_FILE+1)]
+        mutations=[lambda p:p.update(expires=p['created']-1),lambda p:p.update(created=int(time.time())+301,expires=int(time.time())+86400),lambda p:p.update(schema=True),lambda p:p.update(sequence=True),lambda p:p.update(revision='../escape'),lambda p:p['artifacts']['desktop'].update(native_api=U.NATIVE_API+1),lambda p:p['artifacts']['desktop']['files'].update({'update-trust.json':{'size':0,'sha256':'0'*64}}),lambda p:p['artifacts']['desktop'].update(size=U.MAX_ARCHIVE+1),lambda p:p['artifacts']['desktop']['files']['workspace.js'].update(size=U.MAX_FILE+1)]
         for mutate in mutations:
             with self.subTest(mutate=mutate):
                 raw,_,_,_=self.candidate(mutate=mutate)
                 with self.assertRaises(U.UpdateError):
                     U.verify_envelope(raw,self.trust,'desktop')
+
+    def test_api2_defaults_reject_legacy_and_explicit_api_parameter_is_preserved(self):
+        self.assertEqual(U.NATIVE_API,2)
+        modern,_,_,_=self.candidate()
+        with self.assertRaises(U.UpdateIncompatible):
+            U.verify_envelope(modern,self.trust,'desktop',native_api=1)
+        legacy,_,payload,_=self.candidate(native_api=1)
+        # Generic explicit-version parameter coverage; not a legacy file-set migration.
+        self.assertEqual(U.verify_envelope(legacy,self.trust,'desktop',native_api=1),payload)
+        with self.assertRaises(U.UpdateIncompatible):
+            U.verify_envelope(legacy,self.trust,'desktop')
 
     def test_all_zip_paths_duplicates_symlinks_and_tampering_rejected(self):
         def symlink(archive,platform):

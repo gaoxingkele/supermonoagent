@@ -12,6 +12,7 @@ import time
 import unittest
 from unittest.mock import patch
 import zipfile
+from supermonoagent import ui_updates as update_core
 
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('ui_update_release',ROOT/'scripts/ui_update_release.py')
@@ -71,8 +72,14 @@ class PublisherTest(unittest.TestCase):
             with patch.dict(os.environ,{'SUPERMONO_DEFAULT_RELAY':'https://fixture-secret@example.invalid/?token=fixture-secret'}):
                 folder=release.package(Path(tmp)/'out',revision='publisher-qa',openssl=self.tool)
             value=release.verify_local(folder,self.trust,self.tool)
+            self.assertEqual(release.NATIVE_API,2)
+            self.assertEqual(len(release.DESKTOP),17)
+            self.assertEqual(len(release.ANDROID),16)
+            self.assertTrue(all(item['native_api']==2 for item in value['artifacts'].values()))
             self.assertLessEqual(value['sequence'],release.SAFE_INTEGER)
             for platform,allowed in [('desktop',release.DESKTOP),('android',release.ANDROID)]:
+                native_payload=update_core.verify_envelope((folder/'manifest.json').read_bytes(),self.trust,platform)
+                self.assertEqual(set(update_core.verify_archive(native_payload,(folder/(platform+'.zip')).read_bytes(),platform)),set(allowed))
                 with zipfile.ZipFile(folder/(platform+'.zip')) as archive:
                     self.assertEqual(set(archive.namelist()),set(allowed))
                     self.assertFalse(any('trust' in name or 'private' in name or 'native-updates' in name for name in archive.namelist()))

@@ -8,13 +8,14 @@
     ticket:script.dataset.ticket,generation:Number(script.dataset.generation),sequence:Number(script.dataset.sequence)});
   const interval=6*60*60*1000,pending=new Map();
   let socket=null,sequence=0,connecting=null,lastCheck=0,latest=null,failed=false,acknowledged=false,readyStarted=false;
-  let panel=null,message=null,download=null,restore=null,toast=null,trigger=null,composing=false,installing=false;
+  let panel=null,message=null,download=null,menuDownload=null,restore=null,toast=null,trigger=null,composing=false,installing=false;
   const waitFrame=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
   const isComposing=()=>composing||window.smaWorkspace?.isComposing===true;
   const show=text=>{if(message)message.textContent=text;};
   function render(status){
     latest=status;show(status.message||'界面更新');
     if(download)download.disabled=!status.available||installing;
+    if(menuDownload)menuDownload.disabled=installing;
     if(restore)restore.disabled=!status.previous_revision||installing;
     if(toast){toast.hidden=!status.available||!panel.hidden;toast.textContent=status.available?'发现界面更新 '+status.available.revision+'；可从顶部检查更新菜单下载。':'';}
     if(trigger){trigger.title=status.available?'发现可用更新：'+status.available.revision:'检查更新';trigger.style.color=status.available?'#a7dcb5':'';}
@@ -71,9 +72,17 @@
     if(isComposing())return waitForInput();
   }
   async function downloadAndInstall(){
-    if(installing)return;installing=true;if(download)download.disabled=true;
+    if(installing)return;installing=true;if(download)download.disabled=true;if(menuDownload)menuDownload.disabled=true;
+    if(panel)panel.hidden=false;if(toast)toast.hidden=true;
     let resume=null;
     try{
+      if(!latest?.available){
+        show('正在检查是否有可下载更新…');const status=await check(false);
+        if(!status?.available){
+          installing=false;if(status)render(status);else{if(menuDownload)menuDownload.disabled=false;if(download)download.disabled=!latest?.available;}
+          return;
+        }
+      }
       show('正在下载并验证完整界面包；终端输入可继续…');
       const prepared=await request('download');await waitForInput();capture();
       resume=window.smaWorkspace?.pauseForUIUpdate?.();
@@ -123,8 +132,12 @@
     panel=root.querySelector('section');message=root.querySelector('p');download=root.querySelector('#download');restore=root.querySelector('#restore');toast=root.querySelector('#toast');
     root.querySelector('#close').onclick=()=>{panel.hidden=true;};root.querySelector('#check').onclick=()=>check(false);download.onclick=downloadAndInstall;restore.onclick=rollback;
     trigger=document.querySelector('#check-updates');
-    if(!trigger){trigger=document.createElement('button');trigger.textContent='↥';trigger.title='检查更新';trigger.setAttribute('aria-label','检查更新');root.prepend(trigger);}
-    trigger.hidden=false;trigger.onclick=()=>{panel.hidden=!panel.hidden;if(!panel.hidden){toast.hidden=true;request('status').catch(error=>show(error.message));}};
+    if(!trigger){trigger=document.createElement('button');root.prepend(trigger);}
+    trigger.textContent='检查更新';trigger.title='检查更新';trigger.setAttribute('aria-label','检查更新');
+    Object.assign(trigger.style,trigger.closest('#app-menu')?{width:'100%',minWidth:'0',padding:'8px 12px',fontSize:'13px',whiteSpace:'nowrap'}:{width:'auto',minWidth:'64px',padding:'4px 7px',fontSize:'12px',whiteSpace:'nowrap'});
+    trigger.hidden=false;trigger.onclick=()=>check(false);
+    menuDownload=document.querySelector('#download-ui-update');
+    if(menuDownload){menuDownload.disabled=installing;menuDownload.onclick=downloadAndInstall;menuDownload.title='检查可用版本并下载更新';}
     request('status').then(checkRollback).catch(error=>show(error.message));if(!boot.ticket)check(true);
     setInterval(()=>check(true),interval);
     document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')check(true);});

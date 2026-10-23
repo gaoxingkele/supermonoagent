@@ -4,7 +4,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const mobile=require('../android/assets/mobile/mobile-core.js');
 const source=fs.readFileSync(path.join(__dirname,'../src/supermonoagent/static/workspace.js'),'utf8');
-const desktop=Function(source.slice(source.indexOf('  function agentType('),source.indexOf('  function renderTree('))+';return agentType;')();
+const desktop=Function('C',source.slice(source.indexOf('  function agentType('),source.indexOf('  function renderTree('))+';return agentType;')(require('../src/supermonoagent/static/terminal-client.js'));
 
 test('both choosers identify programming agents rather than their parent shell',()=>{
   const cases=[

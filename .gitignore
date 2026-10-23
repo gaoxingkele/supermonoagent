@@ -4,8 +4,12 @@ __pycache__/
 *.egg-info/
 study/orca/
 
-# Generated builds, local tooling and verification artifacts.
-/dist/
+# Distribution builds are versioned; local runtime data is not.
+/dist/**/trial-state/
+/dist/**/.omx/
+!/dist/**/*.pyd
+
+# Local tooling and verification artifacts.
 /.omx/
 /.pytest_cache/
 

@@ -1,5 +1,7 @@
 # 项目文档索引
 
+- [六种 Agent 独立渲染模式](agent-render-modes.md)：Windows 与 Android 各六份独立配置、选择、修改与调试。
+
 - [免费任务完成通知](task-notifications.md)：现有中继、原生后台通知、保留 Windows 会话的兼容桥与送达边界。
 
 - [桌面与手机界面热更新](ui-hot-updates.md)：检查、签名包、一条命令发布、实体备份及启动失败恢复。

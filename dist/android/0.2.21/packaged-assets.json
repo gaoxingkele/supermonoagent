@@ -1,0 +1,62 @@
+﻿[
+    {
+        "path":  "CHANGELOG.txt",
+        "sha256":  "ed2b829928b775817d29f260e112a5116855f116552df15c207b274c848906da"
+    },
+    {
+        "path":  "connection-defaults.json",
+        "sha256":  "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+        "path":  "mobile/app.css",
+        "sha256":  "738c9aab4a3bbbea1f5e4c3552a442b1c4402adf46545ece4eeb687ba7bc0af8"
+    },
+    {
+        "path":  "mobile/app.js",
+        "sha256":  "a6b9c29b6adb3fbd6e5603a6d4c9dc2fa7333958c5b01c9e1ac68ddde5dd4f40"
+    },
+    {
+        "path":  "mobile/index.html",
+        "sha256":  "60e85ca56c3af7ff3b0dca2a864e33a7a6c6a6511e923c64cbfe65169e25c49b"
+    },
+    {
+        "path":  "mobile/mobile-core.js",
+        "sha256":  "0cfb36622617d81b5e6e5cabdc12367a386b9f5513175d86155257c4a4dd6403"
+    },
+    {
+        "path":  "mobile/vendor/terminal-client.js",
+        "sha256":  "0fa80a539c804e26e749f74f12a8b4d823e1a9581a69b33ed748f5f6120c8b43"
+    },
+    {
+        "path":  "mobile/vendor/xterm.css",
+        "sha256":  "ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6"
+    },
+    {
+        "path":  "mobile/vendor/xterm.js",
+        "sha256":  "1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495"
+    },
+    {
+        "path":  "mobile/vendor/xterm-fit.js",
+        "sha256":  "bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089"
+    },
+    {
+        "path":  "mobile/vendor/xterm-unicode11.js",
+        "sha256":  "b0c3be540a9984713aea996966c24ed1a639d11f60d44986b22661e3a8a148d0"
+    },
+    {
+        "path":  "mobile/vendor/xterm-webgl.js",
+        "sha256":  "9ffa9ac3ff6d47d4e6216ed1972ca8e0b5336cef744f50ebdc3f67b0ed727cdb"
+    },
+    {
+        "path":  "update-api.json",
+        "sha256":  "920df8cb280992d86f6a01af9be95f432e4025d2f3c7ee8a71aa82ffa237ad05"
+    },
+    {
+        "path":  "update-bridge.js",
+        "sha256":  "d0442922548de0b0db30d602ffdb436396097e4c419594cc06bd20642c47f6f3"
+    },
+    {
+        "path":  "update-trust.json",
+        "sha256":  "7eb045b47b475b453ebd942157c771d7f6eee387d6f72e70859823d72efd601e"
+    }
+]

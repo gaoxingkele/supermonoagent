@@ -17,13 +17,15 @@ import javax.net.ssl.SSLParameters;
 
 /** Public, signed asset snapshots. No account, cookie, credential or native-code updates. */
 public final class RemoteUpdates {
-    public static final int NATIVE_API=1, MANIFEST_LIMIT=128*1024, FILE_LIMIT=4*1024*1024,
+    public static final int NATIVE_API=2, MANIFEST_LIMIT=128*1024, FILE_LIMIT=4*1024*1024,
             TOTAL_LIMIT=5*1024*1024, ARCHIVE_LIMIT=8*1024*1024;
     public static final String DEFAULT_FEED="https://117.50.48.22/updates/stable/manifest.json";
     public static final List<String> FILES=Collections.unmodifiableList(Arrays.asList(
         "mobile/index.html","mobile/app.js","mobile/app.css","mobile/mobile-core.js",
         "mobile/vendor/xterm.js","mobile/vendor/xterm.css","mobile/vendor/xterm-fit.js",
-        "mobile/vendor/xterm-unicode11.js","mobile/vendor/xterm-webgl.js","mobile/vendor/terminal-client.js"));
+        "mobile/vendor/xterm-unicode11.js","mobile/vendor/xterm-webgl.js","mobile/vendor/terminal-client.js",
+        "mobile/agent-modes/codex.json","mobile/agent-modes/claude-code.json","mobile/agent-modes/grok.json",
+        "mobile/agent-modes/kimi.json","mobile/agent-modes/pi-dev.json","mobile/agent-modes/cursor-cli.json"));
     private RemoteUpdates() { }
     static void require(boolean condition,String reason) throws IOException {if(!condition)throw new IOException(reason);}
     @SuppressWarnings("unchecked") public static Map<String,Object> object(Object value) throws IOException {
@@ -84,6 +86,7 @@ public final class RemoteUpdates {
         Candidate(String rev,long seq,Map<String,Object> artifact,byte[] raw,URI feed) throws Exception {
             revision=rev;sequence=seq;sha256=digest(artifact.get("sha256"));size=integer(artifact.get("size"));payloadHash=hash(Base64.getDecoder().decode(string(object(Json.parse(raw)).get("payload"))));
             require(size>0&&size<=ARCHIVE_LIMIT,"Invalid archive size");long api=integer(artifact.get("native_api"));require(api>0&&api<=Integer.MAX_VALUE,"Invalid native API");nativeApi=(int)api;
+            require(nativeApi==NATIVE_API,"Native shell upgrade required");
             String relative=string(artifact.get("url"));url=https(feed.resolve(relative));require(sameOrigin(feed,url),"Artifact origin refused");
             files=object(artifact.get("files"));require(files.size()==FILES.size()&&files.keySet().containsAll(FILES),"Unexpected asset set");
             long total=0;for(String path:FILES){Map<String,Object> item=object(files.get(path));digest(item.get("sha256"));long n=integer(item.get("size"));require(n>=0&&n<=FILE_LIMIT,"Invalid file size");total+=n;}require(total<=TOTAL_LIMIT,"Snapshot too large");envelope=raw.clone();
