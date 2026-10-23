@@ -70,11 +70,50 @@ and [ReadConsoleOutput](https://learn.microsoft.com/en-us/windows/console/readco
 
 Signed UI release `ui-20261023-terminal-readability-r8` includes the mobile
 automatic discovery, compact agent labels, row fitting and contrast changes.
-The Windows native package is `dist/windows/0.2.20/`; Android UI updates remain
+The current Windows native package is `dist/windows/0.2.31/`; Android UI updates remain
 compatible with the installed native updater without reinstalling the APK.
 
 Native Windows 0.2.20 frontend 6778 was independently verified with a headless
 client against both running consoles: complete footer labels, canonical 158x44
 and no input or resize. Final native screenshots were blocked by the Windows
 and Android lock screens. The phone was last observed on r6 before locking;
-r8 is published but its on-device activation still requires an unlocked screen.
+r8 was published while its on-device activation was still blocked by the lock screen.
+
+## Verified production update, 2026-10-24
+
+The real phone now runs APK 0.2.27 with signed UI 0.2.31. Its saved Token is
+prefilled, Save Token is checked, and native Test Connection lists the one
+currently authorized online room with its checkbox initially checked. Returning
+to the native connection page and connecting again retained the Token and active
+session. The isolated QA app was stopped and disabled after it was found in the
+foreground displaying simulated `QA 1 window` entries.
+
+Refresh now requests a new server snapshot. New hosts advertise
+`snapshot_refresh`; older hosts use read-only selection/focus requests, without
+dropping output subscriptions or resize leases. The successful physical request
+received one replay and sent zero terminal input frames. Its completion appears
+briefly on the fixed-height refresh button, so feedback cannot resize the PTY.
+
+On a narrow view of a wide Codex terminal, actual context/weekly-labelled footer
+rows are mirrored into a wrapped status strip. Prompts and shortcuts are not
+copied into this strip. No percentages are inferred. Physical portrait,
+landscape, dialogs and keyboard checks passed for 13 captured screens, with
+unchanged 14px text and canonical 158x43 dimensions.
+
+Updated native hosts bind each WinPty session to its own spawned PID generation
+and cache read-only captures for one second. Direct and native relay output
+paths append the validated footer after the untouched snapshot. No saved PID
+mapping is needed on these updated hosts. A newly spawned console can take
+several seconds to become attachable; unsuccessful reads safely return no
+supplement and a later refresh retries. The actual frozen 0.2.29 provider was
+verified against a test-owned console after its labels left the bounded ring:
+the original replay stayed byte-identical and a separate OP3 restored the footer.
+
+Complete OSC color reports are filtered alongside DA/DSR replies on client input.
+Otherwise ConPTY can turn an automatic foreground/background answer into text
+before a command. Literal bracketed clipboard payloads remain unchanged. Six
+actual isolated Codex submission regressions passed after this correction.
+
+Private evidence: `.omx/artifacts/android-requested-room-discovery/`,
+`.omx/artifacts/console-snapshot/frozen-native-footer.json`. Native throw/hang
+rollback acceptance remains separately tracked in `docs/TODO.md`.

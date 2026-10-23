@@ -1,6 +1,10 @@
 param([string]$Python = "", [string]$OutputDir = "")
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
+New-Item -ItemType Directory -Force (Join-Path $repoRoot '.omx') | Out-Null
+try { $windowsBuildLock = [IO.File]::Open((Join-Path $repoRoot '.omx/windows-build.lock'), 'OpenOrCreate', 'ReadWrite', 'None') }
+catch { throw 'Cannot acquire the Windows build lock; another build may be running.' }
+try {
 if (!$Python) { $Python = Join-Path $repoRoot '.venv/Scripts/python.exe' }
 if (!(Test-Path $Python)) { throw 'Create .venv and install .[desktop] plus pyinstaller before building.' }
 [xml]$releaseManifest = Get-Content -LiteralPath "$repoRoot/android/AndroidManifest.xml" -Raw
@@ -8,6 +12,8 @@ $releaseVersion = $releaseManifest.manifest.GetAttribute('versionName', 'http://
 if ($releaseVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Android release version must be major.minor.patch.' }
 if (!$OutputDir) { $OutputDir = "dist/windows/$releaseVersion" }
 $dist = [IO.Path]::GetFullPath((Join-Path $repoRoot $OutputDir))
+$outputVersion = Split-Path $dist -Leaf
+if ($outputVersion -match '^\d+\.\d+\.\d+$' -and $outputVersion -ne $releaseVersion) { throw "Output directory version $outputVersion does not match Windows version $releaseVersion." }
 $work = Join-Path $repoRoot '.omx/pyinstaller'
 $appIcon = Join-Path $repoRoot 'src/supermonoagent/static/app-icon.ico'
 if (!(Test-Path $appIcon)) { throw 'The shared mobile/desktop app icon is missing.' }
@@ -82,3 +88,4 @@ $sources = @(Get-ChildItem "$repoRoot/src/supermonoagent" -File -Recurse | Where
 [IO.File]::WriteAllText((Join-Path $dist 'version.txt'), $releaseVersion + "`n", [Text.Encoding]::ASCII)
 @{ version = $releaseVersion; built_at = [DateTime]::UtcNow.ToString('o'); exe_sha256 = $sha; sources = $sources } | ConvertTo-Json -Depth 4 | Set-Content "$dist/build-manifest.json" -Encoding UTF8
 Write-Host "Windows clients ready: $dist"
+} finally { $windowsBuildLock.Dispose() }

@@ -158,8 +158,11 @@
   function terminalInput(text, replaying = false) {
     if(replaying)return '';
     // ConPTY owns device negotiation. Its echoed queries must not become shell keystrokes.
-    // Restrict this to complete DA/DSR answers; arrows, paste, Esc and Ctrl remain intact.
-    return text.replace(/\x1b\[(?:[?>]?[0-9;]*c|[0-9]+;[0-9]+R|[0-9]+n)/g,'');
+    // Complete DA/DSR and OSC color reports are replies, not keystrokes.
+    // Keep ordinary text, arrows, and bracketed clipboard payloads untouched.
+    if(text.startsWith('\x1b[200~'))return text;
+    return text.replace(/\x1b\[(?:[?>]?[0-9;]*c|[0-9]+;[0-9]+R|[0-9]+n)/g,'')
+      .replace(/\x1b\](?:(?:10|11|12);rgb:[0-9a-f]{1,4}\/[0-9a-f]{1,4}\/[0-9a-f]{1,4}|4;\d+;rgb:[0-9a-f]{1,4}\/[0-9a-f]{1,4}\/[0-9a-f]{1,4})(?:\x07|\x1b\\)/gi,'');
   }
   function snapshotBytes(bytes, session, preservesStyle=false) {
     if(preservesStyle)return bytes;

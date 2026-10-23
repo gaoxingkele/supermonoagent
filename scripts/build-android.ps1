@@ -1,6 +1,10 @@
 param([string]$ToolsRoot = "", [switch]$Bootstrap, [string]$ConnectionDefaults = "", [string]$OutputDir = "")
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
+New-Item -ItemType Directory -Force (Join-Path $repoRoot '.omx') | Out-Null
+try { $androidBuildLock = [IO.File]::Open((Join-Path $repoRoot '.omx/android-build.lock'), 'OpenOrCreate', 'ReadWrite', 'None') }
+catch { throw 'Cannot acquire the Android build lock; another build may be running.' }
+try {
 if (!$ToolsRoot) { $ToolsRoot = Join-Path $repoRoot '.omx/tools' }
 $ToolsRoot = [IO.Path]::GetFullPath($ToolsRoot)
 if ($Bootstrap) { & "$PSScriptRoot/bootstrap-android.ps1" -ToolsRoot $ToolsRoot }
@@ -28,6 +32,8 @@ $androidNamespace = 'http://schemas.android.com/apk/res/android'
 $nextCode = [int]$manifestXml.manifest.GetAttribute('versionCode', $androidNamespace) + 1
 $currentVersion = [version]$manifestXml.manifest.GetAttribute('versionName', $androidNamespace)
 $nextVersion = '{0}.{1}.{2}' -f $currentVersion.Major, $currentVersion.Minor, ($currentVersion.Build + 1)
+$outputVersion = Split-Path $dist -Leaf
+if ($outputVersion -match '^\d+\.\d+\.\d+$' -and $outputVersion -ne $nextVersion) { throw "Output directory version $outputVersion does not match APK version $nextVersion." }
 $manifestText = $manifestText -replace 'android:versionCode="\d+"', ('android:versionCode="{0}"' -f $nextCode)
 $manifestText = $manifestText -replace 'android:versionName="[^"]+"', ('android:versionName="{0}"' -f $nextVersion)
 [IO.File]::WriteAllText($manifest, $manifestText, (New-Object Text.UTF8Encoding($false)))
@@ -97,3 +103,4 @@ Get-Content "$sdk/build-tools/35.0.0/source.properties", "$sdk/platforms/android
 Get-Content "$ToolsRoot/jdk-download.json" | Out-File "$dist/toolchain.txt" -Append
 Get-FileHash "$ToolsRoot/android-cli.zip" -Algorithm SHA256 | Format-List | Out-File "$dist/toolchain.txt" -Append
 Write-Host "APK: $apk ($((Get-Item $apk).Length) bytes), SHA256: $sha"
+} finally { $androidBuildLock.Dispose() }

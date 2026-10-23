@@ -66,6 +66,11 @@ test('device answers and replay cannot become Windows shell input', () => {
   assert.equal(client.terminalInput('\x1b[?1;2c'),'');
   assert.equal(client.terminalInput('\x1b[>0;276;0c\x1b[24;80R\x1b[0n'),'');
   assert.equal(client.terminalInput('\x1b[?1;2cecho ok\r'),'echo ok\r');
+  for(const reply of ['\x1b]10;rgb:eeee/f2f2/ffff\x1b\\','\x1b]11;rgb:1212/1717/2323\x07','\x1b]12;rgb:aa/bb/cc\x1b\\','\x1b]4;7;rgb:aa/bb/cc\x1b\\'])assert.equal(client.terminalInput(reply),'');
+  assert.equal(client.terminalInput('\x1b]10;rgb:eeee/f2f2/ffff\x1b\\/quit\r'),'/quit\r');
+  const clipboard='\x1b[200~literal \x1b]10;rgb:aa/bb/cc\x1b\\\x1b[201~';
+  assert.equal(client.terminalInput(clipboard),clipboard);
+  assert.equal(client.terminalInput('echo rgb:aa/bb/cc'),'echo rgb:aa/bb/cc');
   for(const key of ['\x1b[A','\x1b[B','\x1b[C','\x1b[D','\x1b','\x03','\t','你好','\x1b[200~paste\x1b[201~'])assert.equal(client.terminalInput(key),key);
   assert.equal(client.terminalInput('\x1b[A',true),'');
 });
