@@ -212,4 +212,3 @@ async def _check_live_configuration(playwright, legacy_service):
                 assert not any(session.pty.written for session in sessions)
             finally:
                 await browser.close()
-
