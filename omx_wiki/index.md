@@ -1,8 +1,10 @@
 # Wiki Index
 
-> 6 pages | Last updated: 2026-10-23
+> 7 pages | Last updated: 2026-10-24
 
 ## decision
+
+- [运行时配置与回滚验收](runtime-config-and-recovery.md) — Token＋房间、翻屏及 Android 修复后真机验收边界
 
 - [Terminal readability and discovery](terminal-readability.md) — 自动发现、单行智能体名称、高度适配及 Codex 底栏回放缺字
 

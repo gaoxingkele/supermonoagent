@@ -18,7 +18,7 @@ confidence: high
 
 # Android 热更新、网格一致性与真机验收
 
-维护入口：[操作与验证说明](../docs/android-live-updates.md)。APK 内置个人默认连接参数，不将 Token 写回仓库或日志。
+维护入口：[操作与验证说明](../docs/android-live-updates.md)。当前交付状态以 [运行时配置与回滚验收](runtime-config-and-recovery.md) 为准；以下早期版本事实仅作历史证据。公开 APK 不嵌入个人 Token。
 
 ## 保持的约束
 
@@ -41,4 +41,4 @@ Honor FLC-AN00，Android 16。13 组实际页面/截图检查已覆盖横竖屏�
 
 2026-10-22 后续：终端列表已改紧凑单行和活动圆点；默认保留 20,000 行，忽略应用 CSI 3J 清除手机历史，触摸按真实缩放字格计算。实机 6,498 行滑动、300 次刷新、输入和关闭同步通过，证据：`.omx/artifacts/android-stream-20261022-003010/verification.json`。新图标资源在 `android/branding/` 与 `android/res/`，个人 APK `dist/android/SuperMonoAgent-Mobile-v0.2.12-icon.apk` 已编译签名，等待手机本人指纹安装。Windows Codex 经页签重选恢复 158×44，源码补齐重选当前页签时申请尺寸，并有 runtime 回归覆盖。
 
-目前支持 USB 热更新，未部署互联网 OTA。物理铰链和所有 IME 尚未穷尽验收。手机原生壳为已安装的 0.2.4，通过热更新交付最新界面；0.2.5 已构建，系统要求指纹才能继续安装，因此未替换手机原生壳。避免反复触发安装弹窗，后续 UI 调整沿用 USB 更新和截图探针。
+历史状态（2026-10-22）：当时仅验证 USB 热更新，手机原生壳为 0.2.4。2026-10-24 已部署 HTTPS 签名更新，并完成 API2 原生壳安装与正常更新；异常回滚的最新真机边界见新状态页，不沿用本段旧版本结论。物理铰链和所有 IME 尚未穷尽验收。

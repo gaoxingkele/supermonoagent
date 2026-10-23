@@ -1,0 +1,60 @@
+{
+  "id": "pi-dev",
+  "label": "pi.dev",
+  "theme": {
+    "background": "#181324",
+    "foreground": "#f1eaff",
+    "cursor": "#d8acff",
+    "cursorAccent": "#181324",
+    "selectionBackground": "#344253",
+    "selectionForeground": "#f1eaff",
+    "black": "#77869a",
+    "red": "#ff939f",
+    "green": "#d8acff",
+    "yellow": "#f3c5a2",
+    "blue": "#a4d7ff",
+    "magenta": "#b7e99b",
+    "cyan": "#91e2ef",
+    "white": "#f1eaff",
+    "brightBlack": "#a4afc0",
+    "brightRed": "#ffb1b9",
+    "brightGreen": "#b9f3b5",
+    "brightYellow": "#fff0b1",
+    "brightBlue": "#b8dbff",
+    "brightMagenta": "#e6c2ff",
+    "brightCyan": "#bbf3f4",
+    "brightWhite": "#ffffff"
+  },
+  "tokens": [
+    {
+      "pattern": "\"[^\"\\n]+\"|\\x27[^\\x27\\n]+\\x27",
+      "flags": "gu",
+      "color": "#d8acff"
+    },
+    {
+      "pattern": "(?:\\u9519\\u8bef|\\u5931\\u8d25|\\u5f02\\u5e38|\\u8b66\\u544a)|\\b(?:Error|Exception|ERROR|FAIL|FAILED|Warning)\\b",
+      "flags": "gu",
+      "color": "#ff939f"
+    },
+    {
+      "pattern": "\\b(?:pi\\.dev|Extension|Skill|Queued|Thinking|Tool|Compacting)\\b",
+      "flags": "giu",
+      "color": "#a4d7ff"
+    },
+    {
+      "pattern": "[\\p{L}\\p{N}_./\\\\:-]+\\.(?:py|js|jsx|ts|tsx|css|html|json|md|exe|ps1|sh|yaml|yml|toml|java|go|rs|cpp|h)(?::\\d+)?",
+      "flags": "gu",
+      "color": "#f3c5a2"
+    },
+    {
+      "pattern": "`[^`\\n]+`|\\b[A-Za-z_][\\w]*\\(\\)",
+      "flags": "gu",
+      "color": "#b7e99b"
+    },
+    {
+      "pattern": "\\b\\d+(?:\\.\\d+)?(?:\\s?(?:KiB|MiB|ms|tokens|\\u5b57\\u8282))?",
+      "flags": "gu",
+      "color": "#b7e99b"
+    }
+  ]
+}

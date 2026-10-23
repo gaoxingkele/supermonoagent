@@ -1,5 +1,31 @@
 # TD-001～TD-006 验证记录
 
+## 当前完成审计摘要（2026-10-24）
+
+本页保留各轮证据，不能把旧构建目录、旧测试总数或源码通过合并为“所有 TODO 已完成”。完整目标仍有修复后 Android 原生故障回退的真机门槛；本轮系统输入法也未实测。两项集成审查发现的连接回归已修复并通过定向验证。当前总览见 [TODO](TODO.md)。
+
+| 当前事项 | 已证明的范围 | 证据 / 边界 |
+| --- | --- | --- |
+| 最新授权要求 | 用户明确选择 Token＋房间号，不再要求交付统一邮箱登录 | 统一账号高级源码保留；生产账号创建、grants、邮箱绑定不再是本轮门槛。此为用户范围调整，不是把 Token 目录当作统一账号已部署。 |
+| 默认 Token 与房间范围 | 已找到 `dist/windows/0.2.24/token.txt`；私有路径配置不含凭据正文；6769 真实后台与 Windows 0.2.28 打包 UI 已做鉴权和目标范围验证 | `.omx/artifacts/token-room-provision/runtime-source.json`、`live-owner-wire.json`、`packaged-default-ui.json`：正确默认值与已认证 wire 一致，外部目标清空预填，测试期间输入/resize 发送 0、不额外写入浏览器长期存储或缓存视图。 |
+| 底部翻屏 | 重连 generation、CSI 3J、本地历史与 Codex 备用屏四键门控均有针对性验证 | `tests/test_workspace_paging.py`、`tests/test_codex_owned_paging.py`；`.omx/artifacts/codex-owned-paging/real-codex.json` 为真实隔离 Codex 0.164.0，不复制用户认证，不发模型请求或用户 PTY 输入。不能给未确认的其他全屏程序通用发送这些键。 |
+| 线上加密与更新 | HTTPS/WSS、公信 IP 证书、签名更新发布及回读验签已完成；自动续期 timer 已实测 | `.omx/artifacts/wss-migration/public-tls.json`、`.omx/artifacts/ui-menu-profiles/publication-verified.json`；`.omx/artifacts/goal-completion-audit/cert-renew-timer.json` 记录 timer active/enabled、service success/exit0。旧“缺 SSH/TLS/首次公网发布”文字仅是历史，不是当前阻塞。 |
+| Android API2 实机 | 0.2.24（code26）保留数据安装，六种模式、655 字中英长草稿、临时 WSS 多主机和切换后草稿保留已有真实设备证据 | `.omx/artifacts/android-api2-live/initial-state.json`、`multihost-validation.json`、`restored-after-probe.json`：真实主机保留、无模型请求、FakePTY 输入0，原选择/空草稿/sender 恢复，临时房间清理。composition 事件是合成事件，真实 OS IME 仍未验证。 |
+| Android 集成回归修复 | 网络直连需真实 HELLO 鉴权回执；字段改变使回执失效。自动预填或解密失败不触发密文保存/删除，显式用户编辑/取消保存才写入 | 41 项定向测试及全部 Java 编译通过；真实 TLS 非 loopback DNS fixture 验证直连、错 Token 和 relay 认证失败，JVM 验证保存策略及 AES/GCM。证据：`.omx/artifacts/android-credential-direct-fixes/verification.json`。 |
+| Android 回退的实际失败与后续修复 | 旧 QA 0.0.2 的 good 更新和状态保存通过；throw2 的最终 active 却变为 bundled，不能算恢复 good2 成功。已排除 good2 文件或签名损坏，Native 生命周期/退休及状态字段修复已完成源码回归 | 私有 QA 目录 `.omx/artifacts/android-ui-rollback-qa/qa-20261023T153711Z-00fddc0833a0/` 的 `physical-verification.json`、`cached-good2-integrity.json`、`cached-good2-java-verification.txt`、`native-fixed-source.json`。修复 QA 0.0.3 的 81224 安装会话终态拒绝，见 `fixed-install-terminal.json`；修复后的 throw/hang 真机验收仍未执行，保持未完成。 |
+
+### 版本与验证范围
+
+Root 的修复后扩大复验为 **46 passed、8 subtests passed**，包括既有 `test_android_probe.py`；原始输出 `.omx/artifacts/goal-completion-audit/post-fix.{xml,txt}`。0.2.30 Windows 的 46 个源文件哈希全部匹配，Android 包含 renderer 恢复修复且公开默认凭据为空，见 `build-0.2.30-audit.json`。
+
+- 0.2.24 是本轮有明确记录的 Android 实机基础验收版本，0.2.28 是默认 Token 的 Windows 打包 UI 定向证据。后续观察到外部安装的 Android 0.2.27；外部 0.2.29（code31）构建和最新 `dist/README.md` 只能说明产物存在，不能代替本轮真机或正式完整验收。
+- 修复前整套基线为 499 passed、1 skipped、57 subtests，耗时 505.96 秒；证据 `.omx/artifacts/goal-completion-audit/full-suite.{xml,txt}`，Node 42 passed。随后两项 Android 集成问题修复后的 41 项定向测试通过，0.2.30 双端构建成功，仍不代替物理故障恢复验收。下面 129/235 等更旧轮次数值属于各自历史，不跨轮合计。
+- QA 仅使用独立 package `dev.supermonoagent.mobile.qa`、本地 FakePTY 和独立 HTTPS QA 频道；未修改生产 app 私有数据、全局 IME 或剪贴板。QA 公共文件已按已知 hash 退役，恢复生产前台并清理自建映射；未把测试失败或安装拒绝写成通过。
+
+## 历史验证快照：2026-10-22
+
+以下保留当时原始报告。旧版本、旧安装会话 56125、当时的安装阻塞与线上部署边界不代表今天仍存在；当前状态以文首摘要为准。
+
 2026-10-22。本轮目标已按用户确认扩展到 TD-006。源码实现、最终 Windows 原生缩放回归和两个平台构建已完成；Android 真机覆盖安装被手机系统拒绝，等待用户允许 USB 安装后继续。本页不把构建通过等同于手机已升级。
 
 | 事项 | 实现及证据 |

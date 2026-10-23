@@ -29,6 +29,7 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import org.json.JSONObject;
+import org.json.JSONArray;
 import org.json.JSONException;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -44,6 +45,7 @@ public final class MainActivity extends Activity {
     private JSONObject connection;
     private volatile String localBase;
     private int connectionFormGeneration;
+    private Runnable saveConnectionDraft;
     private HotAssets hotAssets;
     private boolean keyboardVisible;
     private RemoteUpdates.Store updateStore;
@@ -53,6 +55,9 @@ public final class MainActivity extends Activity {
     private byte[] downloadedArchive;
     private final android.os.Handler updateHandler=new android.os.Handler(android.os.Looper.getMainLooper());
     private volatile long documentGeneration;
+    private final RendererRecovery rendererRecovery=new RendererRecovery();
+    private long retirementRecoveryGeneration;
+    private final java.util.Set<WebView> destroyedRendererViews=java.util.Collections.newSetFromMap(new java.util.WeakHashMap<WebView,Boolean>());
     private String documentRevision="bundled",documentTicket="";
     private RemoteUpdates.Boot updateBoot;
     private boolean documentReady,documentInitializing,foreground,updatesBusy,waitingForComposition,restoreNavigationState,restoreRecoveredUI,skipNextUIRestore;
@@ -132,15 +137,17 @@ public final class MainActivity extends Activity {
     }
 
     private void destroyTerminal() {
-        if (terminal == null) return;
-        WebView previous = terminal;
-        terminal = null;
-        root.removeView(previous);
-        // A renderer-gone WebView must only be removed/destroyed, never reused.
-        previous.destroy();
+        if(terminal==null)return;WebView previous=terminal;terminal=null;root.removeView(previous);
+        // Keep a terminating view alive until its renderer-gone callback confirms retirement.
+        if(!rendererRecovery.isRetiring(previous))destroyRendererView(previous);
+    }
+    private void destroyRendererView(WebView view){
+        if(view==null||!destroyedRendererViews.add(view))return;
+        root.removeView(view);view.destroy();
     }
 
     private void showConnection() {
+        if(saveConnectionDraft!=null){saveConnectionDraft.run();saveConnectionDraft=null;}
         invalidateDocument();
         final int formGeneration = ++connectionFormGeneration;
         destroyTerminal();
@@ -180,9 +187,34 @@ public final class MainActivity extends Activity {
         button(form,"Check UI updates",view->checkUpdates(true));
         button(form,"Restore previous UI",view->rollbackUpdate());
         button(form,"Use bundled UI",view->confirmBundledUI());
-        EditText url = input(form, "服务地址 https://relay.example.com", preferences.getString("url", defaults.optString("endpoint")), false);
-        EditText code = input(form, "连接码（中继模式）", preferences.getString("code", defaults.optString("code")), false);
-        EditText token = input(form, "访问令牌（仅本次连接保留）", defaults.optString("token"), true);
+        boolean personalDefaults = !defaults.optString("token").isEmpty();
+        EditText url = input(form, "服务器地址", personalDefaults ? defaults.optString("endpoint", "https://117.50.48.22") : preferences.getString("url", defaults.optString("endpoint", "https://117.50.48.22")), false);
+        EditText code = input(form, "房间号（可选，测试后自动列出）", personalDefaults ? defaults.optString("code") : preferences.getString("code", defaults.optString("code")), false);
+        EditText token = input(form, "访问令牌", savedOrDefaultToken(url.getText().toString()), true);
+        final SavedConnectionTokens.EditState tokenEdits=new SavedConnectionTokens.EditState();
+        android.widget.CheckBox rememberToken = new android.widget.CheckBox(this);
+        rememberToken.setText("保存 Token（返回页面和重启后自动填写）");
+        rememberToken.setTextColor(Color.WHITE);
+        rememberToken.setChecked(preferences.getBoolean("remember-server-token",true));
+        form.addView(rememberToken);
+        saveConnectionDraft=()->{
+            preferences.edit().putBoolean("remember-server-token",rememberToken.isChecked()).apply();
+            try {
+                String target=url.getText().toString().trim(),value=token.getText().toString();
+                SavedConnectionTokens.EditState.Action action=tokenEdits.action(rememberToken.isChecked(),value);
+                if(action==SavedConnectionTokens.EditState.Action.SAVE)SavedConnectionTokens.save(this,target,value);
+                else if(action==SavedConnectionTokens.EditState.Action.REMOVE&&!SavedConnectionTokens.remove(this,target))throw new IllegalStateException("Unable to forget credential");
+                else if(action==SavedConnectionTokens.EditState.Action.KEEP)return;
+                tokenEdits.committed();
+            }catch(IllegalArgumentException incomplete){ }
+            catch(Exception error){android.widget.Toast.makeText(this,"Token 未能保存，请重试。",android.widget.Toast.LENGTH_SHORT).show();}
+        };
+        token.addTextChangedListener(new android.text.TextWatcher(){
+            public void beforeTextChanged(CharSequence text,int start,int count,int after){ }
+            public void onTextChanged(CharSequence text,int start,int before,int count){tokenEdits.changed();}
+            public void afterTextChanged(android.text.Editable text){ }
+        });
+        rememberToken.setOnCheckedChangeListener((button,checked)->{if(!checked)tokenEdits.forget();saveConnectionDraft.run();});
         Spinner renderer = new Spinner(this);
         renderer.setAdapter(new ArrayAdapter<String>(this, android.R.layout.simple_spinner_dropdown_item,
                 new String[]{"自动选择渲染器", "默认渲染（DOM）", "WebGL 渲染（GPU）"}));
@@ -190,8 +222,7 @@ public final class MainActivity extends Activity {
         for (int i = 0; i < renderers.length; i++) if (renderers[i].equals(selected)) renderer.setSelection(i);
         form.addView(renderer);
         TextView help = new TextView(this);
-        help.setText("界面内置于应用，直接连接后台或中继。局域网支持 HTTP；公网建议 HTTPS。"
-                + (defaults.optString("token").isEmpty() ? "令牌不会保存到偏好设置。" : "个人安装包已内置连接凭据，请勿转发。"));
+        help.setText("测试连接会列出同一 Token 可访问的房间，默认全选。保存的 Token 使用系统密钥加密，仅自动填入对应服务器。");
         help.setTextColor(Color.LTGRAY);
         form.addView(help);
         TextView probeStatus = new TextView(this);
@@ -201,29 +232,87 @@ public final class MainActivity extends Activity {
         probe.setText("测试连接");
         form.addView(probe);
         form.addView(probeStatus);
+        LinearLayout roomList = new LinearLayout(this);
+        roomList.setOrientation(LinearLayout.VERTICAL);
+        form.addView(roomList);
+        final java.util.ArrayList<ConnectionProbe.Room> availableRooms = new java.util.ArrayList<>();
+        final java.util.ArrayList<android.widget.CheckBox> roomChecks = new java.util.ArrayList<>();
+        final String[] selectionScope = {null};
+        final ConnectionProbe.ProbeResult[] verifiedDirect={null};
+        final int[] probeScopeGeneration={0};
+        Button connectButton = new Button(this);
+        connectButton.setText("连接");
+        form.addView(connectButton);
+        android.text.TextWatcher invalidateRooms = new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence text,int start,int count,int after) { }
+            public void onTextChanged(CharSequence text,int start,int before,int count) {
+                probeScopeGeneration[0]++;verifiedDirect[0]=null;selectionScope[0]=null;availableRooms.clear();roomChecks.clear();roomList.removeAllViews();
+            }
+            public void afterTextChanged(android.text.Editable text) { }
+        };
+        url.addTextChangedListener(invalidateRooms);code.addTextChangedListener(invalidateRooms);token.addTextChangedListener(invalidateRooms);
+        url.addTextChangedListener(new android.text.TextWatcher(){
+            public void beforeTextChanged(CharSequence text,int start,int count,int after){ }
+            public void onTextChanged(CharSequence text,int start,int before,int count){tokenEdits.beginLoad();try{token.setText(savedOrDefaultToken(text.toString()));}finally{tokenEdits.endLoad();}}
+            public void afterTextChanged(android.text.Editable text){ }
+        });
         probe.setOnClickListener(view -> {
+            saveConnectionDraft.run();
             final String endpoint = url.getText().toString().trim();
             final String relayCode = code.getText().toString().trim();
             final String accessToken = token.getText().toString();
+            final int probeGeneration=probeScopeGeneration[0];
+            verifiedDirect[0]=null;selectionScope[0]=null;availableRooms.clear();roomChecks.clear();roomList.removeAllViews();
             probe.setEnabled(false);
-            probeStatus.setText("正在测试地址、连接码和令牌…");
+            connectButton.setEnabled(false);
+            probeStatus.setText("正在测试连接并查询可用房间…");
             new Thread(() -> {
-                final String result = ConnectionProbe.test(endpoint, relayCode, accessToken);
+                boolean direct = false;
+                try { String host=Uri.parse(ConnectionEndpoint.normalize(endpoint)).getHost();direct=relayCode.isEmpty()&&(host.equals("localhost")||host.equals("::1")||host.equals("[::1]")||host.matches("127[.][0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3}")); } catch(Exception ignored) { }
+                final ConnectionProbe.DiscoveryResult discovered = direct ? null : ConnectionProbe.discover(endpoint, accessToken);
+                // A discovery rejection is never proof of direct access: authenticate a real HELLO.
+                final ConnectionProbe.ProbeResult directResult = direct||(relayCode.isEmpty()&&!discovered.success)?ConnectionProbe.verifyDirect(endpoint,accessToken):null;
+                final String result = direct?directResult.message:discovered.success?discovered.message:directResult!=null&&directResult.success?directResult.message:relayCode.isEmpty()?discovered.message:ConnectionProbe.test(endpoint, relayCode, accessToken);
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed() || formGeneration != connectionFormGeneration) return;
                     probe.setEnabled(true);
-                    boolean unchanged = endpoint.equals(url.getText().toString().trim())
+                    connectButton.setEnabled(true);
+                    boolean unchanged = probeGeneration==probeScopeGeneration[0]&&endpoint.equals(url.getText().toString().trim())
                             && relayCode.equals(code.getText().toString().trim())
                             && accessToken.equals(token.getText().toString());
                     probeStatus.setText(unchanged ? result : "连接参数已修改，请重新测试。");
+                    if(unchanged&&directResult!=null&&directResult.success){verifiedDirect[0]=directResult;probeStatus.setText(result+" 已验证直接连接。");}
+                    else if(unchanged && discovered!=null && discovered.success) {
+                        selectionScope[0]=endpoint+"\n"+accessToken;
+                        availableRooms.addAll(discovered.rooms);
+                        for(ConnectionProbe.Room room:availableRooms) {
+                            android.widget.CheckBox check = new android.widget.CheckBox(this);
+                            check.setText((room.machine.isEmpty()?room.code:room.machine)+"（"+room.code+"）"+(room.project.isEmpty()?"":" · "+room.project));
+                            check.setTextColor(Color.WHITE);check.setChecked(true);roomChecks.add(check);roomList.addView(check);
+                        }
+                        probeStatus.setText("测试成功，发现 "+availableRooms.size()+" 个可用房间，已默认全选。");
+                    }
                 });
             }, "connection-probe").start();
         });
-        button(form, "连接", view -> {
+        connectButton.setOnClickListener(view -> {
             try {
+                saveConnectionDraft.run();
                 Uri endpoint = validEndpoint(url.getText().toString().trim());
                 String mode = renderers[renderer.getSelectedItemPosition()];
                 String relayCode = code.getText().toString().trim();
+                JSONArray selectedRooms = null;
+                if(selectionScope[0]!=null && selectionScope[0].equals(url.getText().toString().trim()+"\n"+token.getText().toString())) {
+                    selectedRooms = new JSONArray();
+                    for(int i=0;i<availableRooms.size();i++)if(roomChecks.get(i).isChecked()) {
+                        ConnectionProbe.Room room=availableRooms.get(i);JSONObject item=new JSONObject();
+                        item.put("code",room.code);item.put("machine",room.machine);item.put("project",room.project);selectedRooms.put(item);
+                    }
+                    if(selectedRooms.length()==0){probeStatus.setText("请至少勾选一个房间。");return;}
+                    relayCode=selectedRooms.getJSONObject(0).getString("code");
+                } else if(relayCode.isEmpty()&&!isLoopbackEndpoint(endpoint)&&(verifiedDirect[0]==null||!verifiedDirect[0].authorizesDirect(url.getText().toString().trim(),relayCode,token.getText().toString()))) {
+                    probeStatus.setText("请先点击测试连接并勾选房间。");return;
+                }
                 preferences.edit().putString("url", endpoint.toString()).putString("code", relayCode)
                         .putString("renderer", mode).apply();
                 connection = new JSONObject();
@@ -231,7 +320,9 @@ public final class MainActivity extends Activity {
                 connection.put("code", relayCode);
                 connection.put("token", token.getText().toString());
                 connection.put("renderer", mode);
+                if(selectedRooms!=null)connection.put("selectedRooms",selectedRooms);
                 localBase = LocalAssets.originForEndpoint(endpoint.toString());
+                saveConnectionDraft=null;
                 openTerminal();
             } catch (IllegalArgumentException | JSONException error) { url.setError(error.getMessage()); }
         });
@@ -305,6 +396,22 @@ public final class MainActivity extends Activity {
         return Uri.parse(ConnectionEndpoint.normalize(value));
     }
 
+    private static boolean isLoopbackEndpoint(Uri endpoint) {
+        String host=endpoint.getHost();
+        return host!=null&&(host.equalsIgnoreCase("localhost")||host.equals("::1")||host.equals("[::1]")||host.matches("127[.][0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3}"));
+    }
+
+    private String savedOrDefaultToken(String endpoint) {
+        if(!preferences.getBoolean("remember-server-token",true))return "";
+        String saved=SavedConnectionTokens.load(this,endpoint);
+        if(!saved.isEmpty())return saved;
+        try {
+            String preset=defaults.optString("endpoint","https://117.50.48.22");
+            if(SavedConnectionTokens.canonicalEndpoint(endpoint).equals(SavedConnectionTokens.canonicalEndpoint(preset)))return defaults.optString("token");
+        }catch(Exception invalid){ }
+        return "";
+    }
+
     private boolean trustedDocument() {
         return terminal != null && terminal.getUrl() != null && localBase != null
                 && UpdateDocument.document(localBase, terminal.getUrl(),documentRevision);
@@ -324,11 +431,16 @@ public final class MainActivity extends Activity {
 
     private void openTerminal() { openTerminal(false); }
     private void openTerminal(boolean updating) {
+        if(rendererRecovery.waitingForRenderer()){updateMessage("The previous renderer is still retiring. Reconnect after retirement completes.");return;}
         if(connection==null&&!updating){showConnection();return;}
         connectionFormGeneration++;
         try{
             hotAssets=HotAssets.load(getExternalFilesDir(null));
-            final java.util.Map<String,byte[]> snapshot=effectiveSnapshot();currentSnapshot=snapshot;
+            if(connection!=null&&connection.has("selectedRooms")&&!supportsRoomSelection(verifiedSnapshotForOpen())) {
+                if(updateStore!=null)updateStore.useBundled();
+                preferences.edit().putBoolean("ui-bundled-only",true).commit();
+            }
+            final java.util.Map<String,byte[]> snapshot=verifiedSnapshotForOpen();currentSnapshot=snapshot;
             String active=updateStore==null||preferences.getBoolean("ui-bundled-only",false)?null:updateStore.active();
             documentRevision=active==null?(hotAssets.getRevision().isEmpty()?"bundled":hotAssets.getRevision()):active;
             if(preferences.getBoolean("ui-bundled-only",false)||updateStore!=null&&active==null&&updateStore.highest()>0)documentRevision="bundled";
@@ -344,6 +456,7 @@ public final class MainActivity extends Activity {
             navigationState=getFilesDir().toPath().resolve("remote-ui").resolve("navigation-"+RemoteUpdates.hash((pageConnection.optString("endpoint")+"\n"+pageConnection.optString("code")).getBytes("UTF-8"))+".json");
             if(!updating||terminal==null){destroyTerminal();root.removeAllViews();terminal=new WebView(this);root.addView(terminal,new LinearLayout.LayoutParams(-1,-1));}
             final WebView view=terminal;
+            rendererRecovery.attach(view,generation,boot!=null&&!boot.ticket.isEmpty());
             terminal.setBackgroundColor(Color.rgb(12,16,23));WebSettings settings=terminal.getSettings();
             settings.setJavaScriptEnabled(true);settings.setDomStorageEnabled(true);settings.setTextZoom(100);settings.setSupportZoom(false);settings.setBuiltInZoomControls(false);settings.setDisplayZoomControls(false);settings.setCacheMode(WebSettings.LOAD_NO_CACHE);settings.setAllowFileAccess(false);settings.setAllowContentAccess(false);settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);settings.setSupportMultipleWindows(false);settings.setMediaPlaybackRequiresUserGesture(true);CookieManager.getInstance().setAcceptThirdPartyCookies(terminal,false);
             final String base=localBase;
@@ -372,20 +485,33 @@ public final class MainActivity extends Activity {
                     if(web==terminal&&request.isForMainFrame()&&generation==documentGeneration)startupFailure(generation,boot,"UI document failed to load");
                 }
                 @Override public boolean onRenderProcessGone(WebView web,RenderProcessGoneDetail detail){
-                    if(web==terminal&&generation==documentGeneration){destroyTerminal();if(boot!=null&&!boot.ticket.isEmpty())startupFailure(generation,boot,"UI renderer stopped");else{try{if(updateStore!=null&&updateStore.active()!=null){updateStore.rollback();openTerminal(true);}else showLoadError("UI renderer stopped; terminal processes continue running.");}catch(Exception error){showLoadError("UI renderer stopped; use bundled UI.");}}}return true;
+                    rendererGone(web,generation,boot);return true;
                 }
             });
             terminal.loadUrl(base+"/mobile/index.html?ui_revision="+revision+"#"+Uri.encode(pageConnection.toString()));
             if(!foreground)terminal.onPause();
-            if(boot!=null&&!boot.ticket.isEmpty())updateHandler.postDelayed(()->{if(generation==documentGeneration&&!documentReady)startupFailure(generation,boot,"UI startup deadline exceeded");},20000);
-        }catch(Exception error){try{if(updateStore!=null&&updateStore.active()!=null){updateStore.rollback();openTerminal(true);return;}}catch(Exception ignored){}showLoadError("Unable to load verified UI. Restore the previous UI or use bundled assets.");}
+            if(boot!=null&&!boot.ticket.isEmpty())updateHandler.postDelayed(()->{if(generation==documentGeneration&&!documentReady)startupFailure(generation,boot,"UI startup deadline exceeded",true);},20000);
+        }catch(Exception error){try{failPendingStartup(updateBoot);}catch(Exception ignored){}showLoadError("Unable to load verified UI. Restore the previous UI or use bundled assets.");}
     }
 
+    private java.util.Map<String,byte[]> verifiedSnapshotForOpen() throws Exception {
+        try{return effectiveSnapshot();}catch(Exception invalidSnapshot){
+            // Only failed snapshot verification can consume a previous pointer here.
+            // A WebView lifecycle error must never downgrade an already verified good UI.
+            if(updateStore==null||updateStore.active()==null)throw invalidSnapshot;
+            updateStore.rollback();return effectiveSnapshot();
+        }
+    }
     private void initializeUpdates(){
         try{updateTrust=RemoteUpdates.read(getAssets().open("update-trust.json"),RemoteUpdates.MANIFEST_LIMIT);updateBridge=new String(RemoteUpdates.read(getAssets().open("update-bridge.js"),128*1024),"UTF-8");
             updateStore=new RemoteUpdates.Store(getFilesDir().toPath().resolve("remote-ui"),updateTrust,updateFeed);restoreRecoveredUI=updateStore.recoveredOnStart();
         }catch(Exception error){updateStore=null;}
     }
+    private static boolean supportsRoomSelection(java.util.Map<String,byte[]> snapshot) throws Exception {
+        byte[] script=snapshot.get("mobile/app.js");
+        return script!=null&&new String(script,"UTF-8").contains("SMA_ROOM_SELECTION_V1");
+    }
+
     private java.util.Map<String,byte[]> effectiveSnapshot() throws Exception {
         boolean forced=preferences.getBoolean("ui-bundled-only",false);
         if(!forced&&updateStore!=null&&updateStore.active()!=null)return updateStore.snapshot(updateStore.active());
@@ -400,20 +526,56 @@ public final class MainActivity extends Activity {
             String state="null";try{if(restoreNavigationState&&navigationState!=null&&java.nio.file.Files.exists(navigationState))state=new String(UpdateDocument.state(RemoteUpdates.read(java.nio.file.Files.newInputStream(navigationState),512*1024)),"UTF-8");}catch(Exception ignored){}
             final String restore=state;terminal.evaluateJavascript("(()=>{try{if(window.NativeUpdates){NativeUpdates.restore("+restore+");NativeUpdates.uiReady();}return true;}catch(e){return false;}})()",result->{
                 if(generation!=documentGeneration)return;if(!"true".equals(result)){documentReady=false;documentInitializing=false;startupFailure(generation,boot,"UI state restore failed");return;}
-                try{if(boot!=null&&!boot.ticket.isEmpty()&&!updateStore.acknowledge(boot.ticket,boot.revision,boot.generation))throw new IOException("Stale startup ticket");documentReady=true;documentInitializing=false;restoreRecoveredUI=false;if(!foreground){lifecycle("pause");if(terminal!=null)terminal.onPause();}}catch(Exception error){documentReady=false;documentInitializing=false;startupFailure(generation,boot,"Unable to commit UI startup");}
+                try{if(boot!=null&&!boot.ticket.isEmpty()&&!updateStore.acknowledge(boot.ticket,boot.revision,boot.generation))throw new IOException("Stale startup ticket");if(!rendererRecovery.ready(terminal,generation))throw new IOException("Obsolete renderer readiness");updateBoot=null;documentReady=true;documentInitializing=false;restoreRecoveredUI=false;if(!foreground){lifecycle("pause");if(terminal!=null)terminal.onPause();}}catch(Exception error){documentReady=false;documentInitializing=false;startupFailure(generation,boot,"Unable to commit UI startup");}
             });
         }
     }
-    private void startupFailure(long generation,RemoteUpdates.Boot boot,String reason){
-        if(generation!=documentGeneration)return;
-        try{if(boot!=null&&!boot.ticket.isEmpty()&&updateStore.fail(boot.ticket)){documentGeneration++;retireFailedRenderer();openTerminal(true);return;}}catch(Exception ignored){}
-        showLoadError(reason+". Server terminal processes continue running.");
+    private void failPendingStartup(RemoteUpdates.Boot boot) throws Exception {
+        if(updateBoot==boot)updateBoot=null;
+        if(updateStore!=null&&boot!=null&&!boot.ticket.isEmpty())updateStore.fail(boot.ticket);
     }
-    private void retireFailedRenderer(){
-        // API29+: terminate the app's sandboxed renderer; callbacks for retired views are ignored.
-        // API26-28 has no platform termination handle: recreation is best-effort, not proven hard-kill.
-        if(terminal!=null&&Build.VERSION.SDK_INT>=29){try{android.webkit.WebViewRenderProcess process=terminal.getWebViewRenderProcess();if(process!=null)process.terminate();}catch(RuntimeException ignored){}}
-        destroyTerminal();
+    private void startupFailure(long generation,RemoteUpdates.Boot boot,String reason){startupFailure(generation,boot,reason,false);}
+    private void startupFailure(long generation,RemoteUpdates.Boot boot,String reason,boolean hung){
+        if(generation!=documentGeneration||isFinishing()||isDestroyed())return;
+        final WebView failed=terminal;
+        RendererRecovery.Action action=rendererRecovery.failure(failed,generation,hung);
+        if(action==RendererRecovery.Action.IGNORE){if(rendererRecovery.matches(failed,generation)&&!documentReady)showLoadError(reason+". Server terminal processes continue running.");return;}
+        try{failPendingStartup(boot);}catch(Exception error){showLoadError("Unable to restore the previous UI. Server terminals continue running.");return;}
+        documentGeneration++;documentReady=false;documentInitializing=false;
+        if(action==RendererRecovery.Action.RELOAD_HEALTHY){openTerminal(true);return;}
+        retirementRecoveryGeneration=documentGeneration;
+        // Never create a new WebView in a renderer that has only been ASKED to terminate.
+        if(terminal==failed){root.removeView(failed);terminal=null;}
+        retireFailedRenderer(failed,generation);
+    }
+    private void retireFailedRenderer(WebView failed,long generation){
+        if(Build.VERSION.SDK_INT>=29){
+            try{android.webkit.WebViewRenderProcess process=failed.getWebViewRenderProcess();if(process!=null&&process.terminate())return;}catch(RuntimeException ignored){}
+            if(rendererRecovery.isRetiring(failed)){
+                rendererRecovery.finishWithoutTermination(failed,generation);destroyRendererView(failed);
+                showLoadError("Renderer termination is unavailable. The previous verified UI is preserved; reopen the app to retry.");
+            }
+            return;
+        }
+        // API26-28: no platform termination handle. This is explicit best-effort recreation.
+        RendererRecovery.Action action=rendererRecovery.finishWithoutTermination(failed,generation);destroyRendererView(failed);
+        if(action==RendererRecovery.Action.RETIRED_RECOVER&&documentGeneration==retirementRecoveryGeneration&&!isFinishing()&&!isDestroyed())openTerminal(true);
+    }
+    private void rendererGone(WebView web,long generation,RemoteUpdates.Boot boot){
+        RendererRecovery.Action action=rendererRecovery.rendererGone(web,generation);
+        if(action==RendererRecovery.Action.RETIRED_RECOVER||action==RendererRecovery.Action.RETIRED_CANCELLED){
+            destroyRendererView(web);
+            if(action==RendererRecovery.Action.RETIRED_RECOVER&&documentGeneration==retirementRecoveryGeneration&&!isFinishing()&&!isDestroyed())openTerminal(true);
+            return;
+        }
+        if(action==RendererRecovery.Action.IGNORE||generation!=documentGeneration||web!=terminal){if(web!=terminal)destroyRendererView(web);return;}
+        terminal=null;destroyRendererView(web);
+        try{
+            if(action==RendererRecovery.Action.FAIL_PENDING)failPendingStartup(boot);
+            // RECREATE_GOOD retains the current verified pointer. No second rollback.
+            documentGeneration++;documentReady=false;documentInitializing=false;
+            if(!isFinishing()&&!isDestroyed())openTerminal(true);
+        }catch(Exception error){showLoadError("UI renderer stopped. Server terminal processes continue running.");}
     }
     private void checkUpdates(boolean manual){
         if(updateStore==null){if(manual)updateMessage("UI updates unavailable: install a bootstrap APK with its public trust anchor.");return;}
@@ -473,7 +635,7 @@ public final class MainActivity extends Activity {
             .setPositiveButton("Restore",(dialog,which)->{if(!updatesBusy){updatesBusy=true;prepareNavigation(()->updateStore.rollback(),documentGeneration);}}).setNegativeButton("Cancel",null).show();
     }
     private void invalidateDocument(){
-        documentGeneration++;documentReady=false;documentInitializing=false;
+        documentGeneration++;rendererRecovery.cancel();documentReady=false;documentInitializing=false;
         try{if(updateStore!=null&&updateBoot!=null&&!updateBoot.ticket.isEmpty())updateStore.fail(updateBoot.ticket);}catch(Exception ignored){}
         updateBoot=null;
     }
@@ -517,6 +679,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onPause() {
+        if(saveConnectionDraft!=null)saveConnectionDraft.run();
         foreground=false;
         updateHandler.removeCallbacks(foregroundUpdateCheck);
         lifecycle("pause");

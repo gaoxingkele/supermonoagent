@@ -34,11 +34,13 @@ from .protocol import (
     OP_INPUT,
     OP_INPUT_SESSION,
     OP_OPEN,
+    OP_OUTPUT,
     OP_PING,
     OP_PONG,
     OP_RESIZE,
     OP_SELECT,
     OP_SUBSCRIBE,
+    OP_SNAPSHOT,
     OP_TASK_SUBSCRIBE,
     OP_WINDOW,
     ProtocolError,
@@ -357,8 +359,53 @@ class Daemon:
                     await ws.close(code=1013, reason=(client.failure if client else "Slow client")[:120])
                     return
                 await ws.send(frame)
+                supplement = await self.snapshot_supplement(client, frame)
+                if supplement is not None:
+                    await ws.send(supplement)
         except asyncio.CancelledError:
             return
+
+    async def snapshot_supplement(self, client, frame):
+        """Read a session's genuine footer after replay, without losing history."""
+        if client is None or not isinstance(frame, bytes) or not self.client_authorized(client):
+            return None
+        try:
+            opcode, payload = unpack(frame)
+            if opcode != OP_SNAPSHOT:
+                return None
+            prefixed = client.multiplex or client.key.startswith('relay-')
+            if prefixed:
+                raw_sid, separator, _ = payload.partition(b'\0')
+                if not separator:
+                    return None
+                sid = raw_sid.decode('utf-8')
+                session = self.hub.sessions.get(sid)
+            else:
+                session = self.hub.view(client)
+                sid = session.id if session is not None else ''
+            if session is None:
+                return None
+            pty, dimensions = session.pty, (session.cols, session.rows)
+            mode = (client.multiplex, client.key.startswith('relay-'))
+
+            def current():
+                return (self.client_authorized(client) and self.hub.sessions.get(sid) is session
+                        and session.pty is pty and (session.cols, session.rows) == dimensions
+                        and (client.multiplex, client.key.startswith('relay-')) == mode
+                        and self.hub._channel_ok(client, session)
+                        and (sid in client.subscriptions if client.multiplex else
+                             mode[1] or self.hub.view(client) is session))
+
+            reader = getattr(pty, 'footer_patch', None)
+            if not callable(reader) or not current():
+                return None
+            supplement = await asyncio.to_thread(reader, *dimensions)
+            if not current() or not isinstance(supplement, bytes) or not supplement or len(supplement) > 65536:
+                return None
+            return self.hub._feed_frame(client, OP_OUTPUT, sid, supplement)
+        except Exception:
+            # Recovery is optional. No terminal cells or credentials enter logs.
+            return None
 
     async def _op(self, client, op: int, payload: bytes):
         if not self.client_authorized(client):
@@ -616,6 +663,7 @@ class Daemon:
     def _state(self, client, error: str | None = None, resize_ack: dict | None = None) -> bytes:
         visible = self.hub.summary(client.token)
         service = self.service_status()
+        service['owner_authenticated'] = client.token == self.token and not client.delegated
         if client.token == self.token and not client.delegated:
             service['relays'] = [{**status, 'code': target['code']}
                                  for status, target in zip(service['relays'], self.relay_targets)]
@@ -759,6 +807,9 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
                                     await disconnect(phone_id, "Relay authorization ended")
                                     return
                                 await uplink.put((phone_id, client, frame))
+                                supplement = await daemon.snapshot_supplement(client, frame)
+                                if supplement is not None and route_valid(phone_id, client):
+                                    await uplink.put((phone_id, client, supplement))
                         except asyncio.CancelledError:
                             return
 
@@ -859,8 +910,10 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=6769)
     parser.add_argument("--relay", default="", help="ws://relay:6770, outbound only")
     parser.add_argument("--code", default="")
-    parser.add_argument("--token", default=None, help="Set and save this host's owner token; omitted uses the saved token")
-    parser.add_argument("--state-dir", help="Isolated state directory for a separate host or test")
+    credentials = parser.add_mutually_exclusive_group()
+    credentials.add_argument("--token", default=None, help="Set and save this host's owner token; default reads private token.txt then the saved token")
+    credentials.add_argument("--token-file", metavar="PATH", help="Read and save the host owner token from a private file")
+    parser.add_argument("--state-dir", help="Isolated state directory; ignores global token-file defaults unless --token-file is explicit")
     parser.add_argument("--no-relay", action="store_true", help="Do not load saved outbound relays")
     transport_options(parser)
     parser.add_argument('--relay-owner-secret', default='', help='Distinct enrolled relay room owner secret')
@@ -872,7 +925,22 @@ def main() -> None:
     context = tls_context(args.tls_cert, args.tls_key)
     if not loopback(args.host) and not context and not (args.reverse_proxy_tls and args.allowed_origin and all(origin.startswith('https://') for origin in args.allowed_origin)):
         parser.error('Public serving requires TLS or --reverse-proxy-tls with --allowed-origin')
-    if args.token is not None and not (args.bind_relay_account or args.unbind_relay_account):
+    if args.state_dir:
+        STATE = Path(args.state_dir).resolve()
+        os.environ["SUPERMONO_STATE_DIR"] = str(STATE)
+    metadata_operation = bool(args.bind_relay_account or args.unbind_relay_account)
+    effective_token = args.token
+    try:
+        from .token_config import read_default_token
+        if args.token_file is not None:
+            effective_token = read_default_token(args.token_file, state_dir=STATE)
+            if not effective_token:
+                parser.error('Token file does not exist or contains no token')
+        elif args.token is None and not args.state_dir and not metadata_operation:
+            effective_token = read_default_token(None, state_dir=STATE) or None
+    except ValueError as exc:
+        parser.error(str(exc))
+    if effective_token is not None and not metadata_operation:
         # A second host must not replace the running host's saved credential
         # before discovering that its listening port is already occupied.
         family = socket.AF_INET6 if ':' in args.host else socket.AF_INET
@@ -881,11 +949,8 @@ def main() -> None:
                 probe.bind((args.host, args.port))
         except OSError:
             parser.error('Host address/port is unavailable; the saved token was not changed')
-    if args.state_dir:
-        STATE = Path(args.state_dir).resolve()
-        os.environ["SUPERMONO_STATE_DIR"] = str(STATE)
     try:
-        token = load_token(args.token)
+        token = load_token(effective_token)
     except ValueError as exc:
         parser.error(str(exc))
     if args.bind_relay_account or args.unbind_relay_account:

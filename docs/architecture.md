@@ -26,7 +26,7 @@ daemon 是 asyncio 主事件循环；每条 CLI 一个阻塞 PTY 读线程，输
 
 | 模块 | 责任 |
 |---|---|
-| [protocol.py](../src/supermonoagent/protocol.py) | 长度帧、17 个 opcode、能力标志、JSON、会话前缀与有界截断 |
+| [protocol.py](../src/supermonoagent/protocol.py) | 长度帧、19 个 opcode、能力标志、JSON、会话前缀与有界截断 |
 | [accounts.py](../src/supermonoagent/accounts.py) | 每个 daemon 的本机账户、PBKDF2 密码 verifier 与访问 Token |
 | [hub.py](../src/supermonoagent/hub.py) | 分组/窗口/CLI/客户端、按 Token 所有权过滤、显式订阅、尺寸租约、历史回放 |
 | [pty.py](../src/supermonoagent/pty.py) | pywinpty/ConPTY、命令启动、输入过滤与原生终端 I/O |

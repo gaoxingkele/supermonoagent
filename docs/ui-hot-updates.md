@@ -2,7 +2,7 @@
 
 桌面和 Android 共用签名界面更新渠道。当前为 Native API 2，新增了六种 Agent 的独立 JSON 模板；首次需要安装支持 API 2 的 Windows 外壳与 APK。之后同 API 的页面、样式、脚本及模式配置更新不必重新打包外壳。原生能力、后台协议或签名信任锚变化仍需正常升级，不能通过页面包替换。
 
-当前安装包使用数字版本目录，Windows `dist/windows/0.2.22/`，Android `dist/android/0.2.22/SuperMonoAgent.apk`。HTTPS 频道已上线；本轮发布和设备验证结果以 [TODO](TODO.md) 为准。早期 `windows-ui-updates`、`android-ui-updates` 与日期名称仅是历史构建，不是新版命名规则。
+当前安装包使用数字版本目录，Windows `dist/windows/0.2.25/`，Android `dist/android/0.2.25/SuperMonoAgent.apk`。HTTPS 频道已上线；本轮发布和设备验证结果以 [TODO](TODO.md) 为准。早期 `windows-ui-updates`、`android-ui-updates` 与日期名称仅是历史构建，不是新版命名规则。
 
 0.2.22 的 17/16 文件 API2 频道已发布，公网回读验签及归档校验见 `.omx/artifacts/ui-menu-profiles/publication-verified.json`。实际 Windows 新窗口已打开并使用新的内置快照，旧窗口和终端保留；Android 本轮没有连接设备，尚未覆盖安装。
 
@@ -23,7 +23,7 @@ Android API 29+ 可以终止本应用挂死的 renderer 后重建 WebView；API 
 仅本地打包、签名并验证：
 
 ```powershell
-.venv/Scripts/python.exe scripts/package-ui-update.py --revision 0.2.22
+.venv/Scripts/python.exe scripts/package-ui-update.py --revision 0.2.25
 ```
 
 服务器 SSH 与 HTTPS 配好以后，一条命令完成打包和正式发布：
@@ -63,8 +63,8 @@ Android API 29+ 可以终止本应用挂死的 renderer 后重建 WebView；API 
 
 浏览器模式没有控制用户外部浏览器进程的原生窗口权限；普通脚本失败可自动回退重载，极端 renderer 挂死时本机存储仍会恢复，可能需要用户刷新该浏览器标签页。真正 Windows 桌面外壳具备独立的原生恢复控制。
 
-Linux systemd 与证书 hook 只做了静态审查，Caddy 配置已在本机隔离 HTTPS/WSS 服务上实际验证。当前没有生产 SSH 上传、公开证书签发或正式频道发布的证据；最终首次外壳构建、真机安装状态以交付记录为准。
+早期部署记录中的“缺少 SSH/TLS/正式频道”已过时：HTTPS/WSS 与签名 stable 频道已部署，公开下载验签证据见 `.omx/artifacts/remote-terminal-colors/publication-verified.json`。生产证书续期 timer 也已实测启用。当前验收边界以 [TODO](TODO.md) 和 [运行时配置与回滚验收](../omx_wiki/runtime-config-and-recovery.md) 为准。
 
-Windows 实际包已通过账号存储、绑定授权、电脑清单自动填充和隔离 CMD 输入验证（34 个源文件 hash 一致），内置图标、公钥和 native bridge 与源码逐字节一致。双平台最终 ZIP 已通过 Windows CNG 验签及完整归档校验。APK 签名验证通过；手机当前未连接，尚未覆盖安装。
+早期 Windows 包曾通过账号存储、绑定授权、电脑清单自动填充和隔离 CMD 输入验证（34 个源文件 hash 一致）；双平台 ZIP 通过 Windows CNG 验签及完整归档校验。后续手机已完成 API2 原生壳安装、正常更新及多主机验证；旧 QA 的异常回滚暴露了二次回退缺陷。修复已有 JVM 证据，修复版 QA 安装被系统终止，真机 throw/hang 验收尚未通过，不把正常更新成功等同于异常恢复成功。
 
 本轮全量 Python 回归为 235 passed、1 skipped、42 subtests passed；Node 为 33 passed。全量运行中的一处隔离测试线程清理告警已通过测试清理顺序修正，修正后全部 6 种发送方式及连续 3 次 send 在“线程告警视为错误”模式下通过。Codex 发送测试的早期失败已复现为命令接受后的退出收尾超过原 5 秒，而非遗漏 Enter；测试分别验证关闭确认与进程退出，仍要求只发送一次 Enter。相关证据在 `.omx/artifacts/android-composer-submit/`。

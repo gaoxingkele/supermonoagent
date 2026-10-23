@@ -38,8 +38,8 @@ def receive(stream):
     return first & 15, bytes(value ^ mask[index % 4] for index, value in enumerate(body))
 
 
-def send(connection, opcode, body):
-    header = bytes([128 | opcode])
+def send(connection, opcode, body, final=True):
+    header = bytes([(128 if final else 0) | opcode])
     if len(body) < 126:
         header += bytes([len(body)])
     elif len(body) < 65536:
@@ -148,8 +148,16 @@ public class ProbeCheck {
                         state = {"windows": [], "capabilities": {"multiplex": behavior != "unsupported"}}
                         if behavior == "spoof-capability":
                             state = {"windows": [], "capabilities": [{"multiplex": True}]}
-                        send(connection, 2, protocol(2, state))
-                        if behavior == "success":
+                        if behavior == "fragmented-success":
+                            body = protocol(2, state)
+                            middle = len(body) // 2
+                            send(connection, 2, body[:middle], final=False)
+                            send(connection, 9, b"fragment-ping")
+                            self.assertEqual(receive(stream), (10, b"fragment-ping"))
+                            send(connection, 0, body[middle:])
+                        else:
+                            send(connection, 2, protocol(2, state))
+                        if behavior in ("success", "fragmented-success"):
                             self.assertEqual(receive(stream), (8, struct.pack("!H", 1000)))
                 except Exception as error:
                     errors.append(error)
@@ -180,6 +188,10 @@ public class ProbeCheck {
         self.assertEqual(captured["relay"], {"op": "phone", "code": 'room-"\\中文',
                                              "token": 'private-"\\\n中文', "reliable": True})
 
+    def test_fragmented_binary_state_with_interleaved_control_ping(self):
+        result, _ = self.run_probe("fragmented-success")
+        self.assertIn("测试成功", result)
+
     def test_invalid_endpoint_rejected_before_network_access(self):
         for endpoint in ("javascript:alert(1)", "https://user:secret@example.com", "http://127.0.0.1:0"):
             run = subprocess.run([self.java, "-cp", self.temporary.name, "ProbeCheck", endpoint, "", "secret"],
@@ -189,7 +201,7 @@ public class ProbeCheck {
 
     def test_failures_report_actionable_errors(self):
         for behavior, expected in [("404", "404"), ("bad-accept", "握手"), ("rejected", "认证失败"),
-                                   ("unsupported", "不兼容"), ("fragment", "不支持"), ("oversized", "过大"),
+                                   ("unsupported", "不兼容"), ("fragment", "不完整"), ("oversized", "过大"),
                                    ("spoof-capability", "不兼容"), ("timeout", "超时")]:
             with self.subTest(behavior=behavior):
                 result, _ = self.run_probe(behavior)

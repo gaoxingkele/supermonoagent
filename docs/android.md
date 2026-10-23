@@ -1,10 +1,10 @@
 # Android mobile client
 
-The TD-006 package is `dist/android-global-workspace/SuperMonoAgent.apk` (0.2.13, code 15). It maintains independent saved-host directory connections, renders/subscribes only the active terminal, isolates drafts and input mode by host/session, and closes transports while backgrounded. Changing endpoint or room clears the prior authority's token and session state. It also supports authorized known-room discovery; see [security and deployment](global-workspace-security.md).
+The latest build is listed in [distribution artifacts](../dist/README.md). It maintains independent saved-host directory connections, renders/subscribes only the active terminal, isolates drafts and input mode by host/session, and closes transports while backgrounded. Changing endpoint or room clears the prior authority's token and session state. It also supports authorized known-room discovery; see [security and deployment](global-workspace-security.md). Build availability does not imply physical fault-recovery acceptance; see [the current verification record](todo-completion.md).
 
-Build it with `scripts/build-android.ps1 -OutputDir dist/android-global-workspace`. Generic builds contain no personal connection defaults. Source/package verification and device installation status are recorded in that directory's `verification.json` and [the current verification record](todo-completion.md). The first authorized USB update was rejected by the phone's install permission; that attempt preserved the installed app and data.
+Build it with `scripts/build-android.ps1 -OutputDir dist/android/<next-version>`; each build increments the manifest version. Use that same numeric version for Windows. Generic builds contain no personal connection defaults. Device installation and fault-recovery status are recorded in [the current verification record](todo-completion.md). The production app has received an API2 shell update while retaining its data. A later isolated QA recovery build was rejected by the phone installer; that build's physical throw/hang recovery remains unverified.
 
-The Android application is a small Java shell around the device's hardware-accelerated **Android System WebView**. Version 0.2.5 packages a dedicated mobile terminal document and the existing xterm dependencies inside the APK. It connects directly by WebSocket to the configured daemon/relay using the existing protocol; it adds no extra relay hop. The Windows clients and shared browser workspace are unchanged. No Chromium engine is bundled. Android 8 (API 26) or newer is required; keep Android System WebView updated through the device's supported update mechanism.
+The Android application is a small Java shell around the device's hardware-accelerated **Android System WebView**. The APK packages a dedicated mobile terminal document and the existing xterm dependencies. It connects directly by WebSocket to the configured daemon/relay using the existing protocol; it adds no extra relay hop. The Windows clients and shared browser workspace are unchanged. No Chromium engine is bundled. Android 8 (API 26) or newer is required; keep Android System WebView updated through the device's supported update mechanism.
 
 ## Build on Windows
 
@@ -48,7 +48,7 @@ Official tooling references: [Android command-line tools](https://developer.andr
 
 ## Implementation and verification boundary
 
-The build stages `android/assets/mobile/{index.html,app.js,app.css,mobile-core.js}` plus existing `src/supermonoagent/static` xterm and terminal-client files into a temporary asset directory, then packages it with AAPT2. Vendor sources are not duplicated in the repository. The previous APK is preserved once under `.omx/android-v1/`. Version code is 7 and version name is 0.2.5.
+The build stages `android/assets/mobile/{index.html,app.js,app.css,mobile-core.js}` plus existing `src/supermonoagent/static` xterm and terminal-client files into a temporary asset directory, then packages it with AAPT2. Vendor sources are not duplicated in the repository. The previous APK is preserved once under `.omx/android-v1/`. The current build is version code 27 / version name 0.2.25; each build increments both in `android/AndroidManifest.xml`.
 
 `python -m unittest tests.test_android -v` compiles and runs the actual pure Java endpoint and asset policy against valid and adversarial URLs, and checks native security/lifecycle/build contracts. Android SDK compilation verifies actual platform API signatures. Neither substitutes for real Android keyboard, lifecycle, rotation or GPU tests.
 

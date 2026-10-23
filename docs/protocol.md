@@ -61,10 +61,16 @@
 | 15 | GROUP | 客户端 → daemon | `{action,...}`，见下表 |
 | 16 | SUBSCRIBE | 客户端 → daemon | `{sessions:[raw_id,…]}`；替换本连接的输出订阅集，最多 256 项 |
 | 17 | INPUT_SESSION | 客户端 → daemon | `8 字节 raw session ID + NUL + 原始输入字节` |
+| 18 | TASK_SUBSCRIBE | 客户端 → daemon | `{after?,replay?}`；订阅任务完成事件，`after` 为最后收到的 event_id，`replay:false` 只建立游标 |
+| 19 | TASK_EVENT | daemon → 客户端 | 完成事件 JSON，含 `event_id,session,window,title,machine,project,status,summary,agent,created_at`；基线确认时为 `{type:"cursor",cursor}` |
 
-OP16/17/5 都受 Token 所有权与订阅约束。客户端内部的 host/session 元组键不能放进线协议；不同 daemon 的相同 raw ID 由其所属连接隔离。关闭标签页只从 OP16 订阅集移除该 ID，不发送 OP9。
+OP16/17/5 都受 Token 所有权与订阅约束。OP18 的回放按 Token 所有权过滤，relay 客户端还按频道过滤；OP19 只发给已订阅且仍有权限的连接。客户端内部的 host/session 元组键不能放进线协议；不同 daemon 的相同 raw ID 由其所属连接隔离。关闭标签页只从 OP16 订阅集移除该 ID，不发送 OP9。
 
-来源：[daemon.py:_op](../src/supermonoagent/daemon.py)、[hub.py:set_subscriptions/write_session/resize_session](../src/supermonoagent/hub.py)。
+### 任务完成事件
+
+后台从实时 PTY 字节中识别 OSC 7501；只有 `working/running/busy → idle` 才算一次完成，启动即 idle、历史回放、快照、重连和 `clear` 都不产生事件。事件按所有者哈希（relay 客户端另加频道）隔离，本机最多保存 256 条，单次回放最多 24 条。OP18 的 `after` 找不到对应 event_id 时按最近 24 条回放；首次启用通常发送 `{"replay":false}`，服务端以 OP19 的 cursor 建立基线，避免把旧任务当成新通知。事件只表示 agent 回到输入，不表示命令或测试成功，也不会向终端写入任何内容。
+
+来源：[daemon.py:_op](../src/supermonoagent/daemon.py)、[hub.py:set_subscriptions/write_session/resize_session/subscribe_task_events](../src/supermonoagent/hub.py)、[task_events.py](../src/supermonoagent/task_events.py)、[notification_bridge.py](../src/supermonoagent/notification_bridge.py)。
 
 ### 尺寸租约与 ACK
 
@@ -94,7 +100,7 @@ OP2/OP7 的共同字段如下；OP2 另有当前选择和 service，resize 的 O
 
 ```json
 {
-  "capabilities": {"protocol_version":2,"multiplex":true,"targeted_input":true,"resize_lease":true,"reliable":true,"resize_ack":true,"window_themes":true,"conpty_paste":true},
+  "capabilities": {"protocol_version":2,"multiplex":true,"targeted_input":true,"resize_lease":true,"reliable":true,"resize_ack":true,"window_themes":true,"conpty_paste":true,"relay_delegation":true,"task_events":true,"snapshot_sgr":true},
   "machine":"Office-PC",
   "project":"Project A",
   "windows":[{"id":"a1b2c3","title":"Codex","group":"default","focused":"1234abcd","sessions":[{"id":"1234abcd","shell":"cmd","cwd":"D:/work"}]}],

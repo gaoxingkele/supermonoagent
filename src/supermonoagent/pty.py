@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import threading
+import time
 
 
 class PtyClosed(Exception):
@@ -79,6 +80,29 @@ class WinPty:
         self._input = ConptyInputFilter()
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._escape_timer: threading.Timer | None = None
+        # Bind once to the actual spawned console generation. Each session owns
+        # its own bounded cache; no saved PID map survives a daemon restart.
+        from .console_snapshot import _process_identity
+        self._footer_pid = getattr(self._proc, 'pid', None)
+        self._footer_identity = _process_identity(self._footer_pid)
+        self._footer_lock = threading.Lock()
+        self._footer_cache = None
+
+    def footer_patch(self, cols: int, rows: int) -> bytes:
+        """Read current status cells in a hidden helper; never write to the PTY."""
+        from .console_snapshot import _process_identity, read_console, footer_patch
+        identity = self._footer_identity
+        if identity is None:
+            return b''
+        with self._footer_lock:
+            if _process_identity(self._footer_pid) != identity:
+                self._footer_cache = None
+                return b''
+            now = time.monotonic()
+            if self._footer_cache is None or now - self._footer_cache[0] >= 1:
+                data = read_console(self._footer_pid, expected_created=identity[1], expected_parent=identity[0])
+                self._footer_cache = (now, data)
+            return footer_patch(self._footer_cache[1], cols, rows)
 
     def read(self, size: int = 4096) -> bytes:
         try:

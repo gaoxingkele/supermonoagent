@@ -142,6 +142,9 @@ async def _check_account_flow(playwright):
                 await page.locator('#workspace-form').evaluate('(form)=>form.requestSubmit()')
                 await page.wait_for_function("smaWorkspace.activeHost.config.authMode==='account'&&smaWorkspace.activeHost.config.code==='room-remote'&&smaWorkspace.activeHost.connected&&smaWorkspace.terminal")
                 remote_id=await page.evaluate('smaWorkspace.activeHost.id')
+                # Authentication creates the pane before its first replay and
+                # canonical controls arrive. Paste only after that input barrier.
+                await page.wait_for_function("smaWorkspace.activePane?.ready&&smaWorkspace.activeHost.controls[smaWorkspace.activePane.raw]&&!smaWorkspace.activePane.replayPending&&!smaWorkspace.activePane.writing&&!smaWorkspace.activePane.frames.length")
                 await page.evaluate("smaWorkspace.terminal.paste('account-remote-input')")
                 async with asyncio.timeout(4):
                     while sessions[1].pty.written!=b'account-remote-input':

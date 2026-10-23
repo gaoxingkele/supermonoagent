@@ -12,6 +12,11 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Locale;
@@ -29,24 +34,131 @@ public final class ConnectionProbe {
 
     private ConnectionProbe() { }
 
-    public static String test(String endpoint, String code, String token) {
-        try {
-            return probe(new URI(ConnectionEndpoint.normalize(endpoint)), code == null ? "" : code, token == null ? "" : token);
-        } catch (SocketTimeoutException error) {
-            return "测试失败：连接超时，请检查网络、端口及主机是否在线。";
-        } catch (SSLException error) {
-            return "测试失败：TLS 证书或安全连接验证失败。";
-        } catch (IllegalArgumentException error) {
-            return "测试失败：服务器地址无效，请填写 http:// 或 https:// 地址。";
-        } catch (ProbeFailure error) {
-            return "测试失败：" + error.getMessage();
-        } catch (Exception error) {
-            // Exception messages may contain caller input, URLs or credentials.
-            return "测试失败：无法连接服务器，请检查地址、端口和网络。";
+    public static final class Room {
+        public final String code, machine, project;
+        private Room(String code, String machine, String project) {
+            this.code = code; this.machine = machine; this.project = project;
         }
     }
 
+    public static final class DiscoveryResult {
+        public final boolean success;
+        public final String message;
+        public final List<Room> rooms;
+        private DiscoveryResult(boolean success, String message, List<Room> rooms) {
+            this.success = success; this.message = message;
+            this.rooms = Collections.unmodifiableList(new ArrayList<>(rooms));
+        }
+    }
+
+    /** Discover only this credential's online terminal rooms, without subscribing to output. */
+    public static DiscoveryResult discover(String endpoint, String token) {
+        try {
+            final String credential = token == null ? "" : token;
+            if (credential.isEmpty() || credential.length() > 4096) throw new IllegalArgumentException();
+            return connected(new URI(ConnectionEndpoint.normalize(endpoint)),
+                    (socket, target) -> discoverRooms(socket, target, credential));
+        } catch (Exception error) {
+            String message;
+            if (error instanceof SocketTimeoutException) message = "测试失败：连接超时，请检查网络及主机是否在线。";
+            else if (error instanceof SSLException) message = "测试失败：TLS 证书或安全连接验证失败。";
+            else if (error instanceof IllegalArgumentException) message = "测试失败：请检查安全服务器地址和 Token。";
+            else if (error instanceof ProbeFailure) message = "测试失败：" + error.getMessage();
+            else message = "测试失败：无法获取房间，请检查网络和中继服务。";
+            return new DiscoveryResult(false, message, Collections.<Room>emptyList());
+        }
+    }
+
+    private static DiscoveryResult discoverRooms(Socket socket, URI endpoint, String token) throws Exception {
+        InputStream input = socket.getInputStream(); OutputStream output = socket.getOutputStream();
+        long deadline = System.nanoTime() + TIMEOUT * 1_000_000L;
+        upgrade(socket, endpoint, input, output, deadline);
+        writeFrame(output, 1, ("{\"op\":\"watch\",\"rooms\":[],\"tokens\":[" + quote(token) + "]}").getBytes(StandardCharsets.UTF_8));
+        Frame frame = readData(socket, input, output, deadline);
+        if (frame.opcode != 1) throw new ProbeFailure("中继目录响应无效。", 0);
+        Map<?, ?> directory = object(frame.body);
+        Object capabilities = directory.get("capabilities"), hosts = directory.get("hosts"), revision = directory.get("revision");
+        if (!"directory".equals(directory.get("op")) || !(capabilities instanceof Map)
+                || !Boolean.TRUE.equals(((Map<?, ?>) capabilities).get("token_discovery")))
+            throw new ProbeFailure("中继尚不支持按 Token 自动发现房间。", 0);
+        if (!(revision instanceof JsonNumber) || !((JsonNumber) revision).literal.matches("0|[1-9][0-9]{0,15}")
+                || Long.parseLong(((JsonNumber) revision).literal) > 9007199254740991L
+                || !(hosts instanceof List) || ((List<?>) hosts).size() > 64)
+            throw new ProbeFailure("中继房间列表无效。", 0);
+        List<Room> rooms = new ArrayList<>(); Set<String> seen = new HashSet<>();
+        for (Object value : (List<?>) hosts) {
+            if (!(value instanceof Map)) throw new ProbeFailure("中继房间列表无效。", 0);
+            Map<?, ?> item = (Map<?, ?>) value;
+            if (!Boolean.TRUE.equals(item.get("online"))) continue;
+            Object code = item.get("code");
+            if (!(code instanceof String) || ((String) code).isEmpty() || ((String) code).length() > 128
+                    || !(item.get("token_index") instanceof JsonNumber)
+                    || !"0".equals(((JsonNumber) item.get("token_index")).literal) || !seen.add((String) code))
+                throw new ProbeFailure("中继房间列表无效。", 0);
+            for (int i = 0; i < ((String) code).length(); i++) {
+                char character = ((String) code).charAt(i);
+                if (Character.isISOControl(character)) throw new ProbeFailure("中继房间列表无效。", 0);
+                if (Character.isHighSurrogate(character)) {
+                    if (++i == ((String) code).length() || !Character.isLowSurrogate(((String) code).charAt(i)))
+                        throw new ProbeFailure("中继房间列表无效。", 0);
+                } else if (Character.isLowSurrogate(character)) throw new ProbeFailure("中继房间列表无效。", 0);
+            }
+            rooms.add(new Room((String) code, label(item.get("machine")), label(item.get("project"))));
+        }
+        writeFrame(output, 8, new byte[] {3, (byte) 232});
+        return new DiscoveryResult(!rooms.isEmpty(), rooms.isEmpty()
+                ? "未发现可用房间，请确认 Token 正确且电脑已连接中继。"
+                : "测试成功：发现 " + rooms.size() + " 个可用房间。", rooms);
+    }
+
+    private static String label(Object value) {
+        if (!(value instanceof String)) return "";
+        String result = ((String) value).replaceAll("[\\p{Cntrl}]", " ");
+        return result.substring(0, result.offsetByCodePoints(0, Math.min(result.codePointCount(0, result.length()), 40)));
+    }
+
+    private interface Exchange<T> { T run(Socket socket, URI endpoint) throws Exception; }
+
+    public static final class ProbeResult {
+        public final boolean success;
+        public final String message;
+        private final String endpoint,token;
+        private ProbeResult(boolean success,String message,String endpoint,String token){this.success=success;this.message=message;this.endpoint=endpoint;this.token=token;}
+        public boolean authorizesDirect(String endpoint,String code,String token){
+            if(!success||this.endpoint==null||code==null||!code.isEmpty())return false;
+            try{return this.endpoint.equals(ConnectionEndpoint.normalize(endpoint))&&this.token.equals(token);}catch(IllegalArgumentException invalid){return false;}
+        }
+    }
+
+    public static String test(String endpoint, String code, String token) {
+        return testResult(endpoint,code,token).message;
+    }
+    public static ProbeResult verifyDirect(String endpoint,String token){return testResult(endpoint,"",token);}
+    private static ProbeResult testResult(String endpoint, String code, String token) {
+        String message;
+        try {
+            String target=ConnectionEndpoint.normalize(endpoint),room=code==null?"":code,credential=token==null?"":token;
+            return new ProbeResult(true,probe(new URI(target),room,credential),room.isEmpty()?target:null,credential);
+        } catch (SocketTimeoutException error) {
+            message="测试失败：连接超时，请检查网络、端口及主机是否在线。";
+        } catch (SSLException error) {
+            message="测试失败：TLS 证书或安全连接验证失败。";
+        } catch (IllegalArgumentException error) {
+            message="测试失败：服务器地址无效，请填写 http:// 或 https:// 地址。";
+        } catch (ProbeFailure error) {
+            message="测试失败：" + error.getMessage();
+        } catch (Exception error) {
+            // Exception messages may contain caller input, URLs or credentials.
+            message="测试失败：无法连接服务器，请检查地址、端口和网络。";
+        }
+        return new ProbeResult(false,message,null,null);
+    }
+
     private static String probe(URI endpoint, String code, String token) throws Exception {
+        return connected(endpoint, (socket, target) -> exchange(socket, target, code, token));
+    }
+
+    private static <T> T connected(URI endpoint, Exchange<T> exchange) throws Exception {
         boolean tls = "https".equalsIgnoreCase(endpoint.getScheme());
         int port = endpoint.getPort() == -1 ? (tls ? 443 : 80) : endpoint.getPort();
         String host = endpoint.getHost();
@@ -62,10 +174,10 @@ public final class ConnectionProbe {
                     socket.setSSLParameters(parameters);
                     socket.setSoTimeout(TIMEOUT);
                     socket.startHandshake();
-                    return exchange(socket, endpoint, code, token);
+                    return exchange.run(socket, endpoint);
                 }
             }
-            return exchange(plain, endpoint, code, token);
+            return exchange.run(plain, endpoint);
         }
     }
 
@@ -73,38 +185,7 @@ public final class ConnectionProbe {
         InputStream input = socket.getInputStream();
         OutputStream output = socket.getOutputStream();
         long deadline = System.nanoTime() + TIMEOUT * 1_000_000L;
-        byte[] nonce = new byte[16];
-        RANDOM.nextBytes(nonce);
-        String key = Base64.getEncoder().encodeToString(nonce);
-        String path = endpoint.getRawPath() == null ? "" : endpoint.getRawPath();
-        while (path.endsWith("/")) path = path.substring(0, path.length() - 1);
-        path += "/ws";
-        // Credentials are sent only in the first HELLO frame, never in the URL.
-        String request = "GET " + path + " HTTP/1.1\r\nHost: " + endpoint.getRawAuthority()
-                + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key
-                + "\r\nSec-WebSocket-Version: 13\r\n\r\n";
-        output.write(request.getBytes(StandardCharsets.US_ASCII));
-        output.flush();
-        String headers = readHeaders(socket, input, deadline);
-        String[] lines = headers.split("\r\n");
-        if (!lines[0].matches("HTTP/1\\.[01] 101(?: .*)?")) {
-            if (lines[0].matches("HTTP/1\\.[01] (401|403)(?: .*)?"))
-                throw new ProbeFailure("服务器拒绝访问，请检查 Token。", 0);
-            if (lines[0].matches("HTTP/1\\.[01] 404(?: .*)?"))
-                throw new ProbeFailure("WebSocket 地址返回 404，请检查服务器地址与部署路径。", 0);
-            throw new ProbeFailure("服务器未接受 WebSocket 连接，请检查地址与反向代理配置。", 0);
-        }
-        Map<String, String> fields = new HashMap<>();
-        for (int index = 1; index < lines.length; index++) {
-            int colon = lines[index].indexOf(':');
-            if (colon > 0) fields.put(lines[index].substring(0, colon).toLowerCase(Locale.ROOT), lines[index].substring(colon + 1).trim());
-        }
-        String accept = Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-1")
-                .digest((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").getBytes(StandardCharsets.US_ASCII)));
-        if (!accept.equals(fields.get("sec-websocket-accept"))
-                || !"websocket".equalsIgnoreCase(fields.get("upgrade"))
-                || !containsToken(fields.get("connection"), "upgrade"))
-            throw new ProbeFailure("WebSocket 握手校验失败。", 0);
+        upgrade(socket, endpoint, input, output, deadline);
         if (!code.isEmpty()) {
             writeFrame(output, 1, ("{\"op\":\"phone\",\"code\":" + quote(code) + ",\"token\":"
                     + quote(token) + ",\"reliable\":true}").getBytes(StandardCharsets.UTF_8));
@@ -143,6 +224,41 @@ public final class ConnectionProbe {
         }
     }
 
+    private static void upgrade(Socket socket, URI endpoint, InputStream input, OutputStream output, long deadline) throws Exception {
+        byte[] nonce = new byte[16];
+        RANDOM.nextBytes(nonce);
+        String key = Base64.getEncoder().encodeToString(nonce);
+        String path = endpoint.getRawPath() == null ? "" : endpoint.getRawPath();
+        while (path.endsWith("/")) path = path.substring(0, path.length() - 1);
+        path += "/ws";
+        // Credentials are sent only in the first HELLO frame, never in the URL.
+        String request = "GET " + path + " HTTP/1.1\r\nHost: " + endpoint.getRawAuthority()
+                + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key
+                + "\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        output.write(request.getBytes(StandardCharsets.US_ASCII));
+        output.flush();
+        String headers = readHeaders(socket, input, deadline);
+        String[] lines = headers.split("\r\n");
+        if (!lines[0].matches("HTTP/1\\.[01] 101(?: .*)?")) {
+            if (lines[0].matches("HTTP/1\\.[01] (401|403)(?: .*)?"))
+                throw new ProbeFailure("服务器拒绝访问，请检查 Token。", 0);
+            if (lines[0].matches("HTTP/1\\.[01] 404(?: .*)?"))
+                throw new ProbeFailure("WebSocket 地址返回 404，请检查服务器地址与部署路径。", 0);
+            throw new ProbeFailure("服务器未接受 WebSocket 连接，请检查地址与反向代理配置。", 0);
+        }
+        Map<String, String> fields = new HashMap<>();
+        for (int index = 1; index < lines.length; index++) {
+            int colon = lines[index].indexOf(':');
+            if (colon > 0) fields.put(lines[index].substring(0, colon).toLowerCase(Locale.ROOT), lines[index].substring(colon + 1).trim());
+        }
+        String accept = Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-1")
+                .digest((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").getBytes(StandardCharsets.US_ASCII)));
+        if (!accept.equals(fields.get("sec-websocket-accept"))
+                || !"websocket".equalsIgnoreCase(fields.get("upgrade"))
+                || !containsToken(fields.get("connection"), "upgrade"))
+            throw new ProbeFailure("WebSocket 握手校验失败。", 0);
+    }
+
     private static boolean containsToken(String value, String expected) {
         if (value != null) for (String token : value.split(",")) if (expected.equalsIgnoreCase(token.trim())) return true;
         return false;
@@ -153,7 +269,7 @@ public final class ConnectionProbe {
         if (remaining <= 0) throw new SocketTimeoutException();
         socket.setSoTimeout((int) Math.min(TIMEOUT, remaining));
         int value = input.read();
-        if (value < 0) throw new EOFException();
+        if (value < 0) throw new ProbeFailure("服务器响应不完整，请检查中继服务及主机状态。", 0);
         return value;
     }
 
@@ -170,10 +286,13 @@ public final class ConnectionProbe {
     }
 
     private static Frame readData(Socket socket, InputStream input, OutputStream output, long deadline) throws IOException {
+        ByteArrayOutputStream fragments = null;
+        int fragmentOpcode = 0;
         while (true) {
             int first = read(socket, input, deadline), second = read(socket, input, deadline);
             int opcode = first & 15;
-            if ((first & 0xf0) != 0x80 || (second & 128) != 0)
+            boolean finalFrame = (first & 128) != 0;
+            if ((first & 0x70) != 0 || (second & 128) != 0 || (opcode >= 8 && !finalFrame))
                 throw new ProbeFailure("服务器返回不支持的 WebSocket 帧。", 0);
             long size = second & 127;
             if (size == 126) size = (read(socket, input, deadline) << 8) | read(socket, input, deadline);
@@ -197,8 +316,19 @@ public final class ConnectionProbe {
             }
             if (opcode == 9) { writeFrame(output, 10, body); continue; }
             if (opcode == 10) continue;
-            if (opcode != 1 && opcode != 2) throw new ProbeFailure("服务器返回未知 WebSocket 帧。", 0);
-            return new Frame(opcode, body);
+            if (opcode == 0) {
+                if (fragments == null || fragments.size() + body.length > MAX_FRAME)
+                    throw new ProbeFailure("Invalid WebSocket fragments", 0);
+                fragments.write(body, 0, body.length);
+                if (finalFrame) return new Frame(fragmentOpcode, fragments.toByteArray());
+                continue;
+            }
+            if ((opcode != 1 && opcode != 2) || fragments != null)
+                throw new ProbeFailure("Invalid WebSocket frame", 0);
+            if (finalFrame) return new Frame(opcode, body);
+            fragmentOpcode = opcode;
+            fragments = new ByteArrayOutputStream();
+            fragments.write(body, 0, body.length);
         }
     }
 
@@ -290,7 +420,8 @@ public final class ConnectionProbe {
                 boolean object = ch == '{';
                 char end = object ? '}' : ']';
                 Map<String, Object> values = new HashMap<>();
-                Object container = object ? values : new Object();
+                List<Object> elements = new ArrayList<>();
+                Object container = object ? values : elements;
                 space();
                 if (position < text.length() && text.charAt(position) == end) { position++; return container; }
                 while (true) {
@@ -299,7 +430,7 @@ public final class ConnectionProbe {
                     space();
                     if (object && take() != ':') throw invalid();
                     Object item = value(depth + 1);
-                    if (object) values.put(key, item);
+                    if (object) values.put(key, item); else elements.add(item);
                     space();
                     char next = take();
                     if (next == end) return container;
@@ -312,9 +443,14 @@ public final class ConnectionProbe {
             if ("true".equals(literal)) return Boolean.TRUE;
             if ("false".equals(literal)) return Boolean.FALSE;
             if ("null".equals(literal)) return null;
-            if (literal.matches("-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?")) return literal;
+            if (literal.length() <= 128 && literal.matches("-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?")) return new JsonNumber(literal);
             throw invalid();
         }
+    }
+
+    private static final class JsonNumber {
+        final String literal;
+        JsonNumber(String literal) { this.literal = literal; }
     }
 
     private static final class Frame {

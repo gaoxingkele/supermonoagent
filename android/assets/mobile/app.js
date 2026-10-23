@@ -1,4 +1,4 @@
-/* Android-only terminal document. The daemon remains the owner of every shell. */
+/* Android-only terminal document. The daemon remains the owner of every shell. SMA_ROOM_SELECTION_V1 */
 (() => {
   'use strict';
   const $=id=>document.getElementById(id),C=TerminalClient,M=MobileCore;
@@ -7,10 +7,36 @@
   try{config=JSON.parse(decodeURIComponent(location.hash.slice(1)));history.replaceState(null,'',location.pathname+location.search);}
   catch{ $('status').textContent='连接配置缺失，请返回连接设置';$('notice').hidden=false;$('notice').textContent='请从安卓应用打开此页面';return; }
   $('ui-revision').textContent='界面版本：'+(config.uiRevision||'bundled');
-  const home={id:'home',name:'默认电脑',endpoint:config.endpoint,code:config.code||''};
+  let selectedRooms=null;
+  if(config.selectedRooms!==undefined){
+    const seen=new Set();
+    if(!Array.isArray(config.selectedRooms)||!config.selectedRooms.length||config.selectedRooms.length>64||config.selectedRooms.some(room=>{
+      if(!room||typeof room.code!=='string'||!room.code||room.code.length>128||seen.has(room.code))return true;
+      seen.add(room.code);return false;
+    })){stateSelectionError();return;}
+    selectedRooms=config.selectedRooms.map(room=>({code:room.code,machine:String(room.machine||'').slice(0,40),project:String(room.project||'').slice(0,40)}));
+  }
+  function stateSelectionError(){$('status').textContent='房间选择无效，请返回连接设置重新测试';$('notice').hidden=false;$('notice').textContent='请至少选择一个可用房间。';}
+  const home={id:'home',name:selectedRooms?.[0].machine||'默认电脑',endpoint:config.endpoint,code:selectedRooms?selectedRooms[0].code:config.code||''};
+  const selectedRoomCodes=selectedRooms?new Set(selectedRooms.map(room=>room.code)):null;
+  const selectedRoomEndpoint=selectedRooms?safeEndpoint(home):'';
+  if(selectedRooms&&!selectedRoomEndpoint){stateSelectionError();return;}
   const hostTokens=new Map([['home',config.token||'']]);
-  let hosts=[],hostId='home',machine='',project='';
+  let hosts=[],hiddenHosts=[],hostId='home',machine='',project='';
   try{const saved=JSON.parse(localStorage.getItem('sma.mobile.hosts')||'[]');if(Array.isArray(saved))hosts=saved.filter(h=>h&&typeof h.id==='string'&&h.id!=='home'&&typeof h.endpoint==='string').slice(0,30).map(h=>({id:h.id,name:String(h.name||'电脑').slice(0,60),endpoint:h.endpoint,code:String(h.code||'')}));}catch{}
+  if(selectedRooms){
+    // Native selection shadows this relay's saved profiles for this connection,
+    // while retaining their metadata unchanged for a later ordinary connection.
+    hiddenHosts=hosts.filter(h=>safeEndpoint(h)===selectedRoomEndpoint);
+    hosts=hosts.filter(h=>safeEndpoint(h)!==selectedRoomEndpoint);
+    const signature=JSON.stringify([[home.id,home.code,hostTokens.get(home.id)]]);
+    for(const room of selectedRooms.slice(1)){
+      const id='discovered:'+JSON.stringify([selectedRoomEndpoint,room.code]);
+      hosts.push({id,name:room.machine||room.code,endpoint:home.endpoint,code:room.code,autoDirectory:selectedRoomEndpoint,discoveryScope:signature});
+      hostTokens.set(id,config.token||'');
+    }
+  }
+  function roomAllowed(h){return !selectedRoomCodes||safeEndpoint(h)!==selectedRoomEndpoint||selectedRoomCodes.has(h.code);}
   const connections=new Map(),watchers=new Map();
   const sessionKey=(id=active,hid=hostId)=>JSON.stringify([hid,id]);
   const targetKey=h=>JSON.stringify([new URL(h.endpoint).toString().replace(/\/+$/,''),h.code||'']);
@@ -65,9 +91,45 @@
   let createPending=false;
   const modes=new Map(),drafts=new Map();
   const metrics={connections:0,frames:0,bytes:0,writes:0,fallbacks:0};
-  const notice=text=>{$('notice').textContent=text;$('notice').hidden=!text;};
+  let replayNoticeTimer=null,pendingRefresh=null,refreshFeedbackTimer=null;
+  const replayFeeds=new WeakMap();
+  const notice=text=>{clearTimeout(replayNoticeTimer);replayNoticeTimer=null;$('notice').textContent=text;$('notice').hidden=!text;};
+  function replayNotice(text){notice(text);if(text)replayNoticeTimer=setTimeout(()=>{replayNoticeTimer=null;if($('notice').textContent===text){$('notice').textContent='';$('notice').hidden=true;}},3000);}
+  function cancelRefresh(){clearTimeout(refreshFeedbackTimer);refreshFeedbackTimer=null;if(!pendingRefresh){$('refresh-screen').textContent='\u5237\u65b0';return;}clearTimeout(pendingRefresh.timer);pendingRefresh=null;$('refresh-screen').textContent='\u5237\u65b0';$('refresh-screen').removeAttribute('aria-busy');}
+  function refreshScreen(){
+    if(pendingRefresh||!term||!active||!connected||paused)return;
+    const c=selected(),buffer=term.buffer.active,screen=$('screen');
+    const request={host:c,generation:c.generation,sid:active,terminal:term,distance:buffer.baseY-buffer.viewportY,left:screen.scrollLeft,top:screen.scrollTop,bottom:localView().bottom};
+    pendingRefresh=request;
+    let sent=false;
+    if(c.capabilities?.snapshot_refresh===true)sent=sendHost(c,16,{sessions:[active],refresh:true});
+    else{
+      const session=inventory.find(item=>item.id===active);
+      // Legacy selection only changes this client's read pointer. It never
+      // unsubscribes output, releases a size lease, or sends terminal input.
+      if(session?.window&&session.window===c.serverWindow)sent=sendHost(c,14,{session:active});
+      else if(session?.window){sent=sendHost(c,13,{window:session.window});if(sent&&session.windowFocused!==active)sent=sendHost(c,14,{session:active});}
+    }
+    if(!sent){cancelRefresh();return;}
+    $('refresh-screen').textContent='\u5237\u65b0\u4e2d\u2026';$('refresh-screen').setAttribute('aria-busy','true');
+    request.timer=setTimeout(()=>{if(pendingRefresh!==request)return;cancelRefresh();notice('\u5237\u65b0\u8d85\u65f6\uff0c\u8bf7\u68c0\u67e5\u8fde\u63a5\u540e\u91cd\u8bd5');},6000);
+    term.refresh(0,term.rows-1);
+  }
+  function updateTerminalStatus(){
+    const strip=$('terminal-status');if(!strip)return;
+    let text='';
+    if(term&&C.agentModeFromSession(inventory.find(item=>item.id===active)||{},inventory.find(item=>item.id===active)?.title||'')==='codex'){
+      const buffer=term.buffer.active,lines=[];
+      for(let row=Math.max(0,term.rows-4);row<term.rows;row++)lines.push(buffer.getLine(buffer.baseY+row)?.translateToString(true)||'');
+      const footer=lines.filter(line=>/(?:context|\u4e0a\u4e0b\u6587|weekly|week\s+limit|\u5468\u989d\u5ea6|\u6bcf\u5468|\u5468\u9650\u989d)/i.test(line)).join(' ').replace(/\s+/g,' ').trim();
+      const cell=term._core?._renderService?.dimensions.css.cell;
+      if(cell&&term.cols*cell.width>$('screen').clientWidth&&/(?:context|\u4e0a\u4e0b\u6587)/i.test(footer)&&/(?:weekly|week\s+limit|\u5468\u989d\u5ea6|\u6bcf\u5468|\u5468\u9650\u989d)/i.test(footer))text=footer;
+    }
+    if(strip.textContent!==text)strip.textContent=text;
+    if(strip.hidden!==!text)strip.hidden=!text;
+  }
   const state=text=>{$('status').textContent=text;};
-  function saveHosts(){try{localStorage.setItem('sma.mobile.hosts',JSON.stringify(hosts.filter(h=>!h.autoDirectory)));return true;}catch{notice('电脑列表无法保存；请检查设备存储空间');return false;}}
+  function saveHosts(){try{localStorage.setItem('sma.mobile.hosts',JSON.stringify([...hiddenHosts,...hosts.filter(h=>!h.autoDirectory)]));return true;}catch{notice('电脑列表无法保存；请检查设备存储空间');return false;}}
   function selected(){return connection([home,...hosts].find(h=>h.id===hostId)||home);}
   function loadSelected(){const c=selected();connected=c.connected;inventory=c.inventory;controls=c.controls;machine=c.machine;project=c.project;createPending=c.createPending;state(c.status);}
   function renderHosts(){
@@ -99,6 +161,7 @@
   function sendHost(c,op,value){if(!c.connected||paused||c.socket?.readyState!==1)return false;c.socket.send(C.pack(op,value instanceof Uint8Array?value:encoder.encode(JSON.stringify(value))));return true;}
   function send(op,value){return sendHost(selected(),op,value);}
   function stopSocket(c=selected()){
+    if(pendingRefresh?.host===c)cancelRefresh();
     c.generation++;clearTimeout(c.retryTimer);clearInterval(c.pingTimer);c.retryTimer=c.pingTimer=null;
     if(c.socket){c.socket.onclose=null;c.socket.close();c.socket=null;}c.connected=false;c.subscription='';
     if(c===selected()){composerSubmit.cancel();connected=false;ready=false;pendingKeys=[];composing=false;setCtrl(false);if(term)term.options.disableStdin=true;}
@@ -112,6 +175,7 @@
   }
   function connect(c=selected()){
     if(paused)return;stopSocket(c);const gen=c.generation;c.lastPing=0;hostState(c,'正在连接');
+    if(!roomAllowed(c.host)){hostState(c,'此房间未勾选，请返回连接设置重新选择');return;}
     if(c===selected()&&active){const sid=active;drafts.set(sessionKey(),$('draft').value);disposeTerminal();active='';activate(sid);}
     let url;try{url=endpoint(c.host);}catch(e){hostState(c,e.message);return;}
     const ws=c.socket=new WebSocket(url);ws.binaryType='arraybuffer';metrics.connections++;
@@ -150,6 +214,7 @@
     const discovery=message.capabilities?.token_discovery===true,wanted=new Set();
     for(const entry of message.hosts.slice(0,64)){
       if(!entry||typeof entry.code!=='string'||!entry.code||entry.code.length>128)continue;
+      if(selectedRoomCodes&&w.url===selectedRoomEndpoint&&!selectedRoomCodes.has(entry.code))continue;
       const known=w.known.filter(h=>h.code===entry.code);
       for(const h of known){const c=connection(h);c.directoryOnline=entry.online===true;if(entry.online===true){c.machine=String(entry.machine||'');c.project=String(entry.project||'');}}
       if(known.length||!discovery||entry.online!==true||!Number.isInteger(entry.token_index)||entry.token_index<0||entry.token_index>=w.tokens.length)continue;
@@ -176,7 +241,7 @@
   function closeWatcher(w){clearTimeout(w.timer);clearTimeout(w.refreshTimer);w.socket.onclose=null;w.socket.close();}
   function refreshWatchers(){
     const groups=new Map();if(!paused)for(const h of [home,...hosts]){
-      if(h.autoDirectory||!h.code||!hostTokens.get(h.id))continue;
+      if(h.autoDirectory||!h.code||!hostTokens.get(h.id)||!roomAllowed(h))continue;
       const url=safeEndpoint(h);if(!url)continue;
       if(!groups.has(url))groups.set(url,[]);groups.get(url).push(h);
     }
@@ -197,10 +262,27 @@
   }
   function consumeFeed(sid,bytes,replay){
     if(sid!==active||!writer||!controls[sid])return;
+    const current=term,c=selected(),generation=c.generation;
+    const refresh=replay&&pendingRefresh?.host===c&&pendingRefresh.sid===sid&&pendingRefresh.generation===generation&&pendingRefresh.terminal===current?pendingRefresh:null;
+    const previous=replayFeeds.get(current);
+    const identical=!!refresh&&previous?.length===bytes.length&&bytes.every((value,index)=>value===previous[index]);
+    if(replay)replayFeeds.set(current,bytes.length<=262144?bytes.slice():null);
+    else if(previous&&previous.length+bytes.length<=262144){const combined=new Uint8Array(previous.length+bytes.length);combined.set(previous);combined.set(bytes,previous.length);replayFeeds.set(current,combined);}
+    else replayFeeds.set(current,null);
     if(replay){replaying++;ready=false;}
-    writer.push(replay?C.snapshotBytes(bytes,sid,selected().capabilities?.snapshot_sgr===true):bytes,replay,()=>{if(sid!==active)return;
-      if(replay){replaying=Math.max(0,replaying-1);ready=connected;term.options.disableStdin=!ready;term.scrollToBottom();localBottom();notice(bytes.length?'有限历史已恢复；全屏程序可能需要自行刷新':'');}
-      historyStatus();scheduleFit();
+    // A byte-identical authorized replay is already rendered. Avoid resetting
+    // its scrollback while still acknowledging the server snapshot in order.
+    writer.push(identical?new Uint8Array():replay?C.snapshotBytes(bytes,sid,c.capabilities?.snapshot_sgr===true):bytes,replay&&!identical,()=>{
+      if(sid!==active||term!==current||selected()!==c||c.generation!==generation)return;
+      if(replay){
+        replaying=Math.max(0,replaying-1);ready=connected;term.options.disableStdin=!ready;
+        if(refresh&&pendingRefresh===refresh){
+          const buffer=term.buffer.active;if(buffer.type==='normal')term.scrollToLine(Math.max(0,buffer.baseY-refresh.distance));
+          localView().bottom=refresh.bottom;const screen=$('screen');screen.scrollLeft=refresh.left;screen.scrollTop=refresh.bottom?screen.scrollHeight:refresh.top;
+          cancelRefresh();$('refresh-screen').textContent='\u5df2\u5237\u65b0';refreshFeedbackTimer=setTimeout(()=>{if(term===current&&!pendingRefresh)$('refresh-screen').textContent='\u5237\u65b0';},3000);
+        }else{term.scrollToBottom();localBottom();replayNotice(bytes.length?'\u6709\u9650\u5386\u53f2\u5df2\u6062\u590d\uff1b\u5168\u5c4f\u7a0b\u5e8f\u53ef\u80fd\u9700\u8981\u81ea\u884c\u5237\u65b0':'');}
+      }
+      updateTerminalStatus();historyStatus();scheduleFit();
     },controls[sid]);
   }
   function sync(info,c=selected()){
@@ -210,7 +292,8 @@
     if(info.controls)c.controls=info.controls;
     if(info.machine!==undefined)c.machine=String(info.machine||'');if(info.project!==undefined)c.project=String(info.project||'');
     if(info.groups)c.groups=info.groups;
-    if(info.windows)c.inventory=info.windows.flatMap(w=>(w.sessions||[]).map(s=>({...s,learnedAgent:c.agents.get(s.id)||'',title:w.title,window:w.id,group:w.group})));
+    if(typeof info.selected==='string')c.serverWindow=info.selected;if(typeof info.session==='string')c.serverSession=info.session;
+    if(info.windows)c.inventory=info.windows.flatMap(w=>(w.sessions||[]).map(s=>({...s,learnedAgent:c.agents.get(s.id)||'',title:w.title,window:w.id,windowFocused:w.focused,group:w.group})));
     if(info.windows){const ids=new Set(c.inventory.map(s=>s.id));for(const cache of [c.activity,c.agents])for(const sid of cache.keys())if(!ids.has(sid))cache.delete(sid);}
     if(c!==selected()){renderHosts();renderList();return;}
     loadSelected();renderHosts();renderList();
@@ -248,6 +331,7 @@
     updateSessionDots();
   }
   function disposeTerminal(){
+    cancelRefresh();const strip=$('terminal-status');if(strip){strip.textContent='';strip.hidden=true;}
     agentModeGeneration++;agentModeRequest=null;$('agent-mode').disabled=true;
     delete $('screen').dataset.agentMode;delete $('screen').dataset.agentPreference;
     composerSubmit.cancel();
@@ -285,7 +369,7 @@
     refreshAgentMode(true);
     writer=M.createWriter({write:(bytes,reset,done,grid)=>{if(term!==current)return;
       if(grid){const size=C.terminalSize(grid.cols,grid.rows);if(current.cols!==size.cols||current.rows!==size.rows)current.resize(size.cols,size.rows);}
-      if(reset)current.reset();displayGrid();metrics.writes++;current.write(bytes,()=>{done();if(!reset&&bytes.length&&term===current)composerSubmit.output();});
+      if(reset)current.reset();displayGrid();metrics.writes++;current.write(bytes,()=>{done();if(term===current){updateTerminalStatus();if(!reset&&bytes.length)composerSubmit.output();}});
     },schedule:cb=>requestAnimationFrame(cb),cancel:id=>cancelAnimationFrame(id),onOverflow:()=>{notice('输出积压超过上限，已暂停并请求重新连接');M.closeForRecovery(selected().socket,'手机输出积压');}});
     term.onData(text=>{text=C.terminalInput(text,replaying>0);if(ctrl&&text.length===1){text=M.controlKey(text);setCtrl(false);}input(text);});
     term.textarea.addEventListener('compositionstart',()=>composing=true);
@@ -456,10 +540,10 @@
   for(const [id,action] of Object.entries(historyActions)){$(id).onpointerdown=e=>e.preventDefault();$(id).onclick=()=>viewHistory(action);}
   $('bottom').onclick=()=>viewHistory(historyActions['history-bottom']);
   $('refresh-screen').onpointerdown=e=>e.preventDefault();
-  $('refresh-screen').onclick=()=>{if(!term)return;term.refresh(0,term.rows-1);displayGrid();historyStatus();};
+  $('refresh-screen').onclick=refreshScreen;
   $('copy').onclick=()=>{if(!term)return;let text=term.getSelection();if(!text){const b=term.buffer.active;text=Array.from({length:term.rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)||'').join('\n');}
     $('copy-text').value=text;$('settings-dialog').close();$('copy-dialog').showModal();$('copy-text').focus();$('copy-text').select();};$('copy-close').onclick=()=>$('copy-dialog').close();
-  new ResizeObserver(scheduleFit).observe($('screen'));window.visualViewport?.addEventListener('resize',scheduleFit);
+  new ResizeObserver(()=>{scheduleFit();updateTerminalStatus();}).observe($('screen'));window.visualViewport?.addEventListener('resize',scheduleFit);
   function pause(){if(paused)return;paused=true;clearInterval(activityTimer);activityTimer=null;if(active)drafts.set(sessionKey(),$('draft').value);for(const c of connections.values())stopSocket(c);refreshWatchers();writer?.dispose();if(fitFrame!==null)cancelAnimationFrame(fitFrame);fitFrame=null;if(scrollFrame!==null)cancelAnimationFrame(scrollFrame);scrollFrame=null;state('后台已暂停连接；服务器终端继续运行');}
   function resume(){if(!paused)return;paused=false;startActivityTimer();for(const c of connections.values())connect(c);refreshWatchers();}
   document.addEventListener('visibilitychange',()=>document.hidden?pause():resume());
@@ -495,7 +579,7 @@
     if(active)$('draft').value=drafts.get(sessionKey())||'';
     restoreSelected();
   }
-  window.MobileTerminal={pause,resume,captureUIState,restoreUIState,prepareUIReload,cancelUIReload,openNotification,reconnect:()=>{if(paused)resume();else{connect();refreshWatchers();}},chooseHost,get hosts(){return [...connections.values()].map(c=>({id:c.host.id,connected:c.connected,status:c.status,sessions:c.inventory.map(s=>s.id),subscription:c.subscription}));},get terminal(){return term;},get active(){return active;},get activeKey(){return sessionKey();},get connected(){return connected;},get ready(){return ready;},get controls(){return controls[active]||null;},revision:config.uiRevision||'bundled',metrics};
+  window.MobileTerminal={roomSelectionVersion:1,pause,resume,captureUIState,restoreUIState,prepareUIReload,cancelUIReload,openNotification,reconnect:()=>{if(paused)resume();else{connect();refreshWatchers();}},chooseHost,get hosts(){return [...connections.values()].map(c=>({id:c.host.id,connected:c.connected,status:c.status,sessions:c.inventory.map(s=>s.id),subscription:c.subscription}));},get terminal(){return term;},get active(){return active;},get activeKey(){return sessionKey();},get connected(){return connected;},get ready(){return ready;},get controls(){return controls[active]||null;},revision:config.uiRevision||'bundled',metrics};
   for(const h of [home,...hosts])connection(h);
   if(document.hidden){paused=true;state('Background UI paused');renderHosts();renderList();}
   else{startActivityTimer();for(const c of connections.values())connect(c);refreshWatchers();}

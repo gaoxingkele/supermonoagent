@@ -54,3 +54,5 @@ dialog input,dialog select{min-width:0;max-width:100%}
 /* A history hint must not resize the shared PTY when this phone owns it. */
 #resume{position:absolute;z-index:3;top:58px;right:8px;border:1px solid var(--line);border-radius:7px;box-shadow:0 3px 12px #0005}
 @media(max-height:430px){#resume{top:45px}}
+
+#terminal-status{flex:none;max-height:5.6em;overflow:auto;white-space:normal;overflow-wrap:anywhere;padding:5px 8px;background:#202630;color:#edf2ff;border-top:1px solid #465166;font:12px/1.4 system-ui,sans-serif;}

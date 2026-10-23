@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
@@ -74,7 +75,7 @@ def revision() -> str:
     digest = hashlib.sha256(("frontend-v2-updates" + web.PAGE + PAGE).encode())
     for name, _content_type in web.STATIC.values():
         digest.update(web.static_text(name).encode())
-    for path in [Path(__file__), STATIC_ROOT / "native-updates.js", STATIC_ROOT / "update-trust.json", Path(__file__).with_name("ui_updates.py")]:
+    for path in [Path(__file__), STATIC_ROOT / "native-updates.js", STATIC_ROOT / "update-trust.json", Path(__file__).with_name("ui_updates.py"), Path(__file__).with_name("token_config.py")]:
         if path.exists():
             digest.update(path.read_bytes())
     return digest.hexdigest()[:16]
@@ -82,7 +83,8 @@ def revision() -> str:
 
 class Frontend:
     def __init__(self, backend: str, theme_file: Path | None = None, *, update_root: Path | None = None,
-                 update_feed: str | None = None, update_trust: dict | None = None):
+                 update_feed: str | None = None, update_trust: dict | None = None,
+                 default_token_file: Path | None = None, owner_token_file: Path | None = None):
         parsed = urlsplit(backend)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
             raise ValueError("The local frontend requires a loopback HTTP daemon URL")
@@ -90,6 +92,9 @@ class Frontend:
         self.version = revision()
         key = hashlib.sha256(self.backend.encode()).hexdigest()[:12]
         self.theme_file = theme_file or Path.home() / ".supermonoagent" / f"frontend-themes-{key}.json"
+        self.default_token_file = default_token_file
+        self.token_config_state = self.theme_file.parent
+        self.owner_token_file = owner_token_file or self.token_config_state / "token"
         from .console_snapshot import FooterRecovery
         self.footer_recovery = FooterRecovery(self.theme_file.parent, self.backend)
         try:
@@ -402,6 +407,56 @@ class Frontend:
         return {**state, "windows": [{**window, "tab_theme": self.themes.get(window["id"], window.get("tab_theme", ""))}
                                      for window in state.get("windows", [])]}
 
+    def default_token_state(self, state, authenticated_token, *, owner_authenticated=None):
+        """Only the authenticated local owner may read this separate secret."""
+        from .token_config import TokenConfigurationError, read_default_token
+        service = state.get("service") if isinstance(state.get("service"), dict) else {}
+        if "owner_authenticated" in service:
+            owner_authenticated = service["owner_authenticated"] is True
+        elif owner_authenticated is None:
+            try:
+                owner = read_default_token(self.owner_token_file)
+            except TokenConfigurationError:
+                return state
+            owner_authenticated = bool(owner) and hmac.compare_digest(authenticated_token.encode("utf-8"), owner.encode("utf-8"))
+        if owner_authenticated is not True:
+            return state
+        try:
+            token = read_default_token(self.default_token_file, state_dir=self.token_config_state)
+        except TokenConfigurationError as exc:
+            return {**state, "service": {**service, "default_relay_token": "", "default_relay_token_error": str(exc),
+                                         "default_relay_token_source": "token.txt"}}
+        return {**state, "service": {**service, "default_relay_token": token,
+                                     "default_relay_token_source": "token.txt"}}
+
+    def _legacy_owner_authenticated(self, authenticated_token):
+        """Probe only the configured loopback backend, without redirects/proxies."""
+        from .token_config import TokenConfigurationError, read_default_token
+        class NoRedirect(HTTPRedirectHandler):
+            def redirect_request(self, request, response, code, message, headers, new_url):
+                return None
+        try:
+            opener = build_opener(ProxyHandler({}), NoRedirect())
+            with opener.open(self.backend + "/health", timeout=2) as response:
+                raw = response.read(16385)
+            if len(raw) > 16384:
+                raise ValueError("Oversized loopback health response")
+            status = json.loads(raw)
+            if not isinstance(status, dict) or status.get("ok") is not True:
+                raise ValueError("Unhealthy loopback backend")
+            if "default_token" in status:
+                owner = status["default_token"]
+                # A present owner field is authoritative, including malformed/empty denial.
+                return (isinstance(owner, str) and 0 < len(owner) <= 4096
+                        and hmac.compare_digest(authenticated_token.encode("utf-8"), owner.encode("utf-8")))
+        except (OSError, ValueError, UnicodeError):
+            pass
+        try:
+            owner = read_default_token(self.owner_token_file)
+        except TokenConfigurationError:
+            return False
+        return bool(owner) and hmac.compare_digest(authenticated_token.encode("utf-8"), owner.encode("utf-8"))
+
     async def handler(self, client):
         if client.request.path == "/__updates/ws":
             await self.update_handler(client)
@@ -451,14 +506,24 @@ class Frontend:
 
                 async def receive():
                     recovery_waiting = set()
+                    owner_checked = False
+                    owner_authenticated = False
                     async for message in upstream:
                         op = None
                         if isinstance(message, bytes):
                             op, payload = unpack(message)
                             if op in {2, 7}:
                                 state = unpack_json(payload)
+                                service = state.get("service") if isinstance(state.get("service"), dict) else {}
+                                if "owner_authenticated" in service:
+                                    owner_checked = True
+                                    owner_authenticated = service["owner_authenticated"] is True
+                                elif op == 2 and not owner_checked:
+                                    # Catalog-only updates cannot establish a legacy owner.
+                                    owner_authenticated = await asyncio.to_thread(self._legacy_owner_authenticated, token)
+                                    owner_checked = True
                                 self.views[client] = state
-                                message = pack_json(op, self.themed_state(state))
+                                message = pack_json(op, self.default_token_state(self.themed_state(state), token, owner_authenticated=owner_authenticated))
                             elif op == 8:
                                 sid, separator, _raw = payload.partition(b'\0')
                                 if separator and len(recovery_waiting) < 64:

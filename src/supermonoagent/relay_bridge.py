@@ -72,6 +72,8 @@ class RelayBridge:
         self.backend_connected = False
         self.relay_connected = False
         self.relay_endpoint = ""
+        self._native_relay_endpoints = frozenset()
+        self._backend_changed = asyncio.Event()
         self.phones: dict[int, Phone] = {}
         self.footer_recovery = None
 
@@ -81,7 +83,39 @@ class RelayBridge:
     def health(self) -> dict:
         return {"ok": True, "role": "relay-bridge", "backend_connected": self.backend_connected,
                 "relay_connected": self.relay_connected, "phones": len(self.phones),
+                "direct_relay_managed": self.direct_relay_managed,
                 "backend": self.backend, "relay": self.relay_endpoint}
+
+    @staticmethod
+    def _endpoint_key(value):
+        parts = urlsplit(socket_url(value))
+        return parts.scheme, parts.hostname, parts.port or (443 if parts.scheme == "wss" else 80)
+
+    @property
+    def direct_relay_managed(self):
+        return bool(self.relay_endpoint) and self._endpoint_key(self.relay_endpoint) in self._native_relay_endpoints
+
+    def _backend_state(self, body, *, greeting=False):
+        endpoints = self._native_relay_endpoints
+        service = body.get("service")
+        relays = service.get("relays") if isinstance(service, dict) else None
+        if isinstance(relays, list):
+            configured = set()
+            for target in relays:
+                if not isinstance(target, dict) or not isinstance(target.get("url"), str):
+                    continue
+                try:
+                    configured.add(self._endpoint_key(target["url"]))
+                except ValueError:
+                    continue
+            endpoints = frozenset(configured)
+        elif greeting:
+            endpoints = frozenset()
+        changed = not self.backend_connected or endpoints != self._native_relay_endpoints
+        self._native_relay_endpoints = endpoints
+        self.backend_connected = True
+        if changed:
+            self._backend_changed.set()
 
     def _local_socket(self):
         return connect(self.backend, additional_headers={"Authorization": "Bearer " + self.token},
@@ -93,20 +127,25 @@ class RelayBridge:
             try:
                 async with self._local_socket() as ws:
                     await ws.send(pack_json(OP_HELLO, {"token": self.token, "multiplex": True, "reliable": True}))
+                    authenticated = False
                     async for message in ws:
                         if not isinstance(message, bytes):
                             continue
                         op, payload = unpack(message)
                         if op in {OP_HELLO_OK, OP_SESSIONS}:
+                            if not authenticated and op != OP_HELLO_OK:
+                                raise ValueError("Backend HELLO acknowledgement required")
                             body = unpack_json(payload)
+                            authenticated = True
                             self.machine = str(body.get("machine") or self.machine)[:40]
                             self.project = str(body.get("project") or self.project)[:40]
-                            self.backend_connected = True
+                            self._backend_state(body, greeting=op == OP_HELLO_OK)
             except Exception:
                 # Transport exceptions can include URLs/headers. Never log secrets.
                 pass
             finally:
                 self.backend_connected = False
+                self._backend_changed.set()
             await asyncio.sleep(self.retry_s)
 
     def _validate_phone_frame(self, frame: bytes, first: bool) -> None:
@@ -253,13 +292,32 @@ class RelayBridge:
         if not code or len(code) > 256:
             raise ValueError("An existing room code is required")
         while True:
+            self._backend_changed.clear()
+            if not self.backend_connected or self.direct_relay_managed:
+                await self._backend_changed.wait()
+                continue
+            uplink = asyncio.create_task(self._relay_once(endpoint, code))
             try:
-                await self._relay_once(endpoint, code)
+                while not uplink.done():
+                    self._backend_changed.clear()
+                    if not self.backend_connected or self.direct_relay_managed:
+                        break
+                    changed = asyncio.create_task(self._backend_changed.wait())
+                    try:
+                        await asyncio.wait((uplink, changed), return_when=asyncio.FIRST_COMPLETED)
+                    finally:
+                        changed.cancel()
+                        await asyncio.gather(changed, return_exceptions=True)
+                if uplink.done():
+                    uplink.result()
             except Exception:
                 pass
             finally:
+                uplink.cancel()
+                await asyncio.gather(uplink, return_exceptions=True)
                 self.relay_connected = False
-            await asyncio.sleep(self.retry_s)
+            if self.backend_connected and not self.direct_relay_managed:
+                await asyncio.sleep(self.retry_s)
 
     async def serve_http(self, connection, request):
         if not request_allowed(connection, request):
@@ -361,13 +419,7 @@ async def run(args):
     async with serve(reject, "127.0.0.1", args.port, process_request=bridge.serve_http, max_size=MAX_SIZE):
         observer = asyncio.create_task(bridge.observe_backend())
         try:
-            # Prefer the existing daemon's identity in the first room announcement.
-            try:
-                async with asyncio.timeout(5):
-                    while not bridge.backend_connected:
-                        await asyncio.sleep(.05)
-            except TimeoutError:
-                pass
+            # relay() waits for authenticated metadata and defers to a native uplink.
             await bridge.relay(args.relay, code)
         finally:
             observer.cancel()

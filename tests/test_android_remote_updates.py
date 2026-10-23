@@ -360,7 +360,8 @@ def test_native_healthy_navigation_reuses_webview_and_separates_crash_recovery()
     assert 'if(!updating||terminal==null){destroyTerminal();root.removeAllViews();terminal=new WebView(this);' in load
     assert load.count('new WebView(this)')==1
     assert 'terminal.setWebViewClient(new WebViewClient()' in load and 'terminal.loadUrl(base+"/mobile/index.html?ui_revision="' in load
-    assert 'retireFailedRenderer();openTerminal(true)' in source
+    assert 'retireFailedRenderer(failed,generation)' in source
+    assert 'rendererRecovery.rendererGone(web,generation)' in source
     assert 'getWebViewRenderProcess()' in source and 'process.terminate()' in source
     assert 'addJavascriptInterface(' not in source
     assert 'ui-bundled-only' in source and 'First save the old developer UI drafts from EVERY window' in source

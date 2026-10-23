@@ -175,9 +175,9 @@ public final class RemoteUpdates {
             Candidate candidate=observe(envelope,now);Map<String,byte[]> files=unpack(candidate,archive);
             if(candidate.revision.equals(active())&&Objects.equals(candidate.sequence,state.get("active_sequence")))return;
             require(available(candidate),"Downgrade/quarantined release");
-            String previous=active();if(previous==null){previous="backup-"+UUID.randomUUID();writeSnapshot(previous,effective,null);}
+            String previous=active();Object previousSequence=previous==null?null:state.get("active_sequence");if(previous==null){previous="backup-"+UUID.randomUUID();writeSnapshot(previous,effective,null);}
             else snapshot(previous);
-            writeSnapshot(candidate.revision,files,envelope);state.put("previous",previous);state.put("previous_sequence",state.get("active_sequence"));state.put("active",candidate.revision);state.put("active_sequence",candidate.sequence);state.put("install_generation",UUID.randomUUID().toString());state.put("pending",true);state.remove("ticket");save();
+            writeSnapshot(candidate.revision,files,envelope);state.put("previous",previous);if(previousSequence instanceof Long)state.put("previous_sequence",previousSequence);else state.remove("previous_sequence");state.put("active",candidate.revision);state.put("active_sequence",candidate.sequence);state.put("install_generation",UUID.randomUUID().toString());state.put("pending",true);state.remove("ticket");save();
         }}
         public synchronized Map<String,byte[]> snapshot(String revision) throws Exception {
             if(revision==null)return null;require(revision.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,79}")&&!revision.contains(".."),"Invalid local revision");
@@ -197,11 +197,14 @@ public final class RemoteUpdates {
         }}
         public synchronized boolean fail(String ticket) throws Exception {synchronized(lock){reload();if(!Boolean.TRUE.equals(state.get("pending"))||!Objects.equals(state.get("ticket"),ticket))return false;rollback();return true;}}
         /** Explicit native user recovery. Keep signed snapshots/high water and all USB files. */
-        public synchronized void useBundled() throws Exception {synchronized(lock){reload();state.remove("active");state.remove("previous");state.remove("active_sequence");state.remove("previous_sequence");state.remove("ticket");state.put("pending",false);save();}}
+        public synchronized void useBundled() throws Exception {synchronized(lock){reload();state.remove("active");state.remove("previous");state.remove("active_sequence");state.remove("previous_sequence");state.remove("ticket");state.remove("boot_deadline");state.remove("install_generation");state.put("pending",false);save();}}
         public synchronized void rollback() throws Exception {synchronized(lock){reload();
             String failed=active(),previous=(String)state.get("previous");if(previous!=null){try{snapshot(previous);}catch(Exception corrupt){previous=null;}}
-            if(failed!=null&&state.get("active_sequence") instanceof Long&&(!(state.get("failed_sequence") instanceof Long)||(Long)state.get("active_sequence")>(Long)state.get("failed_sequence"))){state.put("failed",failed);state.put("failed_sequence",state.get("active_sequence"));}if(previous==null)state.remove("active");else state.put("active",previous);state.put("active_sequence",state.get("previous_sequence"));
-            state.remove("previous");state.remove("ticket");state.put("pending",false);save();
+            if(failed!=null&&state.get("active_sequence") instanceof Long&&(!(state.get("failed_sequence") instanceof Long)||(Long)state.get("active_sequence")>(Long)state.get("failed_sequence"))){state.put("failed",failed);state.put("failed_sequence",state.get("active_sequence"));}
+            Object previousSequence=state.get("previous_sequence");
+            if(previous==null){state.remove("active");state.remove("active_sequence");}
+            else{state.put("active",previous);if(previousSequence instanceof Long)state.put("active_sequence",previousSequence);else state.remove("active_sequence");}
+            state.remove("previous");state.remove("previous_sequence");state.remove("ticket");state.remove("boot_deadline");state.remove("install_generation");state.put("pending",false);save();
         }}
     }
     /** Small bounded JSON reader/writer shared by Android and the real JVM harness. */

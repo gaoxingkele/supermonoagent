@@ -1,5 +1,38 @@
 # 修改 TODO
 
+## 当前状态摘要（2026-10-24）
+
+本节覆盖下面的历史快照；全目标仍未通过完整完成审计。最新双端构建为 **0.2.30**，版本目录不自动等于正式验收：Android 0.2.24（code26）已有本轮真机基础验证，Windows 0.2.28 已完成默认 Token 的实际打包 UI 定向验证；随后观察到外部安装 Android 0.2.27。产物索引见 `dist/README.md`。
+
+| 事项 | 当前结果 | 权威依据与未关闭边界 |
+| --- | --- | --- |
+| 授权方式 | [x] 按用户最新选择使用 Token＋房间号 | 用户已取消统一邮箱账号交付要求；保留的统一账号高级源码不再构成生产开户或邮箱绑定交付门槛。 |
+| 默认 Token | [x] 已接入用户指定文件 | 实际文件为 `dist/windows/0.2.24/token.txt`；私有 `~/.supermonoagent/token-source.json` 只保存路径。实际 6769 后台和 Windows 0.2.28 打包 UI 已验证同一默认凭据鉴权、显式房间范围及跨目标清除预填，测试守卫下输入/resize 发送均为 0。证据：`.omx/artifacts/token-room-provision/{runtime-source.json,live-owner-wire.json,packaged-default-ui.json}`；不记录 Token 内容。 |
+| 翻屏与历史提示 | [x] 已完成针对性修复和验证 | 修复重连后按钮仍捕获旧 generation 的闭包，并在 Windows 保留 CSI 3J 清理前的历史；普通历史在本地翻页。确认实际运行的 Codex 备用屏才发送 PageUp/PageDown/Ctrl+Home/Ctrl+End，手动选择配色不当作运行身份；其他无本地历史的全屏程序给出明确提示，不猜按键。提示已合并到操作栏。依据：`tests/test_workspace_paging.py`、`tests/test_codex_owned_paging.py`、`.omx/artifacts/codex-owned-paging/real-codex.json`（真实 Codex 0.164.0、隔离环境、四键各一次、无模型或用户 PTY 输入）。 |
+| 生产加密与发布 | [x] HTTPS/WSS 和签名更新已部署 | 不再以“缺 SSH/TLS”作为当前阻塞。公网证书、WSS 和更新包回读验签见 `.omx/artifacts/wss-migration/public-tls.json`、`.omx/artifacts/ui-menu-profiles/publication-verified.json`；续期 timer 的新鲜只读证据为 `.omx/artifacts/goal-completion-audit/cert-renew-timer.json`（active/enabled、service success、exit0）。 |
+| Android 实机基础验证 | [x] API2 0.2.24 安装及定向验证已完成 | 保留数据安装、六种模式、655 字符中英草稿、临时 WSS 多主机切换及草稿保留已实测；原主机、空草稿和原生 sender 已恢复，临时房间已清理。依据：`.omx/artifacts/android-api2-live/{initial-state.json,multihost-validation.json,restored-after-probe.json}`。 |
+| Android 输入法边界 | 未实测真实 OS IME | 已做真实 WebView 的合成 composition 事件守卫，不能替代系统输入法候选、确认或实际软键盘验收；不宣称这一项通过。 |
+| Android HTTPS 直连 | [ ] 集成复查发现回归，修复中 | 非 loopback 的 HTTPS 直连被房间流程挡住；不能把已通过的中继 Token＋房间流程当作此直连情形也通过。修复后需定向验证。 |
+| Android 已保存 Token | [ ] 集成复查发现保留风险，修复中 | 暂时解密失败并进入 onPause 的路径可能删除已有 Token；不能把解密暂不可用等同于用户明确删除。修复及其保留/删除边界需补验证，不读取或记录凭据正文。 |
+| Android 故障回退 | [ ] 仍待修复后真机复验 | 旧独立 QA 0.0.2 的 good 更新及草稿/配置保留通过；throw2 实际退到 bundled，而非预期 good2，good2 缓存 16 文件完整且 Java 验签通过。Native 退休/已知良好视图与状态字段修复已落地，但修复 QA 0.0.3 的安装会话 81224 已终态 `INSTALL_FAILED_ABORTED: User rejected permissions`，设备未安装该修复包；throw3/hang3 未执行，不能以源码/JVM通过替代真机通过。依据：`.omx/artifacts/android-ui-rollback-qa/qa-20261023T153711Z-00fddc0833a0/{physical-verification.json,cached-good2-integrity.json,cached-good2-java-verification.txt,fixed-install-terminal.json}`。 |
+| 新一轮整套验证 | 整套基线及后续定向修复通过 | `.omx/artifacts/goal-completion-audit/full-suite.{xml,txt}` 为 499 passed、1 skipped、57 subtests（505.96 秒），Node 42 passed。随后发现的两项 Android 连接回归已修复，41 项定向测试及全部 Java 编译通过，见 `.omx/artifacts/android-credential-direct-fixes/verification.json`。0.2.30 双端已构建；不把测试或构建当作手机故障回滚验收。 |
+
+### 历史记录阅读规则
+
+补充复验：Root 在修复后扩大运行 Android 探测、保存凭据、房间选择与恢复测试，**46 passed、8 subtests passed**；证据为 `.omx/artifacts/goal-completion-audit/post-fix.{xml,txt}`。0.2.30 双端构建成功，Windows 46 个源文件哈希一致，Android 公开默认凭据为空。
+
+以下内容保留原日期与当时检查结果。“当前”“最终”、旧版本号、旧安装会话及未勾选项均只描述各节当时的状态，不代表今天仍缺 Token 文件、没有 SSH/TLS 或仍在等待旧安装进程。最新未关闭的故障回退门槛以上表为准。
+
+## 历史：2026-10-23 发布快照
+
+当时发布记录为 **0.2.25**（Windows/Android 同号）；后续构建和真机验收应分别看当前摘要与 `dist/README.md`，不能由版本目录推断全部通过。
+
+## 2026-10-23：最新授权方式调整
+
+用户明确改为 Token＋房间号，不再要求统一邮箱账号登录。统一账号源码保留为兼容高级能力，不再把其生产开户、grants 与邮箱绑定当作当前交付门槛。默认 Token 应在运行时读取用户指定的 `token.txt`，不写入公开 APK/EXE/界面包；当前尚待确认文件完整路径（项目及常用配置目录未找到）。
+
+- [ ] 接入指定 token.txt 的默认 Token，验证目标绑定与公开产物不含凭据；文件已加入 Git 忽略。
+
 ## 2026-10-23：底部历史提示与翻屏反馈
 
 - [x] “已恢复有限输出历史……”合并到上翻屏/下翻屏所在操作栏，长提示省略显示并保留完整悬停文字，不再单独占一行。
@@ -35,9 +68,9 @@
 
 以下早期交付目录和版本号为历史记录。
 
-## 2026-10-22：TD-001～TD-006 执行状态（当前）
+## 2026-10-22：TD-001～TD-006 执行状态（历史快照）
 
-用户已确认本次包含新增 TD-006；以下为当前状态，后面的 2026-10-21 检查、登记和旧包验收作为历史记录保留，不再代表“仍未实施”。详细代码落点和证据见 [本轮验证记录](todo-completion.md)。
+用户已确认当轮包含新增 TD-006；以下为 2026-10-22 时的状态，后面的 2026-10-21 检查、登记和旧包验收也作为历史记录保留。今日结论以文首当前摘要为准。详细代码落点和证据见 [验证记录](todo-completion.md)。
 
 | 编号 | 当前结果 | 验证/剩余步骤 |
 | --- | --- | --- |

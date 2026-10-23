@@ -21,6 +21,7 @@
   let renameWindow = null, terminateSession = null, connectionOwner = null;
   let homeConfig={...config}, savedHosts=loadHosts(), selectedHost='local', editingHost='', homeRelays=[];
   let relayProfiles=loadRelayProfiles(),profileLegacy='connection',roomMenu=null;
+  let runtimeDefaultToken='',prefilledTokenTarget='',defaultTokenEdited=false;
   const hosts=new Map(), directories=new Map(), relayAccounts=new Map();
   let restoredUI=null;
   try{const raw=read(sessionStorage,'sma.workspace.ui-state');if(raw.length<=65536){const value=JSON.parse(raw||'null');if(value&&Array.isArray(value.tabs))restoredUI=value;}}catch{}
@@ -99,6 +100,7 @@
       channel:host.id==='local'?params.get('channel')||undefined:undefined}))));
   }
   function stopHost(host){
+    if(host.id==='local'){runtimeDefaultToken='';if(prefilledTokenTarget){$('relay-profile-token').value='';prefilledTokenTarget='';}}
     host.generation++;clearTimeout(host.retryTimer);clearInterval(host.pingTimer);
     if(host.ws){host.ws.onclose=null;host.ws.close();host.ws=null;}host.connected=false;host.supported=false;host.activity.clear();updateSessionDots();
     for(const pane of panes.values())if(pane.host===host){pane.ready=false;pane.term.options.disableStdin=true;clearTimeout(pane.redrawTimer);clearTimeout(pane.resizeRequest?.timer);pane.resizeRequest=null;cancelAnimationFrame(pane.followFrame);pane.followFrame=0;cancelAnimationFrame(pane.scrollIntentFrame);pane.scrollIntentFrame=0;}
@@ -163,7 +165,13 @@
       clearInterval(host.pingTimer);ping(host);host.pingTimer=setInterval(()=>ping(host),15000);
     }
     if(!host.supported)return;
-    if(host.id==='local'&&Array.isArray(info.service?.relays))homeRelays=info.service.relays;
+    if(host.id==='local'){
+      if(Array.isArray(info.service?.relays))homeRelays=info.service.relays;
+      if(homeRelayAccess()&&info.service?.default_relay_token_source==='token.txt'){
+        runtimeDefaultToken=typeof info.service.default_relay_token==='string'?info.service.default_relay_token:'';
+        prefillRuntimeToken();
+      }
+    }
     if(info.error)host.error=String(info.error);
     if(info.capabilities)host.capabilities=info.capabilities;
     for(const field of ['machine','project'])if(typeof info[field]==='string')host.identity[field]=info[field].slice(0,40);
@@ -606,14 +614,16 @@
   }
   function profileToken(profile){
     const key='sma.workspace.profile-token.'+profile.id;
-    for(const storage of [sessionStorage,localStorage])if(read(storage,key+'.target')===profile.endpoint){const value=read(storage,key);if(value)return value;}
+    const target=JSON.stringify([profile.endpoint,profile.code||'']);
+    for(const storage of [sessionStorage,localStorage]){const binding=read(storage,key+'.target');if(binding===target||(!profile.code&&binding===profile.endpoint)){const value=read(storage,key);if(value)return value;}}
     return '';
   }
   function loadRelayProfiles(){
     try{return JSON.parse(read(localStorage,'sma.workspace.relay-profiles')||'[]').filter((profile,index,all)=>{
       if(!profile||typeof profile.id!=='string'||!profile.id||profile.id.length>128||typeof profile.endpoint!=='string'||all.findIndex(item=>item?.id===profile.id)!==index)return false;
+      if(profile.code!==undefined&&(typeof profile.code!=='string'||profile.code.length>128||/[\x00-\x1f\x7f]/.test(profile.code)))return false;
       try{return C.socketURL(profile.endpoint,location.origin)===profile.endpoint;}catch{return false;}
-    }).slice(0,32).map(({id,endpoint})=>({id,endpoint}));}catch{return [];}
+    }).slice(0,32).map(({id,endpoint,code})=>({id,endpoint,code:code||''}));}catch{return [];}
   }
   function profileEndpoint(address,port){
     address=address.trim();if(!address)throw new Error('请填写 IP 或服务器地址。');
@@ -628,7 +638,7 @@
     const list=$('relay-profile-list');if(!list)return;list.replaceChildren();
     relayProfiles.forEach((profile,index)=>{
       const directory=directories.get(profile.endpoint),token=profileToken(profile);
-      const count=(directory?.hosts||[]).filter(host=>host.online&&directory.tokens[host.token_index]===token).length;
+      const count=(directory?.hosts||[]).filter(host=>host.online&&directory.tokens[host.token_index]===token&&(!profile.code||host.code===profile.code)).length;
       const row=node('div','relay-profile-row');row.append(node('span','',profile.endpoint),node('small','muted','凭据 '+(index+1)+' · '+(!token?'需要填写 Token':directory?.phase==='connected'?count+' 个房间':directory?.phase==='unsupported'?'中继暂不支持此凭据的自动发现':'正在连接…')));
       row.append(button('移除','移除连接 '+(index+1),()=>{
         relayProfiles=relayProfiles.filter(item=>item.id!==profile.id);save(localStorage,'sma.workspace.relay-profiles',JSON.stringify(relayProfiles));
@@ -642,8 +652,16 @@
     profileLegacy=legacy;closeAppMenu();$('relay-profile-error').textContent='';
     $('relay-profiles-dialog').querySelector('details').open=false;
     let url;try{url=new URL(C.socketURL(currentHost()?.config.relay||$('default-relay').value,location.origin));}catch{url=new URL(C.socketURL($('default-relay').value,location.origin));}
-    $('relay-profile-address').value=url.hostname;$('relay-profile-port').value=url.port||(url.protocol==='wss:'?'443':'80');$('relay-profile-token').value='';$('relay-profile-remember').checked=false;
-    renderRelayProfiles();$('relay-profiles-dialog').showModal();$('relay-profile-address').focus();
+    $('relay-profile-address').value=url.hostname;$('relay-profile-port').value=url.port||(url.protocol==='wss:'?'443':'80');$('relay-profile-room').value='';$('relay-profile-token').value='';$('relay-profile-remember').checked=false;prefilledTokenTarget='';defaultTokenEdited=false;
+    renderRelayProfiles();$('relay-profiles-dialog').showModal();prefillRuntimeToken();$('relay-profile-address').focus();
+    const local=hosts.get('local');if(local?.connected&&homeRelayAccess())send(owner(local),16,{sessions:openTabs.map(id=>panes.get(id)).filter(pane=>pane?.host===local).map(pane=>pane.raw)});
+  }
+  function prefillRuntimeToken(){
+    if(defaultTokenEdited||!$('relay-profiles-dialog').open)return;
+    let target;try{target=profileEndpoint($('relay-profile-address').value,$('relay-profile-port').value);}catch{return;}
+    if(target!==C.socketURL($('default-relay').value,location.origin))return;
+    $('relay-profile-token').value=runtimeDefaultToken;prefilledTokenTarget=runtimeDefaultToken?target:'';
+    $('relay-profile-token').title=prefilledTokenTarget?'默认来自本机 token.txt，可手动替换':'';
   }
   function closeAppMenu(){const menu=$('app-menu');if(menu)menu.hidden=true;$('app-menu-toggle')?.setAttribute('aria-expanded','false');}
   function closeRoomMenu(){roomMenu?.remove();roomMenu=null;}
@@ -782,15 +800,21 @@
   $('relay-profiles-advanced').onclick=()=>{$('relay-profiles-dialog').close();profileLegacy==='workspace'?showWorkspace():showConnection();};
   $('relay-profile-form').onsubmit=event=>{
     event.preventDefault();try{
-      const target=profileEndpoint($('relay-profile-address').value,$('relay-profile-port').value.trim()),token=$('relay-profile-token').value.trim();
+      const target=profileEndpoint($('relay-profile-address').value,$('relay-profile-port').value.trim()),token=$('relay-profile-token').value.trim(),code=$('relay-profile-room').value.trim();
+      if(code.length>128||/[\x00-\x1f\x7f]/.test(code))throw new Error('房间号格式无效。');
       if(!token||token.length>4096)throw new Error('请填写有效的 Token。');
-      let profile=relayProfiles.find(item=>item.endpoint===target&&(profileToken(item)===token||!profileToken(item)));
-      if(!profile){if(relayProfiles.length>=32)throw new Error('最多添加 32 组连接。');profile={id:crypto.randomUUID(),endpoint:target};relayProfiles.push(profile);}
-      const key='sma.workspace.profile-token.'+profile.id;save(sessionStorage,key,token);save(sessionStorage,key+'.target',target);
-      save(localStorage,key,$('relay-profile-remember').checked?token:'');save(localStorage,key+'.target',$('relay-profile-remember').checked?target:'');
-      save(localStorage,'sma.workspace.relay-profiles',JSON.stringify(relayProfiles));$('relay-profile-token').value='';$('relay-profile-error').textContent='';refreshDirectories();renderRelayProfiles();
+      let profile=relayProfiles.find(item=>item.endpoint===target&&(item.code||'')===code&&(profileToken(item)===token||!profileToken(item)));
+      if(!profile){if(relayProfiles.length>=32)throw new Error('最多添加 32 组连接。');profile={id:crypto.randomUUID(),endpoint:target,code};relayProfiles.push(profile);}
+      const binding=JSON.stringify([target,code]),key='sma.workspace.profile-token.'+profile.id;save(sessionStorage,key,token);save(sessionStorage,key+'.target',binding);
+      save(localStorage,key,$('relay-profile-remember').checked?token:'');save(localStorage,key+'.target',$('relay-profile-remember').checked?binding:'');
+      save(localStorage,'sma.workspace.relay-profiles',JSON.stringify(relayProfiles));$('relay-profile-token').value='';prefilledTokenTarget='';$('relay-profile-error').textContent='';refreshDirectories();renderRelayProfiles();
     }catch(error){$('relay-profile-error').textContent=error.message;}
   };
+  $('relay-profile-token').addEventListener('input',()=>{prefilledTokenTarget='';defaultTokenEdited=true;});
+  for(const id of ['relay-profile-address','relay-profile-port'])$(id).addEventListener('input',()=>{
+    if(!prefilledTokenTarget)return;let same=false;try{same=profileEndpoint($('relay-profile-address').value,$('relay-profile-port').value)===prefilledTokenTarget;}catch{}
+    if(!same){$('relay-profile-token').value='';prefilledTokenTarget='';defaultTokenEdited=true;$('relay-profile-token').title='';}
+  });
   document.addEventListener('click',event=>{if(!event.target.closest('#app-menu,#app-menu-toggle')||event.target.closest('#app-menu button'))closeAppMenu();if(roomMenu&&!event.target.closest('.room-menu,.workspace-host-edit'))closeRoomMenu();});
   document.addEventListener('keydown',event=>{
     const menu=roomMenu||(!$('app-menu').hidden?$('app-menu'):null);if(!menu)return;
@@ -981,7 +1005,7 @@
   }
   function refreshDirectories(){
     const wanted=new Map();
-    for(const profile of relayProfiles){const token=profileToken(profile);if(!token)continue;if(!wanted.has(profile.endpoint))wanted.set(profile.endpoint,[]);wanted.get(profile.endpoint).push({code:'',token});}
+    for(const profile of relayProfiles){const token=profileToken(profile);if(!token)continue;if(!wanted.has(profile.endpoint))wanted.set(profile.endpoint,[]);wanted.get(profile.endpoint).push({code:profile.code||'',token,onlyRoom:!!profile.code});}
     for(const host of [...hosts.values()].sort((a,b)=>Number(b.connected)-Number(a.connected)))if(!host.autoDirectory&&host.config.authMode!=='account'&&host.config.code&&host.config.token){
       const url=JSON.parse(endpoint(host.config))[0];if(!wanted.has(url))wanted.set(url,[]);
       const rooms=wanted.get(url);if(!rooms.some(room=>room.code===host.config.code)&&rooms.length<64)rooms.push({code:host.config.code,token:host.config.token});
@@ -1000,8 +1024,8 @@
       if(!directory){directory={url,rooms:[],generation:0,ws:null,retry:0,retryTimer:0,signature:'',hosts:[],phase:'connecting',revision:0};directories.set(url,directory);}
       const signature=JSON.stringify(rooms);if(directory.signature===signature)continue;
       const oldTokens=directory.tokens||[],tokens=[...new Set(rooms.map(room=>room.token))].slice(0,32);
-      const retained=(directory.hosts||[]).filter(host=>Number.isInteger(host.token_index)&&tokens.includes(oldTokens[host.token_index])).map(host=>({...host,token_index:tokens.indexOf(oldTokens[host.token_index])}));
-      directory.rooms=rooms.filter(room=>room.code);directory.tokens=tokens;directory.signature=signature;directory.hosts=retained;directory.selfRooms??=new Set();directory.revision=0;
+      const retained=(directory.hosts||[]).filter(host=>Number.isInteger(host.token_index)&&tokens.includes(oldTokens[host.token_index])&&rooms.some(scope=>scope.token===oldTokens[host.token_index]&&(!scope.onlyRoom||scope.code===host.code))).map(host=>({...host,token_index:tokens.indexOf(oldTokens[host.token_index])}));
+      directory.rooms=rooms.filter((room,index)=>room.code&&rooms.findIndex(item=>item.code===room.code)===index).map(({code,token})=>({code,token}));directory.scopes=rooms;directory.tokens=tokens;directory.signature=signature;directory.hosts=retained;directory.selfRooms??=new Set();directory.revision=0;
       syncDiscoveredHosts(directory,retained);
       // Close before replacing credentials, so stale authorized metadata cannot be displayed.
       connectDirectory(directory);
@@ -1023,6 +1047,7 @@
         directory.hosts=data.hosts.filter(host=>typeof host.code==='string'&&host.code.length>0&&host.code.length<=128&&(known.has(host.code)||(discovery&&Number.isInteger(host.token_index)&&host.token_index>=0&&host.token_index<directory.tokens.length))).map(host=>({code:host.code,online:host.online===true,
           ...(discovery&&Number.isInteger(host.token_index)&&host.token_index>=0&&host.token_index<directory.tokens.length?{token_index:host.token_index}:{}),
           ...(host.online===true?{machine:String(host.machine||'').slice(0,40),project:String(host.project||'').slice(0,40)}:{})}));
+        directory.hosts=directory.hosts.map(host=>Number.isInteger(host.token_index)?host:{...host,token_index:directory.tokens.indexOf(directory.rooms.find(room=>room.code===host.code)?.token)}).filter(host=>directory.scopes.some(scope=>scope.token===directory.tokens[host.token_index]&&(!scope.onlyRoom||scope.code===host.code)));
         directory.revision=data.revision;directory.phase='connected';directory.retry=0;syncDiscoveredHosts(directory,directory.hosts);renderDiscovery();
       }catch{directory.phase='unsupported';directory.hosts=[];syncDiscoveredHosts(directory,[]);renderDiscovery();}
     };

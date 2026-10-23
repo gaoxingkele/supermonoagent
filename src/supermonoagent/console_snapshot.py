@@ -330,6 +330,8 @@ class FooterRecovery:
             opcode, payload = unpack(frame)
             if opcode != OP_SNAPSHOT or not isinstance(state, dict):
                 return None
+            if isinstance(state.get('capabilities'), dict) and state['capabilities'].get('snapshot_footer') is True:
+                return None
             prefix, separator, _ = payload.partition(b'\0')
             if not separator:
                 return None

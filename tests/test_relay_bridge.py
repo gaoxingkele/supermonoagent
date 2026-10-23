@@ -257,6 +257,7 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
                     await old.send(json.dumps({"op": "host", "code": "occupied", "tokens": [daemon.token]}))
                     self.assertEqual(json.loads(await old.recv())["op"], "ready")
                     bridge = RelayBridge(backend, daemon.token, retry_s=.02)
+                    observer = asyncio.create_task(bridge.observe_backend())
                     task = asyncio.create_task(bridge.relay(url, "occupied"))
                     try:
                         await asyncio.sleep(.1)
@@ -266,7 +267,8 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(len(daemon.hub.sessions), 0)
                     finally:
                         task.cancel()
-                        await asyncio.gather(task, return_exceptions=True)
+                        observer.cancel()
+                        await asyncio.gather(task, observer, return_exceptions=True)
 
 
 if __name__ == "__main__":
