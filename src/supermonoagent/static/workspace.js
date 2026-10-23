@@ -222,6 +222,8 @@
     const fit=new FitAddon.FitAddon();term.loadAddon(fit);
     if(window.Unicode11Addon?.Unicode11Addon){try{term.loadAddon(new Unicode11Addon.Unicode11Addon());term.unicode.activeVersion='11';}catch{}}
     term.open(screen);
+    // Preserve readable history when a full-screen tool clears saved lines.
+    term.parser.registerCsiHandler({final:'J'},params=>params[0]===3);
     const pane={sid,host:data.win.host,raw:data.session.raw,generation:data.win.host.generation,el,screen,term,fit,history,title,own,ready:data.win.host.connected,replayPending:0,lastSize:'',renderer:'dom',webgl:null,observer:null,frames:[],writing:false,wantControl:false,redrawAfterReplay:false,redrawTimer:0,resizeRequest:null,lastAttempt:'',lastInputAt:0,repaintAt:0,composing:false};
     term.parser.registerOscHandler(7501,data=>{
       if(!livePane(pane))return false;
@@ -261,9 +263,9 @@
     });
     const scrollBar=node('div','pane-scroll');
     const scrollAction=fn=>{
-      const context=owner(pane.host);
       return()=>{
-        if(!validOwner(context)||!livePane(pane))return;
+        // The pane survives reconnects and receives the current generation.
+        if(!livePane(pane))return;
         pane.userScrollGeometry=viewportGeometry(pane);pane.userScrollUntil=performance.now()+500;
         cancelAnimationFrame(pane.followFrame);pane.followFrame=0;
         fn();
