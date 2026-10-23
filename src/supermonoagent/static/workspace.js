@@ -273,10 +273,10 @@
     };
     scrollBar.append(
       history,
-      button('▲ 上翻屏','向上翻动一页历史',scrollAction(()=>{pane.followOutput=false;term.scrollPages(-1);})),
-      button('▼ 下翻屏','向下翻动一页历史',scrollAction(()=>{term.scrollPages(1);const buffer=term.buffer.active;pane.followOutput=buffer.viewportY===buffer.baseY;if(pane.followOutput)keepFollowing(pane);})),
-      button('⤒ 到开头','翻到最早的历史输出',scrollAction(()=>{pane.followOutput=false;term.scrollToTop();})),
-      button('⤓ 到末尾','翻到最新输出并恢复自动跟随',scrollAction(()=>{pane.followOutput=true;keepFollowing(pane);}))
+      button('▲ 上翻屏','向上翻动一页历史',scrollAction(()=>pageHistory(pane,'up'))),
+      button('▼ 下翻屏','向下翻动一页历史',scrollAction(()=>pageHistory(pane,'down'))),
+      button('⤒ 到开头','翻到最早的历史输出',scrollAction(()=>pageHistory(pane,'start'))),
+      button('⤓ 到末尾','翻到最新输出并恢复自动跟随',scrollAction(()=>pageHistory(pane,'end')))
     );
     el.append(scrollBar);
     pane.bindHeader=()=>{
@@ -332,6 +332,28 @@
   }
   function viewportGeometry(pane){
     const rect=pane.screen.getBoundingClientRect();return [rect.width,rect.height,devicePixelRatio].join(':');
+  }
+  function pageHistory(pane,direction){
+    const buffer=pane.term.buffer.active;
+    if(buffer.type==='alternate'||buffer.baseY===0){
+      const session=sessionInfo(pane.sid)?.session||{},declared=session.agent||session.learnedAgent;
+      const executable=value=>String(Array.isArray(value)?value[0]||'':value||'').trim().replace(/^"|"$/g,'').split(/[\\/]/).pop();
+      const codex=declared?/^codex$/i.test(declared):[session.shell,session.command,session.argv].some(value=>/^codex(?:\.(?:exe|cmd|js))?$/i.test(executable(value)));
+      const canPage=codex&&pane.ready&&pane.host.connected&&!pane.replayPending;
+      const message=codex?(canPage?'正在翻阅 Codex 历史。':'请等待连接和历史恢复后再翻屏。'):buffer.type==='alternate'?'此全屏程序没有本地滚动历史，请使用程序自身的历史查看功能。':'当前会话尚无可翻阅的本地历史。';
+      pane.history.textContent=message;pane.history.title=message;pane.history.hidden=false;
+      if(canPage){
+        if(direction==='up'||direction==='start')pane.followOutput=false;
+        else if(direction==='end')pane.followOutput=true;
+        const keys={up:'\x1b[5~',down:'\x1b[6~',start:'\x1b[1;5H',end:'\x1b[1;5F'};
+        input(pane.sid,keys[direction]);
+      }
+      return;
+    }
+    if(direction==='up'){pane.followOutput=false;pane.term.scrollPages(-1);}
+    else if(direction==='start'){pane.followOutput=false;pane.term.scrollToTop();}
+    else if(direction==='end'){pane.followOutput=true;keepFollowing(pane);}
+    else{pane.term.scrollPages(1);pane.followOutput=buffer.viewportY===buffer.baseY;if(pane.followOutput)keepFollowing(pane);}
   }
   function keepFollowing(pane){
     if(!livePane(pane)||!pane.followOutput)return;

@@ -52,3 +52,40 @@ async def check_paging(playwright,boundary):
                     assert not session.pty.written
                 finally:
                     await browser.close()
+
+
+@pytest.mark.parametrize('agent',['codex','unknown','cosmetic-codex'])
+def test_alternate_paging_is_explicit_and_agent_scoped(agent):
+    playwright=pytest.importorskip('playwright.async_api')
+    if not EDGE.exists():pytest.skip('Hidden Edge required')
+    asyncio.run(check_alternate(playwright,agent))
+
+
+async def check_alternate(playwright,agent):
+    async with isolated_host() as (daemon,_direct,_relay):
+        window=daemon.hub.open_window('Codex paging' if agent!='unknown' else 'Unknown full-screen tool',owner=daemon.token)
+        session=daemon.hub.open_cli(window.id,'cmd')
+        other_window=daemon.hub.open_window('Unrelated terminal',owner=daemon.token)
+        other=daemon.hub.open_cli(other_window.id,'cmd')
+        async with serve(daemon.handle_socket,'127.0.0.1',0,process_request=daemon.serve_http) as server:
+            async with playwright.async_playwright() as runtime:
+                browser=await runtime.chromium.launch(executable_path=str(EDGE),headless=True)
+                try:
+                    page=await browser.new_page(viewport={'width':1100,'height':760})
+                    await page.goto(f'http://127.0.0.1:{server.sockets[0].getsockname()[1]}/workspace?direct=1&renderer=dom#token={daemon.token}')
+                    await page.wait_for_function('window.smaWorkspace?.connected&&smaWorkspace.activePane?.ready')
+                    await page.evaluate('id=>smaWorkspace.openHostSession("local",id)',session.id)
+                    if agent=='cosmetic-codex':await page.locator('#agent-mode').select_option('codex')
+                    marker=b'\x1b]7501;app=codex;state=ready\x07' if agent=='codex' else b''
+                    session.pty.inbox.put(marker+b'\x1b[?1049h\x1b[HALTERNATE_PAGING')
+                    await page.wait_for_function('smaWorkspace.terminal.buffer.active.type==="alternate"&&!smaWorkspace.activePane.writing')
+                    assert not session.pty.written
+                    for title in ('向上翻动一页历史','向下翻动一页历史','翻到最早的历史输出','翻到最新输出并恢复自动跟随'):
+                        await page.get_by_role('button',name=title,exact=True).click()
+                    expected=b'\x1b[5~\x1b[6~\x1b[1;5H\x1b[1;5F' if agent=='codex' else b''
+                    async with asyncio.timeout(3):
+                        while bytes(session.pty.written)!=expected:await asyncio.sleep(.01)
+                    assert not other.pty.written
+                    assert await page.locator('.pane:not([hidden]) .history-note').is_visible()
+                finally:
+                    await browser.close()

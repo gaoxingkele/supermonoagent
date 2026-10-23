@@ -8,7 +8,7 @@ The 2026-10-23 read-only JINLONG3090 sample contained reset/bold/dim/underline S
 
 The desktop and Android UI fix was published as **0.2.19** to the existing HTTPS update channel and downloaded again for signature and archive verification. Use “检查更新” and install the update on each client. This publication does not force-reload any open view or restart a remote daemon. Evidence: `.omx/artifacts/remote-terminal-colors/publication-verified.json`.
 
-The current Windows release is **0.2.23**, matching Android, in `dist/windows/0.2.23/`. Windows releases use the same numeric version as Android, never feature-based names. The build reads Android's manifest version and embeds it in EXE FileVersion/ProductVersion, `version.txt` and `build-manifest.json`; the default output is `dist/windows/<version>/`. When building both platforms, build Android first because its existing build advances the release version, then build Windows. Older named folders below are historical artifacts.
+The current Windows release is **0.2.25**, matching Android, in `dist/windows/0.2.25/`. Windows releases use the same numeric version as Android, never feature-based names. The build reads Android's manifest version and embeds it in EXE FileVersion/ProductVersion, `version.txt` and `build-manifest.json`; the default output is `dist/windows/<version>/`. When building both platforms, build Android first because its existing build advances the release version, then build Windows. Older named folders below are historical artifacts.
 
 The top-left “菜单” sits between the sidebar toggle and supermono, with “检查更新”, “下载并更新” and “连接工作区”. The connection dialog accepts address/IP, port and Token; multiple credential profiles discover their authorized rooms automatically. Tokens stay in session storage unless “在此设备保存 Token” is selected, and are bound to their endpoint. Advanced room/account settings remain collapsed.
 
@@ -126,3 +126,17 @@ The build includes packaged terminal JavaScript/CSS, WebView2 interop assemblies
 `build-manifest.json` records source file hashes and the executable checksum for this build; rebuild after changing source or workspace assets. The application must be distributed with its entire `_internal` directory.
 
 Reference tooling: [PyInstaller](https://pyinstaller.org/en/stable/usage.html), [pywebview freezing](https://pywebview.flowrl.com/guide/freezing), [Microsoft Intelligent Terminal](https://github.com/microsoft/intelligent-terminal). Compare native terminal fidelity separately from WebView renderer measurements; a successful package build does not establish typing latency or GPU performance.
+
+## Explicit host Token
+
+Starting with 0.2.25, the host accepts an explicit owner Token:
+
+```text
+host --host 127.0.0.1 --port 6769 --relay "wss://117.50.48.22/ws" --code "office-pc" --token "YOUR_TOKEN" --state-dir "C:\Users\iamaf\.supermonoagent"
+```
+
+The value is validated and atomically saved to the state directory's `token`
+file so clients and later restarts use the same identity. Omitting `--token`
+keeps the existing saved/generated behavior. A second host cannot overwrite the
+saved Token when its requested listening address is already occupied. This
+option applies at host startup; it does not change a running daemon in place.

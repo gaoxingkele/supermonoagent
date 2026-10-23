@@ -7,6 +7,9 @@ study/orca/
 # Distribution builds are versioned; local runtime data is not.
 /dist/**/trial-state/
 /dist/**/.omx/
+/dist/**/token.txt
+/dist/**/token
+/dist/**/relay-code
 !/dist/**/*.pyd
 
 # Local tooling and verification artifacts.
@@ -19,3 +22,4 @@ study/orca/
 *.jks
 *.keystore
 /relay.txt
+token.txt

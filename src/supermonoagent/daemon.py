@@ -11,6 +11,7 @@ import os
 import secrets
 import socket
 import struct
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -134,8 +135,22 @@ class RelayDelegation:
     generation: object
 
 
-def load_token() -> str:
+def load_token(explicit: str | None = None) -> str:
     path = STATE / "token"
+    if explicit is not None:
+        if not explicit or len(explicit) > 4096 or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in explicit):
+            raise ValueError("Token must contain 1 to 4096 characters without whitespace or control characters")
+        STATE.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=STATE, prefix=".token-", delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(explicit)
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return explicit
     if path.exists():
         return path.read_text(encoding="utf-8").strip()
     STATE.mkdir(parents=True, exist_ok=True)
@@ -844,6 +859,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=6769)
     parser.add_argument("--relay", default="", help="ws://relay:6770, outbound only")
     parser.add_argument("--code", default="")
+    parser.add_argument("--token", default=None, help="Set and save this host's owner token; omitted uses the saved token")
     parser.add_argument("--state-dir", help="Isolated state directory for a separate host or test")
     parser.add_argument("--no-relay", action="store_true", help="Do not load saved outbound relays")
     transport_options(parser)
@@ -856,10 +872,22 @@ def main() -> None:
     context = tls_context(args.tls_cert, args.tls_key)
     if not loopback(args.host) and not context and not (args.reverse_proxy_tls and args.allowed_origin and all(origin.startswith('https://') for origin in args.allowed_origin)):
         parser.error('Public serving requires TLS or --reverse-proxy-tls with --allowed-origin')
+    if args.token is not None and not (args.bind_relay_account or args.unbind_relay_account):
+        # A second host must not replace the running host's saved credential
+        # before discovering that its listening port is already occupied.
+        family = socket.AF_INET6 if ':' in args.host else socket.AF_INET
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.bind((args.host, args.port))
+        except OSError:
+            parser.error('Host address/port is unavailable; the saved token was not changed')
     if args.state_dir:
         STATE = Path(args.state_dir).resolve()
         os.environ["SUPERMONO_STATE_DIR"] = str(STATE)
-    token = load_token()
+    try:
+        token = load_token(args.token)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.bind_relay_account or args.unbind_relay_account:
         if not args.relay or not args.code:
             parser.error('Relay account binding requires explicit --relay URL and --code ROOM')
