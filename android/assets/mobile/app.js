@@ -21,7 +21,9 @@
 
   function connection(h){let c=connections.get(h.id);if(!c){c={host:h,socket:null,generation:0,retry:0,retryTimer:null,pingTimer:null,lastPing:0,connected:false,inventory:[],groups:[],activity:new Map(),controls:{},machine:'',project:'',subscription:'',status:'等待连接',createPending:false,beforeCreate:new Set()};connections.set(h.id,c);}return c;}
   let paused=false,connected=false;
-  let inventory=[],active='',term=null,fit=null,writer=null,webgl=null,renderer=config.renderer||'auto';
+  let inventory=[],active='',term=null,fit=null,writer=null,highlighter=null,webgl=null,renderer=config.renderer||'auto';
+  $('highlight').checked=localStorage.getItem('sma.mobile.highlight')!=='off';
+  $('highlight').onchange=()=>{localStorage.setItem('sma.mobile.highlight',$('highlight').checked?'on':'off');highlighter?.setEnabled($('highlight').checked);};
   let ready=false,replaying=0,fitFrame=null,lastSize='',control=false,ctrl=false,composing=false,pendingKeys=[];
   const uncertainDrafts=new Map();
   const composerSubmit=M.createComposerSubmitter({onPending:pending=>{updateComposer(pending);$('draft').readOnly=pending;$('composer-close').disabled=pending;}});
@@ -170,7 +172,7 @@
     ready=false;pendingKeys=[];composing=false;replaying=0;lastSize='';control=false;
     setCtrl(false);
     if(fitFrame!==null)cancelAnimationFrame(fitFrame);fitFrame=null;
-    if(writer)writer.dispose();writer=null;if(webgl)webgl.dispose();webgl=null;
+    if(writer)writer.dispose();writer=null;if(highlighter)highlighter.dispose();highlighter=null;if(webgl)webgl.dispose();webgl=null;
     if(term)term.dispose();term=null;fit=null;$('screen').replaceChildren();
   }
   function activate(sid){
@@ -185,6 +187,7 @@
     term.parser.registerCsiHandler({final:'J'},params=>params[0]===3);
     fit=new FitAddon.FitAddon();term.loadAddon(fit);term.loadAddon(new Unicode11Addon.Unicode11Addon());term.unicode.activeVersion='11';term.open($('screen'));setRenderer();
     const current=term;
+    highlighter=M.createHighlighter(current,{enabled:$('highlight').checked});
     writer=M.createWriter({write:(bytes,reset,done,grid)=>{if(term!==current)return;
       if(grid){const size=C.terminalSize(grid.cols,grid.rows);if(current.cols!==size.cols||current.rows!==size.rows)current.resize(size.cols,size.rows);}
       if(reset)current.reset();displayGrid();metrics.writes++;current.write(bytes,()=>{done();if(!reset&&bytes.length&&term===current)composerSubmit.output();});
