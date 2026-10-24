@@ -23,3 +23,5 @@ study/orca/
 *.keystore
 /relay.txt
 token.txt
+defaults.private.json
+download-link.private.json

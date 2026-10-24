@@ -1,0 +1,22 @@
+[Unit]
+Description=SuperMonoAgent private installer downloads
+After=network.target
+
+[Service]
+Type=simple
+User=supermono-download
+Group=supermono-download
+ExecStart=/usr/bin/python3 /opt/supermono-download/download_server.py --root /var/lib/supermono-downloads --port 18818
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+MemoryMax=192M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

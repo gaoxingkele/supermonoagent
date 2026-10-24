@@ -1,2 +1,4 @@
 # Distribution checksums and signed resources require byte-identical checkout.
 dist/** -text -diff
+# Installer bootstrap hashes are part of the signed catalog.
+scripts/windows-installer/** -text

@@ -1,5 +1,7 @@
 # SuperMonoAgent
 
+Windows 完整 ZIP 一键安装及默认配置注入见 [安装说明](docs/windows-oneclick-install.md)。专用下载包自动配置默认中继/Token，新电脑启动时用本机名称注册；通用公开包不包含私有 Token。
+
 Windows 客户端与 Android APK：启动方法见 [Windows 说明](docs/windows-clients.md)、[Android 安装](docs/android.md)、[构建产物](dist/README.md)。工作区入口为 `/workspace`；当前功能与验收边界见 [TODO](docs/TODO.md)。公网 HTTPS/WSS 和签名界面更新频道已部署。
 
 在 Windows 上用一个进程接住多窗口、多条 CLI。网页和手机都能进入每个窗口。工作区左侧按电脑与房间列出窗口，支持收起和展开。电脑把终端输出推送到中继，客户端使用 Token 和房间号连接；键盘输入只进当前会话。

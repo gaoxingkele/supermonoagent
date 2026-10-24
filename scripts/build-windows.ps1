@@ -80,6 +80,7 @@ Copy-Item "$repoRoot/scripts/launch-hidden.vbs" "$dist/launch-hidden.vbs" -Force
 Copy-Item "$repoRoot/scripts/create-desktop-shortcuts.vbs" "$dist/create-desktop-shortcuts.vbs" -Force
 Copy-Item "$repoRoot/docs/windows-clients.md" "$dist/README.md" -Force
 Copy-Item "$repoRoot/docs/windows-installation-plan.md" "$dist/windows-installation-plan.md" -Force
+Copy-Item "$repoRoot/docs/windows-oneclick-install.md" "$dist/windows-oneclick-install.md" -Force
 $exe = Join-Path $dist 'SuperMonoAgent/SuperMonoAgent.exe'
 $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
 "$sha  SuperMonoAgent/SuperMonoAgent.exe" | Set-Content "$dist/SuperMonoAgent.exe.sha256" -Encoding ascii

@@ -1,6 +1,8 @@
 # Windows workspace and shared daemon
 
-Windows installation and multi-computer rollout options are evaluated in [the installation plan](windows-installation-plan.md). It separates the current portable package from the proposed user-level installer and future winget/npm channels.
+The user-level one-click installer is available; multi-computer rollout and future winget/npm options are documented in [the installation plan](windows-installation-plan.md).
+
+The installed edition checks the relay's signed full-program update channel automatically at launch and every 15 minutes while the workspace is open. A newer complete package downloads and verifies in the background, then prompts for installation; declining suppresses that version for 24 hours. Installation keeps current windows and PTYs running and applies to a later client launch. See [one-click installation and updates](windows-oneclick-install.md); this is distinct from UI-only updates.
 
 ## Live daemon logs
 
@@ -39,7 +41,7 @@ The 2026-10-23 read-only JINLONG3090 sample contained reset/bold/dim/underline S
 
 The desktop and Android UI fix was published as **0.2.19** to the existing HTTPS update channel and downloaded again for signature and archive verification. Use “检查更新” and install the update on each client. This publication does not force-reload any open view or restart a remote daemon. Evidence: `.omx/artifacts/remote-terminal-colors/publication-verified.json`.
 
-The current Windows release is **0.2.34**, matching Android, in `dist/windows/0.2.34/`. Windows releases use the same numeric version as Android, never feature-based names. The build reads Android's manifest version and embeds it in EXE FileVersion/ProductVersion, `version.txt` and `build-manifest.json`; the default output is `dist/windows/<version>/`. When building both platforms, build Android first because its existing build advances the release version, then build Windows. Numeric output folders must match the build version, and each platform's build holds an exclusive project lock. Older named folders below are historical artifacts.
+The current Windows release is **0.2.36**, matching Android, in `dist/windows/0.2.36/`. Windows releases use the same numeric version as Android, never feature-based names. The build reads Android's manifest version and embeds it in EXE FileVersion/ProductVersion, `version.txt` and `build-manifest.json`; the default output is `dist/windows/<version>/`. When building both platforms, build Android first because its existing build advances the release version, then build Windows. Numeric output folders must match the build version, and each platform's build holds an exclusive project lock. Older named folders below are historical artifacts.
 
 The top-left “菜单” sits between the sidebar toggle and supermono, with “检查更新”, “下载并更新”, “刷新中继” and “连接工作区”. “刷新中继” requests a fresh authorized room directory from every configured relay and retrieves each computer's current window catalog. Live terminal sockets and views stay open; disconnected directory connections can retry. It lists only rooms accessible to the configured credentials. Repeated clicks are throttled. The connection dialog accepts address/IP, port and Token; multiple credential profiles discover their authorized rooms automatically. Tokens stay in session storage unless “在此设备保存 Token” is selected, and are bound to their endpoint. Advanced room/account settings remain collapsed.
 
