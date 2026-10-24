@@ -42,3 +42,13 @@
 真实系统剪贴板仍未验收：本环境 `CreateWindowStationW` 及只读 `OpenClipboard(None)` 均返回拒绝访问；没有覆盖或修改用户剪贴板。后续在 WinSta0/Default 中约 1 秒重试 20 次仍返回错误 5，未找到占用窗口。调用者使用 NULL HWND 时，占用查询也可能返回 NULL，因此权限策略与占用原因尚未区分，不能断言永久不可访问。证据见 `.omx/artifacts/file-paste/{native-clipboard-evidence.json,clipboard-metadata-preflight.json,clipboard-access-diagnosis.json}`；占用查询边界见 [微软说明](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getopenclipboardwindow)。
 
 0.2.37 已发布，实际系统剪贴板验收仍待完成；接收目录当前支持后台参数配置，尚无图形设置入口。不得以注入的测试剪贴板替代实际系统验收。
+
+## 运行中旧后台的上线条件
+
+2026-10-25 的只读 HELLO 复核显示，默认凭据可见的三个后台均未声明 file_transfer，每台仍有三个终端会话。因此，安装新客户端并不能单独证明远程接收已经上线。现有会话未被关闭，后台与中继未因本次检查重启。
+
+source_path: `.omx/artifacts/remaining-todo-audit-20261025/host-readiness.json`
+
+已评估兼容路径：本机 frontend 可以独立增加本机接收适配，但不能关闭远程原房间的后台升级缺口；RelayBridge 当前在发现原生上联时退让，同一房间不能同时容纳两个 host。额外辅助服务需要独立协议与父房间绑定，现有 relay 也不会自动把任意服务隐藏，属于额外控制面。当前继续采用已有后台的受控升级路径，不把本机适配或未经认证的辅助房间当作远程功能完成。
+
+source_path: `src/supermonoagent/frontend.py`, `src/supermonoagent/relay_bridge.py`, `src/supermonoagent/relay.py`

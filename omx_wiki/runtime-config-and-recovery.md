@@ -33,3 +33,12 @@ source_paths:
 修复 QA 0.0.3 安装最终被系统终止，返回 `INSTALL_FAILED_ABORTED: User rejected permissions`。该次安装没有成功，因此修复后的 throw/hang 不能标为真机通过；必须重新完成本人安装验证后再验收。证据：上述 run 的 `fixed-install-terminal.json`。不要反复触发安装器，不修改生产稳定频道投放故障包。
 
 API2 原生壳、六模式、655 字长草稿和临时 WSS 多主机切换已在真机验证。系统 IME 候选词输入尚未完成实测；合成 composition 事件不能替代此项。证据：`.omx/artifacts/android-api2-live/{initial-state.json,multihost-validation.json}`。
+# 2026-10-25 剩余项只读复核
+
+当前生产手机为 0.2.34，独立 QA 仍为 0.0.2，修复包 0.0.3 的包名及 SHA-256 已重新核对。设备 Dozing 且锁屏，未发起新安装或重用旧失败会话 81224。后续需要解锁与 OEM 安装验证；真实 OS 输入法及修复后回滚仍未完成。
+
+source_path: `.omx/artifacts/remaining-todo-audit-20261025/phone-readiness.json`
+
+默认 Token 当前可见 3 个在线房间，每个后台有 3 个终端会话，均未声明 file_transfer/assistant_context。新客户端发布不等于这些运行后台已经升级。生产中继仍 host_enrollment=false；本次仅目录认证和 HELLO，未输入、resize、开关终端或重启服务。
+
+source_path: `.omx/artifacts/remaining-todo-audit-20261025/host-readiness.json`, `.omx/artifacts/remaining-todo-audit-20261025/directory-capabilities.json`, `docs/global-workspace-security.md`
