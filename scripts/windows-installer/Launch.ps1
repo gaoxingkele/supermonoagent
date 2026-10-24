@@ -29,6 +29,29 @@ function Get-SmaMainProcess {
     return $null
 }
 function Test-SmaMainWindow { return $null -ne (Get-SmaMainProcess) }
+function Show-SmaMainWindow {
+    $main = Get-SmaMainProcess
+    if ($null -eq $main) { return $false }
+    try {
+        if (-not ('SuperMonoAgent.InstallerWindow' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace SuperMonoAgent {
+    public static class InstallerWindow {
+        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr handle);
+        [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr handle, int command);
+        [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr handle);
+    }
+}
+'@
+        }
+        $handle = [IntPtr]$main.MainWindowHandle
+        if ($handle -eq [IntPtr]::Zero) { return $false }
+        if ([SuperMonoAgent.InstallerWindow]::IsIconic($handle)) { [void][SuperMonoAgent.InstallerWindow]::ShowWindowAsync($handle, 9) }
+        return [SuperMonoAgent.InstallerWindow]::SetForegroundWindow($handle)
+    } catch { return $false }
+}
 function Test-SmaDesktopRuntime {
     $release = 0
     try { $release = [int](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' -Name Release -ErrorAction Stop).Release } catch { }
@@ -113,14 +136,14 @@ function Start-SmaUpdateWorker([string]$Root, [int]$OwnerPid = 0, [switch]$OneSh
     } catch { return $false }
 }
 function Invoke-SmaLaunch([string]$Root) {
-    if (Test-SmaMainWindow) { [void](Start-SmaUpdateWorker $Root);return @{ started = $false; reason = 'existing-main-window' } }
+    if (Test-SmaMainWindow) { $activated = Show-SmaMainWindow;[void](Start-SmaUpdateWorker $Root);return @{ started = $false; reason = 'existing-main-window'; activated = $activated } }
     $name = 'Local\SuperMonoAgent.InstalledMainLaunch.' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $mutex = New-Object Threading.Mutex($false, $name)
     $owned = $false
     try {
         try { $owned = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $owned = $true }
         if (!$owned) { return @{ started = $false; reason = 'main-window-starting' } }
-        if (Test-SmaMainWindow) { [void](Start-SmaUpdateWorker $Root);return @{ started = $false; reason = 'existing-main-window' } }
+        if (Test-SmaMainWindow) { $activated = Show-SmaMainWindow;[void](Start-SmaUpdateWorker $Root);return @{ started = $false; reason = 'existing-main-window'; activated = $activated } }
         $plan = Get-SmaLaunchPlan $Root
         $oldState = [Environment]::GetEnvironmentVariable('SUPERMONO_STATE_DIR', 'Process')
         try {

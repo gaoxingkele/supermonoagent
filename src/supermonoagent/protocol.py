@@ -27,9 +27,11 @@ OP_INPUT_SESSION = 17
 OP_TASK_SUBSCRIBE = 18
 OP_TASK_EVENT = 19
 OP_DAEMON_LOGS = 20
+OP_FILE_TRANSFER = 21
+OP_ASSISTANT_CONTEXT = 22
 
 CAPABILITIES = {
-    "protocol_version": 2, "multiplex": True, "targeted_input": True, "resize_lease": True, "reliable": True, "window_themes": True, "resize_ack": True, "conpty_paste": True, "relay_delegation": True, "task_events": True, "snapshot_sgr": True, "snapshot_footer": True, "snapshot_refresh": True, "daemon_logs": True}
+    "protocol_version": 2, "multiplex": True, "targeted_input": True, "resize_lease": True, "reliable": True, "window_themes": True, "snapshot_sgr": True, "snapshot_footer": True, "snapshot_refresh": True, "daemon_logs": True, "assistant_context": True, "file_transfer": True, "resize_ack": True, "conpty_paste": True, "relay_delegation": True, "task_events": True}
 
 _HEADER = struct.Struct("<I")
 MAX_FRAME = 256 * 1024

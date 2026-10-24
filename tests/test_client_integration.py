@@ -77,6 +77,7 @@ async def isolated_host(real_shell=False):
                     task.cancel()
                 await asyncio.gather(*jobs, return_exceptions=True)
                 await asyncio.sleep(0.03)
+        await daemon.close_sidecars()
 
 
 async def receive_op(ws, wanted, timeout=5):

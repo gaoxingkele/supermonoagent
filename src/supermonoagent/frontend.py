@@ -40,9 +40,26 @@ STATIC_ROOT = Path(__file__).parent / "static"
 WORKSPACE_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; base-uri 'none'; frame-src 'none'; frame-ancestors 'none'; object-src 'none'"
 
 
+def numeric_version(value):
+    if isinstance(value, str) and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', value):
+        return tuple(int(part) for part in value.split('.'))
+    return None
+
+
+def native_bundle_version():
+    if not getattr(sys, 'frozen', False):
+        return None
+    try:
+        with (Path(sys.executable).resolve().parent.parent / 'version.txt').open(encoding='utf-8-sig') as source:
+            value = source.read(65).strip()
+        return value if len(value) <= 64 and numeric_version(value) is not None else None
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
 def bundled_ui_files() -> dict[str, bytes]:
-    from .workspace import PAGE
-    return {name: PAGE.encode("utf-8") if name == "workspace.html" else (STATIC_ROOT / name).read_bytes() for name in UI_FILES}
+    from .workspace import PAGE, javascript
+    return {name: PAGE.encode("utf-8") if name == "workspace.html" else javascript(STATIC_ROOT).encode('utf-8') if name == 'workspace.js' else (STATIC_ROOT / name).read_bytes() for name in UI_FILES}
 
 
 def bundled_ui_fingerprint(files: dict[str, bytes]) -> str:
@@ -90,6 +107,7 @@ class Frontend:
             raise ValueError("The local frontend requires a loopback HTTP daemon URL")
         self.backend = backend.rstrip("/")
         self.version = revision()
+        self.bundled_version = native_bundle_version()
         key = hashlib.sha256(self.backend.encode()).hexdigest()[:12]
         self.theme_file = theme_file or Path.home() / ".supermonoagent" / f"frontend-themes-{key}.json"
         self.default_token_file = default_token_file
@@ -251,7 +269,9 @@ class Frontend:
                     self.update_candidate = self.update_envelope = None
                     self.update_phase, self.update_message = "current", "失败的界面版本已隔离，等待后续更新。"
                 else:
-                    native_current = status.get("active_revision") == "bundled" and candidate["sequence"] <= status.get("native_bundle_floor", 0)
+                    bundled_number, candidate_number = numeric_version(self.bundled_version), numeric_version(candidate['revision'])
+                    included = candidate_number <= bundled_number if bundled_number is not None and candidate_number is not None else candidate['sequence'] <= status.get('native_bundle_floor', 0)
+                    native_current = status.get("active_revision") == "bundled" and included
                     if not native_current or candidate["sequence"] >= status.get("highest_sequence", 0):
                         candidate = await asyncio.to_thread(self.update_store.observe, raw)
                     if native_current or candidate["sequence"] <= status.get("active_sequence", 0):

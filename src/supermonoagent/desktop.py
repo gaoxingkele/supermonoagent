@@ -305,6 +305,17 @@ def main(argv: list[str] | None = None, *, browser: bool = False) -> None:
         url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode({**dict(parse_qsl(parsed.query)), "native_window": secrets.token_hex(16)}), parsed.fragment))
     window = webview.create_window("SuperMonoAgent Workspace", url, width=1440, height=900,
                                    min_size=(800, 560), background_color="#12161f", **options)
+    if not args.url and urlsplit(url).path.rstrip("/") == "/workspace":
+        from .desktop_assistant import DesktopAssistant
+        from .desktop_files import DesktopFiles
+        try:
+            assistant = DesktopAssistant(window, url, os.environ.get("SUPERMONO_MYLIB", "D:/aicoding/mylib"))
+        except (OSError, ValueError):
+            pass
+        try:
+            clipboard = DesktopFiles(window, url)
+        except (OSError, ValueError):
+            pass
     recovery = NativeUpdateRecovery(window, url) if not args.url and urlsplit(url).path.rstrip("/") == "/workspace" else None
     if args.smoke_test:
         result = {}

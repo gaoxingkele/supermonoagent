@@ -167,11 +167,16 @@ $result=Invoke-SmaLaunch {ps_literal(root)}
 def test_launch_with_existing_main_window_does_not_start_another_process(tmp_path):
     script=f""". {ps_literal(SCRIPTS/'Launch.ps1')} -InstallRoot {ps_literal(tmp_path/'not-installed')}
 function Test-SmaMainWindow {{return $true}}
+function Show-SmaMainWindow {{$script:activated=$true;return $true}}
 function Start-Process {{throw 'Duplicate window attempted'}}
-Invoke-SmaLaunch {ps_literal(tmp_path/'not-installed')}|ConvertTo-Json -Compress
+$script:activated=$false
+$r=Invoke-SmaLaunch {ps_literal(tmp_path/'not-installed')}
+@{{result=$r;activated=$script:activated}}|ConvertTo-Json -Compress
 """
     result=powershell(['-Command',script]);assert result.returncode==0,result.stderr
-    assert json.loads(result.stdout)['reason']=='existing-main-window'
+    report=json.loads(result.stdout)
+    assert report['result']['reason']=='existing-main-window'
+    assert report['activated'] and report['result']['activated']
 
 
 def test_uninstall_preserves_state_and_any_running_version(tmp_path):

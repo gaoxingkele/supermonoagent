@@ -77,6 +77,8 @@ async def fixture(playwright):
                     for daemon in daemons:
                         for wid in list(daemon.hub.windows):
                             daemon.hub.close_window(wid)
+        for daemon in daemons:
+            await daemon.close_sidecars()
 
 
 async def open_profiles(page):

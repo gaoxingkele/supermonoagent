@@ -14,6 +14,7 @@ import socket
 import struct
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -30,6 +31,8 @@ from .task_events import TaskEventStore
 from .protocol import (
     OP_CLOSE,
     OP_DAEMON_LOGS,
+    OP_FILE_TRANSFER,
+    OP_ASSISTANT_CONTEXT,
     OP_FOCUS,
     OP_GROUP,
     OP_HELLO,
@@ -238,6 +241,12 @@ class Daemon:
         self.token = token
         self.started_at = time.monotonic()
         self.log_state_dir = Path(STATE).resolve()
+        self.receive_dir = self.log_state_dir / 'received-files'
+        self.file_receiver = None
+        self._file_receiver_lock = asyncio.Lock()
+        self._file_cleanup_tasks = set()
+        self._sidecar_workers = {}
+        self._sidecar_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='sma-files')
         self.accounts = Accounts(STATE / "accounts.json")
         self.hub = Hub()
         self.hub.task_events = TaskEventStore(STATE / "task-events.json")
@@ -297,6 +306,86 @@ class Daemon:
             client.queue.get_nowait()
         if self.hub.clients.get(client.key) is client:
             self.hub.detach(client.key)
+        self._stop_sidecar_worker(client)
+        if self.file_receiver is not None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self.file_receiver.cancel_owner(client.key)
+            else:
+                cleanup = loop.create_task(self._sidecar_io(self.file_receiver.cancel_owner, client.key))
+                self._file_cleanup_tasks.add(cleanup)
+                def finished(task):
+                    self._file_cleanup_tasks.discard(task)
+                    if not task.cancelled() and task.exception() is not None:
+                        LOGGER.warning('file_cleanup_failed error=%s', type(task.exception()).__name__)
+                cleanup.add_done_callback(finished)
+
+    async def _sidecar_io(self, function, *args):
+        return await asyncio.get_running_loop().run_in_executor(self._sidecar_executor, function, *args)
+
+    async def close_sidecars(self):
+        """Called after sockets close; leave no optional-feature worker tasks."""
+        jobs = [worker[1] for worker in self._sidecar_workers.values()]
+        for job in jobs:
+            job.cancel()
+        if jobs:
+            await asyncio.gather(*jobs, return_exceptions=True)
+        if self._file_cleanup_tasks:
+            await asyncio.gather(*list(self._file_cleanup_tasks), return_exceptions=True)
+        self._sidecar_executor.shutdown(wait=False, cancel_futures=True)
+
+    def _stop_sidecar_worker(self, client):
+        worker = self._sidecar_workers.pop(id(client), None)
+        if worker is not None:
+            worker[1].cancel()
+
+    def queue_sidecar_request(self, client, op, payload, close):
+        """Keep disk-backed features off the terminal connection's receive lane."""
+        identity = id(client)
+        current = self._sidecar_workers.get(identity)
+        if current is None:
+            pending = asyncio.Queue(4)
+            async def run():
+                try:
+                    while True:
+                        operation, data = await pending.get()
+                        try:
+                            frames, code = await self._op(client, operation, data)
+                        except ProtocolError:
+                            continue
+                        if code:
+                            await close(code)
+                            return
+                        if self.hub.clients.get(client.key) is not client:
+                            return
+                        for frame in frames:
+                            self.hub._send(client, frame)
+                finally:
+                    worker = self._sidecar_workers.get(identity)
+                    if worker is not None and worker[1] is asyncio.current_task():
+                        self._sidecar_workers.pop(identity, None)
+            job = asyncio.create_task(run())
+            current = (pending, job)
+            self._sidecar_workers[identity] = current
+        try:
+            current[0].put_nowait((op, payload))
+        except asyncio.QueueFull:
+            try:
+                request = unpack_json(payload).get('request', '')
+                if not isinstance(request, str) or len(request) > 64:
+                    return
+                self.hub._send(client, pack_json(op, {'request': request, 'ok': False,
+                    'error_code': 'busy', 'error': '后台文件与助理任务繁忙，请稍后重试。'}))
+            except ProtocolError:
+                pass
+
+    def _file_session_allowed(self, key, sid):
+        current = self.hub.clients.get(key)
+        session = self.hub.sessions.get(sid)
+        return (current is not None and self.client_authorized(current)
+                and not current.delegated and current.token == self.token
+                and session is not None and self.hub._channel_ok(current, session))
 
     def set_relays(self, items) -> None:
         self.relay_targets = clean_relays(items)
@@ -374,6 +463,9 @@ class Daemon:
                     op, payload = unpack(message)
                 except ProtocolError:
                     continue
+                if op in (OP_FILE_TRANSFER, OP_ASSISTANT_CONTEXT):
+                    self.queue_sidecar_request(client, op, payload, lambda code: ws.close(code=code))
+                    continue
                 try:
                     frames, close_code = await self._op(client, op, payload)
                 except ProtocolError:
@@ -386,6 +478,9 @@ class Daemon:
         finally:
             self._direct_sockets.pop(client.key, None)
             self.hub.detach(client.key)
+            self._stop_sidecar_worker(client)
+            if self.file_receiver is not None:
+                await self._sidecar_io(self.file_receiver.cancel_owner, client.key)
             LOGGER.info('client_disconnected clients=%d', len(self.hub.clients))
             sender.cancel()
             await asyncio.gather(sender, return_exceptions=True)
@@ -450,6 +545,48 @@ class Daemon:
         if not self.client_authorized(client):
             self._revoke_clients()
             return [], 4001
+        if op == OP_ASSISTANT_CONTEXT:
+            body = unpack_json(payload)
+            request, sid = body.get('request', ''), body.get('session', '')
+            if not isinstance(request, str) or len(request) > 64 or not isinstance(sid, str) or len(sid) > 256:
+                raise ProtocolError('Invalid assistant context request')
+            session = self.hub.sessions.get(sid)
+            def permitted():
+                return (self.client_authorized(client) and not client.delegated and client.token == self.token
+                        and session is not None and self.hub.sessions.get(sid) is session
+                        and self.hub._channel_ok(client, session))
+            if not permitted():
+                return [pack_json(OP_ASSISTANT_CONTEXT, {'request': request, 'ok': False, 'error': '目标项目上下文不可用或未获授权。'})], None
+            from .assistant_context import read_project_context
+            context = await self._sidecar_io(read_project_context, session.cwd, os.environ.get('SUPERMONO_MYLIB', 'D:/aicoding/mylib'))
+            if not self.client_authorized(client):
+                return [], 4001
+            if not permitted():
+                return [pack_json(OP_ASSISTANT_CONTEXT, {'request': request, 'ok': False, 'error': '目标项目上下文已失效。'})], None
+            return [pack_json(OP_ASSISTANT_CONTEXT, {'request': request, 'ok': True, **context})], None
+        if op == OP_FILE_TRANSFER:
+            body = unpack_json(payload)
+            request = body.get('request', '')
+            if not isinstance(request, str) or len(request) > 64:
+                raise ProtocolError('Invalid file transfer request')
+            if client.delegated or client.token != self.token:
+                return [pack_json(OP_FILE_TRANSFER, {'request': request, 'ok': False, 'error_code': 'owner_required', 'error': '文件接收仅对后台所有者开放。'})], None
+            async with self._file_receiver_lock:
+                if self.file_receiver is None:
+                    from .file_transfer_rpc import FileTransferRPC
+                    try:
+                        self.file_receiver = await self._sidecar_io(FileTransferRPC, self.receive_dir, self._file_session_allowed)
+                    except (OSError, ValueError):
+                        return [pack_json(OP_FILE_TRANSFER, {'request': request, 'ok': False, 'error_code': 'unavailable', 'error': '文件接收目录暂不可用。'})], None
+            # Bounded chunks use their own protocol; never enter a PTY queue.
+            result = await self._sidecar_io(self.file_receiver.handle, client.key, body)
+            if not self.client_authorized(client):
+                return [], 4001
+            if result.get('ok') and not self._file_session_allowed(client.key, body['session']):
+                await self._sidecar_io(self.file_receiver.handle, client.key,
+                    {'request': request, 'action': 'cancel', 'session': body['session'], 'id': result.get('id')})
+                result = {'request': request, 'ok': False, 'error_code': 'session_unavailable', 'error': '目标窗口已关闭或不再授权。'}
+            return [pack_json(OP_FILE_TRANSFER, result)], None
         if op == OP_DAEMON_LOGS:
             body = unpack_json(payload)
             request = body.get('request', '')
@@ -942,6 +1079,12 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
                                 op, payload = unpack(message[4:])
                             except ProtocolError:
                                 continue
+                            if op in (OP_FILE_TRANSFER, OP_ASSISTANT_CONTEXT):
+                                async def close_sidecar(close_code, phone_id=phone_id, attached=client):
+                                    if phones.get(phone_id, (None,))[0] is attached:
+                                        await disconnect(phone_id, 'Invalid credentials', close_code)
+                                daemon.queue_sidecar_request(client, op, payload, close_sidecar)
+                                continue
                             frames, _close = await daemon._op(client, op, payload)
                             if _close:
                                 await disconnect(phone_id, "Invalid credentials", _close)
@@ -979,6 +1122,8 @@ async def log_daemon_status(daemon: Daemon, interval: float = 15) -> None:
     """An event-loop heartbeat uses metadata only; it never reads a PTY."""
     started = time.monotonic()
     while True:
+        if daemon.file_receiver is not None:
+            await daemon._sidecar_io(daemon.file_receiver.expire)
         LOGGER.info('heartbeat uptime_seconds=%d windows=%d terminals=%d clients=%d relays_online=%d relays_configured=%d',
                     int(time.monotonic()-started), len(daemon.hub.windows), len(daemon.hub.sessions),
                     len(daemon.hub.clients), len(daemon.relay_live), len(daemon.relay_targets))
@@ -996,6 +1141,7 @@ def main() -> None:
     credentials.add_argument("--token", default=None, help="Set and save this host's owner token; default reads private token.txt then the saved token")
     credentials.add_argument("--token-file", metavar="PATH", help="Read and save the host owner token from a private file")
     parser.add_argument("--state-dir", help="Isolated state directory; ignores global token-file defaults unless --token-file is explicit")
+    parser.add_argument("--receive-dir", help="Preset folder for received clipboard files; defaults to the state directory's received-files folder")
     parser.add_argument("--no-relay", action="store_true", help="Do not load saved outbound relays")
     log_window = parser.add_mutually_exclusive_group()
     log_window.add_argument('--log-window', dest='log_window', action='store_true', default=None, help='Open the independent scrolling daemon log window')
@@ -1072,6 +1218,8 @@ def main() -> None:
     except ValueError as exc:
         parser.error(str(exc))
     daemon = Daemon(token)
+    if args.receive_dir:
+        daemon.receive_dir = Path(args.receive_dir).absolute()
     daemon.allowed_origins = args.allowed_origin
     if args.relay:
         selected = {**(existing or {}), "name": (existing or {}).get("name") or args.relay, "url": args.relay, "code": code}
@@ -1112,6 +1260,7 @@ def main() -> None:
             if heartbeat is not None: jobs.append(heartbeat)
             for task in jobs: task.cancel()
             if jobs: await asyncio.gather(*jobs, return_exceptions=True)
+            await daemon.close_sidecars()
 
     from .daemon_logs import configure_logging, shutdown_logging
     logger = configure_logging(STATE, secrets=[token, *[item.get('owner_secret', '') for item in daemon.relay_targets]])

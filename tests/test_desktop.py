@@ -55,7 +55,7 @@ class DesktopTest(unittest.TestCase):
         import sys
         from unittest.mock import Mock
         webview = SimpleNamespace(create_window=Mock(), start=Mock())
-        with patch.dict(sys.modules, {"webview": webview}), patch.object(desktop, "connection_url", return_value="http://localhost:6769/workspace"), patch("supermonoagent.frontend.local_page_url", return_value="http://127.0.0.1:6771/workspace"), patch.object(desktop, "NativeUpdateRecovery") as recovery, patch.object(desktop.sys, "platform", "win32"):
+        with patch.dict(sys.modules, {"webview": webview}), patch.object(desktop, "connection_url", return_value="http://localhost:6769/workspace"), patch("supermonoagent.frontend.local_page_url", return_value="http://127.0.0.1:6771/workspace"), patch("supermonoagent.desktop_assistant.DesktopAssistant"), patch("supermonoagent.desktop_files.DesktopFiles"), patch.object(desktop, "NativeUpdateRecovery") as recovery, patch.object(desktop.sys, "platform", "win32"):
             desktop.main([])
         from pathlib import Path
         icon = Path(desktop.__file__).parent / "static" / "app-icon.ico"

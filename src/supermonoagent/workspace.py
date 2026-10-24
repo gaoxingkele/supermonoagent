@@ -33,3 +33,16 @@ PAGE = r'''<!doctype html>
 <script src="/xterm.js"></script><script src="/xterm-fit.js"></script><script src="/xterm-unicode11.js"></script><script src="/xterm-webgl.js"></script><script src="/terminal-client.js"></script><script src="/tab-themes.js"></script><script src="/workspace.js"></script></body></html>'''
 
 PAGE = PAGE.replace('__SUPERMONO_DEFAULT_RELAY__', escape(default_relay(), quote=True))
+
+
+def javascript(static_root=None):
+    """Keep optional feature UI inside the existing signed workspace resource."""
+    from pathlib import Path
+
+    root = Path(static_root) if static_root is not None else Path(__file__).parent / 'static'
+    parts = [(root / 'workspace.js').read_text(encoding='utf-8')]
+    for name in ('clipboard-files.js', 'mylib-assistant.js'):
+        path = root / name
+        if path.is_file():
+            parts.append(path.read_text(encoding='utf-8'))
+    return '\n;\n'.join(parts)

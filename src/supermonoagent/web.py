@@ -2107,6 +2107,9 @@ def page_content(path: str):
 def static_text(name: str) -> str:
     from pathlib import Path
 
+    if name == 'workspace.js':
+        from .workspace import javascript
+        return javascript()
     return (Path(__file__).parent / "static" / name).read_text(encoding="utf-8")
 
 

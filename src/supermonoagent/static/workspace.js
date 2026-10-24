@@ -532,6 +532,28 @@
       tab.oncontextmenu=event=>tabMenu(event,info.win,context);
       tab.append(pick,button('×','关闭视图（保留后台进程）',guard(()=>removeView(id))));$('tabs').append(tab);
     }
+    renderTabPicker();
+    const current=$('tabs').querySelector('[aria-selected="true"]')?.parentElement;
+    if(current){const tabs=$('tabs'),a=tabs.getBoundingClientRect(),b=current.getBoundingClientRect();if(b.left<a.left)tabs.scrollLeft+=b.left-a.left;else if(b.right>a.right)tabs.scrollLeft+=b.right-a.right;}
+    updateTabNavigation();
+  }
+  function updateTabNavigation(){const tabs=$('tabs');if(!$('tabs-scroll-left'))return;$('tabs-scroll-left').disabled=tabs.scrollLeft<=1;$('tabs-scroll-right').disabled=tabs.scrollLeft+tabs.clientWidth>=tabs.scrollWidth-1;positionTabPicker();}
+  function positionTabPicker(){const menu=$('tabs-overflow-menu');if(!menu||menu.hidden)return;const anchor=$('tabs-overflow-toggle').getBoundingClientRect(),size=menu.getBoundingClientRect();menu.style.position='fixed';menu.style.right='auto';menu.style.left=Math.max(8,Math.min(anchor.right-size.width,innerWidth-size.width-8))+'px';menu.style.top=Math.max(8,Math.min(anchor.bottom+6,innerHeight-size.height-8))+'px';}
+  function closeTabPicker(focus=false){const menu=$('tabs-overflow-menu');if(!menu)return;menu.hidden=true;$('tabs-overflow-toggle').setAttribute('aria-expanded','false');if(focus)$('tabs-overflow-toggle').focus();}
+  function renderTabPicker(){
+    const menu=$('tabs-overflow-menu');if(!menu)return;menu.replaceChildren();
+    const groups=new Map();for(const id of openTabs){const info=sessionInfo(id);if(!info)continue;const host=info.win.host;if(!groups.has(host))groups.set(host,[]);groups.get(host).push({id,info});}
+    $('tabs-overflow-toggle').textContent='全部窗口 ('+[...groups.values()].reduce((n,items)=>n+items.length,0)+') ▾';
+    for(const [host,items] of groups){
+      menu.append(node('div','tab-picker-heading',(host.identity.machine||host.name)+(host.config.code?' · '+host.config.code:'')));
+      for(const {id,info} of items){
+        const context=owner(host),row=button('','切换到 '+(info.win.title||info.session.shell),()=>{closeTabPicker();if(validOwner(context)&&sessionInfo(id))openView(id);});
+        row.className='tab-picker-row';row.setAttribute('role','menuitemradio');row.setAttribute('aria-checked',String(id===active));row.dataset.host=host.id;row.dataset.session=info.session.raw;
+        row.append(node('span','session-dot'),node('span','tab-picker-title',info.win.title||info.session.shell),node('span','',id===active?'✓':''));menu.append(row);
+      }
+    }
+    if(!groups.size)menu.append(node('p','muted','尚未打开窗口'));
+    updateSessionDots();positionTabPicker();
   }
   function tabMenu(event,win,context){
     if(context&&!validOwner(context))return;
@@ -542,7 +564,7 @@
   }
   function updateSessionDots(){
     const now=performance.now(),labels={disconnected:'已断开',waiting:'等待输入（暂未收到新输出）',refreshing:'正在刷新'};
-    for(const row of $('tree').querySelectorAll('.session-row')){
+    for(const row of document.querySelectorAll('#tree .session-row,#tabs-overflow-menu .tab-picker-row')){
       const host=hosts.get(row.dataset.host),last=host?.activity.get(row.dataset.session);
       const state=!host?.connected?'disconnected':last!==undefined&&now-last<1800?'refreshing':'waiting';
       if(row.dataset.state===state)continue;
@@ -906,7 +928,14 @@
   $('rename-cancel').onclick=()=>$('rename-dialog').close();$('rename-form').onsubmit=e=>{e.preventDefault();send(renameWindow,15,{action:'title',window:renameWindow?.id,title:$('rename-value').value.trim()});$('rename-dialog').close();};
   $('terminate-cancel').onclick=()=>$('terminate-dialog').close();$('terminate-form').onsubmit=e=>{e.preventDefault();send(terminateSession,9,{session:terminateSession?.id});$('terminate-dialog').close();};
   $('new-project').onclick=()=>showRelayProfiles('workspace');
-  $('app-menu-toggle').onclick=()=>{closeRoomMenu();const menu=$('app-menu');menu.hidden=!menu.hidden;$('app-menu-toggle').setAttribute('aria-expanded',String(!menu.hidden));if(!menu.hidden)menu.querySelector('button')?.focus();};
+  const tabPicker=node('div','tab-picker'),tabPickerToggle=button('全部窗口 ▾','查看全部已打开窗口',()=>{const menu=$('tabs-overflow-menu'),show=menu.hidden;closeRoomMenu();closeAppMenu();renderTabPicker();menu.hidden=!show;positionTabPicker();tabPickerToggle.setAttribute('aria-expanded',String(show));if(show)(menu.querySelector('[aria-checked="true"]')||menu.querySelector('button'))?.focus();});
+  tabPickerToggle.id='tabs-overflow-toggle';tabPickerToggle.setAttribute('aria-haspopup','menu');tabPickerToggle.setAttribute('aria-expanded','false');tabPickerToggle.setAttribute('aria-controls','tabs-overflow-menu');
+  const tabPickerMenu=node('div');tabPickerMenu.id='tabs-overflow-menu';tabPickerMenu.hidden=true;tabPickerMenu.setAttribute('role','menu');tabPickerMenu.setAttribute('aria-label','全部已打开窗口');tabPicker.append(tabPickerToggle,tabPickerMenu);
+  const titlebar=document.querySelector('.titlebar'),toolbar=document.querySelector('.toolbar-actions');titlebar.querySelector('.header-spacer').before(toolbar,tabPicker);
+  for(const [direction,label,arrow] of [[-1,'向左滚动页签','‹'],[1,'向右滚动页签','›']]){const control=button(arrow,label,()=>$('tabs').scrollBy({left:direction*Math.max(120,$('tabs').clientWidth*.7),behavior:'smooth'}));control.className='tab-scroll';control.id=direction<0?'tabs-scroll-left':'tabs-scroll-right';if(direction<0)$('tabs').before(control);else $('tabs').after(control);}
+  $('tabs').addEventListener('scroll',updateTabNavigation,{passive:true});addEventListener('resize',updateTabNavigation);
+  const titlebarObserver=new ResizeObserver(()=>{document.documentElement.style.setProperty('--workspace-titlebar-height',titlebar.getBoundingClientRect().height+'px');updateTabNavigation();});titlebarObserver.observe(titlebar);addEventListener('beforeunload',()=>titlebarObserver.disconnect(),{once:true});
+  $('app-menu-toggle').onclick=()=>{closeTabPicker();closeRoomMenu();const menu=$('app-menu');menu.hidden=!menu.hidden;$('app-menu-toggle').setAttribute('aria-expanded',String(!menu.hidden));if(!menu.hidden)menu.querySelector('button')?.focus();};
   $('menu-connect').onclick=()=>showRelayProfiles();
   $('menu-daemon-monitor').onclick=showDaemonMonitor;
   $('daemon-monitor-close').onclick=()=>$('daemon-monitor-dialog').close();
@@ -962,10 +991,11 @@
     if(!prefilledTokenTarget)return;let same=false;try{same=profileEndpoint($('relay-profile-address').value,$('relay-profile-port').value)===prefilledTokenTarget;}catch{}
     if(!same){$('relay-profile-token').value='';prefilledTokenTarget='';defaultTokenEdited=true;$('relay-profile-token').title='';}
   });
-  document.addEventListener('click',event=>{if(!event.target.closest('#app-menu,#app-menu-toggle')||event.target.closest('#app-menu button'))closeAppMenu();if(roomMenu&&!event.target.closest('.room-menu,.workspace-host-edit'))closeRoomMenu();});
+  document.addEventListener('click',event=>{if(!event.target.closest('.tab-picker'))closeTabPicker();if(!event.target.closest('#app-menu,#app-menu-toggle')||event.target.closest('#app-menu button'))closeAppMenu();if(roomMenu&&!event.target.closest('.room-menu,.workspace-host-edit'))closeRoomMenu();});
   document.addEventListener('keydown',event=>{
-    const menu=roomMenu||(!$('app-menu').hidden?$('app-menu'):null);if(!menu)return;
-    if(event.key==='Escape'){event.preventDefault();closeRoomMenu();closeAppMenu();$('app-menu-toggle').focus();}
+    const pickerOpen=!$('tabs-overflow-menu').hidden;
+    const menu=roomMenu||(pickerOpen?$('tabs-overflow-menu'):!$('app-menu').hidden?$('app-menu'):null);if(!menu)return;
+    if(event.key==='Escape'){event.preventDefault();closeRoomMenu();closeAppMenu();if(pickerOpen)closeTabPicker(true);else $('app-menu-toggle').focus();}
     if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){event.preventDefault();const items=[...menu.querySelectorAll('button:not(:disabled)')];if(!items.length)return;const index=items.indexOf(document.activeElement);items[event.key==='Home'?0:event.key==='End'?items.length-1:(index+(event.key==='ArrowUp'?-1:1)+items.length)%items.length].focus();}
   });
   for(const [command,label] of presets){const option=node('option','',label);option.value=command;$('preset').append(option);}

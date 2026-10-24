@@ -89,7 +89,7 @@ def test_real_signature_and_current_epoch_are_accepted(tmp_path):
 
 
 @pytest.mark.parametrize('changes', [
-    {'created': int(time.time()) + 600}, {'expires': 1}, {'sequence': 0},
+    {'created': 'future'}, {'expires': 1}, {'sequence': 0},
     {'sequence': 1.5}, {'schema': '1'}, {'extra': True},
     {'url': 'http://117.50.48.22/updates/installers/0.2.35/SuperMonoAgent-0.2.35-Setup.zip'},
     {'url': 'https://elsewhere.test/updates/installers/0.2.35/SuperMonoAgent-0.2.35-Setup.zip'},
@@ -97,6 +97,8 @@ def test_real_signature_and_current_epoch_are_accepted(tmp_path):
     {'url': '/other.zip'},
 ])
 def test_signed_but_invalid_feed_is_rejected(tmp_path, changes):
+    if changes.get('created') == 'future':
+        changes = {**changes, 'created': int(time.time()) + 600}
     feed = signed_feed(tmp_path, **changes)
     result = run_ps(f"try {{Read-SmaFullFeed ([IO.File]::ReadAllBytes({ps_literal(feed)})) ([Uri]'{FEED}');exit 2}} catch {{'rejected';exit 0}}")
     assert result.returncode == 0, result.stderr

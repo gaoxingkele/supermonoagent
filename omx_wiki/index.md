@@ -1,8 +1,10 @@
 # Wiki Index
 
-> 7 pages | Last updated: 2026-10-24
+> 8 pages | Last updated: 2026-10-25
 
 ## decision
+
+- [文件粘贴与 mylib 助理](clipboard-and-mylib-assistant.md) — 后台任务隔离、原生桥接、证据账本及真实剪贴板验收边界
 
 - [运行时配置与回滚验收](runtime-config-and-recovery.md) — Token＋房间、翻屏及 Android 修复后真机验收边界
 
