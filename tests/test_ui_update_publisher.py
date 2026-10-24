@@ -110,6 +110,26 @@ class PublisherTest(unittest.TestCase):
         for value in ['/var/../etc','/tmp/x;touch','relative','/tmp//path']:
             with self.assertRaises(ValueError):release.remote_root(value)
 
+    @unittest.skipUnless(os.name=='nt','Windows byte-range lock regression')
+    def test_empty_builder_lock_held_by_another_process_waits_without_writing(self):
+        import threading
+        with tempfile.TemporaryDirectory() as tmp:
+            output=Path(tmp)
+            script="import sys,msvcrt; f=open(sys.argv[1],'a+b'); msvcrt.locking(f.fileno(),msvcrt.LK_NBLCK,1); print('LOCKED',flush=True); sys.stdin.buffer.read(1); f.seek(0); msvcrt.locking(f.fileno(),msvcrt.LK_UNLCK,1); f.close()"
+            holder=subprocess.Popen([sys.executable,'-c',script,str(output/'.package-lock')],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            release_thread=None
+            try:
+                self.assertEqual(holder.stdout.readline().strip(),b'LOCKED')
+                def release_lock():
+                    time.sleep(.2);holder.stdin.write(b'\n');holder.stdin.flush()
+                release_thread=threading.Thread(target=release_lock);release_thread.start()
+                with release.build_lock(output):
+                    self.assertEqual((output/'.package-lock').stat().st_size,0)
+            finally:
+                if release_thread is not None:release_thread.join(timeout=3)
+                if holder.poll() is None and release_thread is None:holder.terminate()
+                holder.communicate(timeout=5)
+
     def test_killed_local_builder_releases_os_lock_and_can_build_again(self):
         with tempfile.TemporaryDirectory() as tmp:
             output=Path(tmp)/'channel'

@@ -129,20 +129,32 @@ def port_open(host: str = HOST, port: int = PORT) -> bool:
         return False
 
 
-def host_command(host: str = HOST, port: int = PORT, state_dir: str | None = None) -> list[str]:
+def host_command(host: str = HOST, port: int = PORT, state_dir: str | None = None, *,
+                 relay: str = "", token: str | None = None, token_file: str | None = None, code: str = "") -> list[str]:
     entry = ["host"] if getattr(sys, "frozen", False) else ["-m", "supermonoagent"]
     command = [sys.executable, *entry, "--host", host, "--port", str(port)]
     if state_dir:
         command.extend(["--state-dir", state_dir])
+    if relay:
+        command.extend(["--relay", relay])
+    if code:
+        command.extend(["--code", code])
+    if token is not None and token_file is not None:
+        raise ValueError("Use either --token or --token-file")
+    if token is not None:
+        command.extend(["--token", token])
+    elif token_file is not None:
+        command.extend(["--token-file", token_file])
     return command
 
 
-def start_host(host: str = HOST, port: int = PORT, state_dir: str | None = None) -> None:
+def start_host(host: str = HOST, port: int = PORT, state_dir: str | None = None, *,
+               relay: str = "", token: str | None = None, token_file: str | None = None, code: str = "") -> None:
     flags = 0
     if sys.platform == "win32":
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     process = subprocess.Popen(
-        host_command(host, port, state_dir), creationflags=flags, stdin=subprocess.DEVNULL,
+        host_command(host, port, state_dir, relay=relay, token=token, token_file=token_file, code=code), creationflags=flags, stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
     )
     for _ in range(75):
@@ -189,7 +201,13 @@ def argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default=HOST, help="Local daemon host (default loopback)")
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--state-dir", help="State directory when starting a new local daemon")
-    parser.add_argument("--url", help="Remote HTTP(S) daemon/relay URL; never starts a local daemon")
+    endpoint = parser.add_mutually_exclusive_group()
+    endpoint.add_argument("--url", help="Remote HTTP(S) daemon/relay URL; never starts a local daemon")
+    endpoint.add_argument("--relay", default="", help="Outbound relay URL when starting a new local daemon; running hosts keep their configuration")
+    credentials = parser.add_mutually_exclusive_group()
+    credentials.add_argument("--token", default=None, help="Owner token for a new daemon or explicit --url; running local hosts keep their credentials")
+    credentials.add_argument("--token-file", default=None, help="Private owner token file for a new daemon or explicit --url")
+    parser.add_argument("--code", default="", help="Optional new-host room override; otherwise keep its saved room or use this computer's name")
     page_choice = parser.add_mutually_exclusive_group()
     page_choice.add_argument("--legacy", action="store_true", help="Open the original terminal page")
     page_choice.add_argument("--workspace", action="store_true", help="Open the workspace page in browser mode")
@@ -204,13 +222,24 @@ def argument_parser() -> argparse.ArgumentParser:
 
 def connection_url(args: argparse.Namespace, *, browser: bool = False) -> str:
     if args.url:
-        return page_url(args.url, legacy=args.legacy, renderer=args.renderer, browser=browser, workspace=args.workspace)
+        token = getattr(args, "token", None) or ""
+        if getattr(args, "token_file", None) is not None:
+            from .token_config import read_default_token
+            token = read_default_token(args.token_file)
+            if not token:
+                raise ValueError("Token file does not exist or contains no token")
+        return page_url(args.url, legacy=args.legacy, renderer=args.renderer, token=token, browser=browser, workspace=args.workspace)
     if args.host not in {"127.0.0.1", "localhost", "::1"} or not 1 <= args.port <= 65535:
         raise ValueError("Automatic startup requires a loopback host and a valid port; use --url for remote servers")
     if not port_open(args.host, args.port):
         if args.no_start:
             raise ValueError("No daemon is listening; start the host or omit --no-start")
-        start_host(args.host, args.port, args.state_dir)
+        startup = {}
+        for name in ("relay", "token", "token_file", "code"):
+            value = getattr(args, name, None)
+            if value is not None and (name in {"token", "token_file"} or value != ""):
+                startup[name] = value
+        start_host(args.host, args.port, args.state_dir, **startup)
     authority = f"[{args.host}]" if ":" in args.host else args.host
     base = f"http://{authority}:{args.port}"
     status = health(base)

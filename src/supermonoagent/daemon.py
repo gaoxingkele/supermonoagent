@@ -190,13 +190,30 @@ def save_identity(machine: str, project: str) -> dict:
     return ident
 
 
-def load_code() -> str:
+def _new_room_name(explicit: str | None = None) -> str:
+    code = (explicit or "").strip() or default_machine()
+    if len(code) > 128 or any(ord(char) < 32 or ord(char) == 127 for char in code):
+        raise ValueError("Room name must contain 1 to 128 characters without control characters")
+    return code
+
+
+def load_code(explicit: str | None = None) -> str:
     path = STATE / "relay-code"
-    if path.exists():
-        return path.read_text(encoding="utf-8").strip()
+    if explicit is None and path.exists():
+        saved = path.read_text(encoding="utf-8").strip()
+        if saved:
+            return saved
+    code = _new_room_name(explicit)
     STATE.mkdir(parents=True, exist_ok=True)
-    code = secrets.token_hex(3)
-    path.write_text(code, encoding="utf-8")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=STATE, prefix=".relay-code-", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(code)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return code
 
 
@@ -925,6 +942,11 @@ def main() -> None:
     context = tls_context(args.tls_cert, args.tls_key)
     if not loopback(args.host) and not context and not (args.reverse_proxy_tls and args.allowed_origin and all(origin.startswith('https://') for origin in args.allowed_origin)):
         parser.error('Public serving requires TLS or --reverse-proxy-tls with --allowed-origin')
+    if args.code:
+        try:
+            _new_room_name(args.code)
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.state_dir:
         STATE = Path(args.state_dir).resolve()
         os.environ["SUPERMONO_STATE_DIR"] = str(STATE)
@@ -971,12 +993,23 @@ def main() -> None:
             parser.error(str(exc))
         print('Local relay account binding saved; running hosts reload within one second.')
         return
-    code = args.code or load_code()
+    targets = [] if args.no_relay else load_relays()
+    existing = None
+    if args.relay:
+        requested = clean_relays([{"url": args.relay, "code": "lookup"}])
+        if requested:
+            existing = next((item for item in clean_relays(targets) if item["url"] == requested[0]["url"]), None)
+    try:
+        code = load_code(args.code) if args.code else existing["code"] if existing else load_code()
+    except ValueError as exc:
+        parser.error(str(exc))
     daemon = Daemon(token)
     daemon.allowed_origins = args.allowed_origin
-    targets = [] if args.no_relay else load_relays()
     if args.relay:
-        targets = list(targets) + [{"name": args.relay, "url": args.relay, "code": code, "owner_secret": args.relay_owner_secret}]
+        selected = {**(existing or {}), "name": (existing or {}).get("name") or args.relay, "url": args.relay, "code": code}
+        if args.relay_owner_secret:
+            selected["owner_secret"] = args.relay_owner_secret
+        targets = [selected, *targets]
     daemon.relay_targets = clean_relays(targets)
     if args.relay:
         STATE.mkdir(parents=True, exist_ok=True)

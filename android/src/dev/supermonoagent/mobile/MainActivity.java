@@ -187,20 +187,28 @@ public final class MainActivity extends Activity {
         button(form,"Check UI updates",view->checkUpdates(true));
         button(form,"Restore previous UI",view->rollbackUpdate());
         button(form,"Use bundled UI",view->confirmBundledUI());
-        boolean personalDefaults = !defaults.optString("token").isEmpty();
-        EditText url = input(form, "服务器地址", personalDefaults ? defaults.optString("endpoint", "https://117.50.48.22") : preferences.getString("url", defaults.optString("endpoint", "https://117.50.48.22")), false);
-        EditText code = input(form, "房间号（可选，测试后自动列出）", personalDefaults ? defaults.optString("code") : preferences.getString("code", defaults.optString("code")), false);
-        EditText token = input(form, "访问令牌", savedOrDefaultToken(url.getText().toString()), true);
+        String savedEndpoint=preferences.getString("url",defaults.optString("endpoint","https://117.50.48.22"));
+        EditText url=input(form,"中继 IP / 地址（也支持完整 URL）",ConnectionEndpoint.displayAddress(savedEndpoint),false);
+        EditText port=input(form,"端口（HTTPS 默认 443）",ConnectionEndpoint.displayPort(savedEndpoint),false);
+        port.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        TextView addressHelp=new TextView(this);addressHelp.setText("直接填写 IP 或域名即可。完整 URL 自带端口时优先使用该端口；原有 HTTPS 路径仍可使用。");addressHelp.setTextColor(Color.LTGRAY);form.addView(addressHelp);
+        LinearLayout advanced=new LinearLayout(this);advanced.setOrientation(LinearLayout.VERTICAL);advanced.setVisibility(View.GONE);
+        EditText code=input(advanced,"手动房间（高级，可留空）","",false);
+        String previousRoom=preferences.getString("code",defaults.optString("code"));
+        if(!previousRoom.isEmpty())button(advanced,"使用上次手动房间："+previousRoom,view->code.setText(previousRoom));
+        final String[] credentialScope={""};
+        try{credentialScope[0]=SavedConnectionTokens.canonicalEndpoint(ConnectionEndpoint.fromAddress(url.getText().toString(),port.getText().toString()));}catch(IllegalArgumentException incomplete){}
+        EditText token=input(form,"Token（默认加密记忆）",savedOrDefaultToken(credentialScope[0]),true);
         final SavedConnectionTokens.EditState tokenEdits=new SavedConnectionTokens.EditState();
         android.widget.CheckBox rememberToken = new android.widget.CheckBox(this);
         rememberToken.setText("保存 Token（返回页面和重启后自动填写）");
         rememberToken.setTextColor(Color.WHITE);
         rememberToken.setChecked(preferences.getBoolean("remember-server-token",true));
         form.addView(rememberToken);
-        saveConnectionDraft=()->{
+        final Runnable persistCredentials=()->{
             preferences.edit().putBoolean("remember-server-token",rememberToken.isChecked()).apply();
             try {
-                String target=url.getText().toString().trim(),value=token.getText().toString();
+                String target=credentialScope[0],value=token.getText().toString();
                 SavedConnectionTokens.EditState.Action action=tokenEdits.action(rememberToken.isChecked(),value);
                 if(action==SavedConnectionTokens.EditState.Action.SAVE)SavedConnectionTokens.save(this,target,value);
                 else if(action==SavedConnectionTokens.EditState.Action.REMOVE&&!SavedConnectionTokens.remove(this,target))throw new IllegalStateException("Unable to forget credential");
@@ -209,18 +217,21 @@ public final class MainActivity extends Activity {
             }catch(IllegalArgumentException incomplete){ }
             catch(Exception error){android.widget.Toast.makeText(this,"Token 未能保存，请重试。",android.widget.Toast.LENGTH_SHORT).show();}
         };
+        saveConnectionDraft=persistCredentials;
         token.addTextChangedListener(new android.text.TextWatcher(){
             public void beforeTextChanged(CharSequence text,int start,int count,int after){ }
             public void onTextChanged(CharSequence text,int start,int before,int count){tokenEdits.changed();}
             public void afterTextChanged(android.text.Editable text){ }
         });
-        rememberToken.setOnCheckedChangeListener((button,checked)->{if(!checked)tokenEdits.forget();saveConnectionDraft.run();});
+        rememberToken.setOnCheckedChangeListener((button,checked)->{if(!checked)tokenEdits.forget();persistCredentials.run();});
+        button(form,"高级设置（手动房间 / 渲染 / 通知）",view->advanced.setVisibility(advanced.getVisibility()==View.VISIBLE?View.GONE:View.VISIBLE));
+        form.addView(advanced);
         Spinner renderer = new Spinner(this);
         renderer.setAdapter(new ArrayAdapter<String>(this, android.R.layout.simple_spinner_dropdown_item,
                 new String[]{"自动选择渲染器", "默认渲染（DOM）", "WebGL 渲染（GPU）"}));
         String selected = preferences.getString("renderer", "auto");
         for (int i = 0; i < renderers.length; i++) if (renderers[i].equals(selected)) renderer.setSelection(i);
-        form.addView(renderer);
+        advanced.addView(renderer);
         TextView help = new TextView(this);
         help.setText("测试连接会列出同一 Token 可访问的房间，默认全选。保存的 Token 使用系统密钥加密，仅自动填入对应服务器。");
         help.setTextColor(Color.LTGRAY);
@@ -250,15 +261,30 @@ public final class MainActivity extends Activity {
             }
             public void afterTextChanged(android.text.Editable text) { }
         };
-        url.addTextChangedListener(invalidateRooms);code.addTextChangedListener(invalidateRooms);token.addTextChangedListener(invalidateRooms);
+        url.addTextChangedListener(invalidateRooms);port.addTextChangedListener(invalidateRooms);code.addTextChangedListener(invalidateRooms);token.addTextChangedListener(invalidateRooms);
+        final Runnable refreshCredentials=()->{
+            String next="";try{next=SavedConnectionTokens.canonicalEndpoint(ConnectionEndpoint.fromAddress(url.getText().toString(),port.getText().toString()));}catch(IllegalArgumentException incomplete){}
+            if(next.equals(credentialScope[0]))return;
+            persistCredentials.run();credentialScope[0]=next;
+            tokenEdits.beginLoad();try{token.setText(savedOrDefaultToken(next));}finally{tokenEdits.endLoad();}
+        };
         url.addTextChangedListener(new android.text.TextWatcher(){
             public void beforeTextChanged(CharSequence text,int start,int count,int after){ }
-            public void onTextChanged(CharSequence text,int start,int before,int count){tokenEdits.beginLoad();try{token.setText(savedOrDefaultToken(text.toString()));}finally{tokenEdits.endLoad();}}
+            public void onTextChanged(CharSequence text,int start,int before,int count){
+                int embedded=ConnectionEndpoint.embeddedPort(text.toString());port.setEnabled(embedded<0);
+                if(embedded>=0&&!Integer.toString(embedded).equals(port.getText().toString()))port.setText(Integer.toString(embedded));
+                refreshCredentials.run();
+            }
+            public void afterTextChanged(android.text.Editable text){ }
+        });
+        port.addTextChangedListener(new android.text.TextWatcher(){
+            public void beforeTextChanged(CharSequence text,int start,int count,int after){ }
+            public void onTextChanged(CharSequence text,int start,int before,int count){refreshCredentials.run();}
             public void afterTextChanged(android.text.Editable text){ }
         });
         probe.setOnClickListener(view -> {
-            saveConnectionDraft.run();
-            final String endpoint = url.getText().toString().trim();
+            persistCredentials.run();
+            final String endpoint;try{endpoint=ConnectionEndpoint.fromAddress(url.getText().toString(),port.getText().toString());}catch(IllegalArgumentException invalid){url.setError(invalid.getMessage());return;}
             final String relayCode = code.getText().toString().trim();
             final String accessToken = token.getText().toString();
             final int probeGeneration=probeScopeGeneration[0];
@@ -267,17 +293,16 @@ public final class MainActivity extends Activity {
             connectButton.setEnabled(false);
             probeStatus.setText("正在测试连接并查询可用房间…");
             new Thread(() -> {
-                boolean direct = false;
-                try { String host=Uri.parse(ConnectionEndpoint.normalize(endpoint)).getHost();direct=relayCode.isEmpty()&&(host.equals("localhost")||host.equals("::1")||host.equals("[::1]")||host.matches("127[.][0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3}")); } catch(Exception ignored) { }
-                final ConnectionProbe.DiscoveryResult discovered = direct ? null : ConnectionProbe.discover(endpoint, accessToken);
-                // A discovery rejection is never proof of direct access: authenticate a real HELLO.
-                final ConnectionProbe.ProbeResult directResult = direct||(relayCode.isEmpty()&&!discovered.success)?ConnectionProbe.verifyDirect(endpoint,accessToken):null;
-                final String result = direct?directResult.message:discovered.success?discovered.message:directResult!=null&&directResult.success?directResult.message:relayCode.isEmpty()?discovered.message:ConnectionProbe.test(endpoint, relayCode, accessToken);
+                // Room discovery always covers the whole Token scope, including loopback relays.
+                final ConnectionProbe.DiscoveryResult discovered=ConnectionProbe.discover(endpoint,accessToken);
+                final ConnectionProbe.ProbeResult directResult=relayCode.isEmpty()&&!discovered.success?ConnectionProbe.verifyDirect(endpoint,accessToken):null;
+                final String result=discovered.success?discovered.message:directResult!=null&&directResult.success?directResult.message:relayCode.isEmpty()?discovered.message:ConnectionProbe.test(endpoint, relayCode, accessToken);
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed() || formGeneration != connectionFormGeneration) return;
                     probe.setEnabled(true);
                     connectButton.setEnabled(true);
-                    boolean unchanged = probeGeneration==probeScopeGeneration[0]&&endpoint.equals(url.getText().toString().trim())
+                    String currentEndpoint="";try{currentEndpoint=ConnectionEndpoint.fromAddress(url.getText().toString(),port.getText().toString());}catch(IllegalArgumentException incomplete){}
+                    boolean unchanged = probeGeneration==probeScopeGeneration[0]&&endpoint.equals(currentEndpoint)
                             && relayCode.equals(code.getText().toString().trim())
                             && accessToken.equals(token.getText().toString());
                     probeStatus.setText(unchanged ? result : "连接参数已修改，请重新测试。");
@@ -297,20 +322,20 @@ public final class MainActivity extends Activity {
         });
         connectButton.setOnClickListener(view -> {
             try {
-                saveConnectionDraft.run();
-                Uri endpoint = validEndpoint(url.getText().toString().trim());
+                persistCredentials.run();
+                Uri endpoint=validEndpoint(ConnectionEndpoint.fromAddress(url.getText().toString(),port.getText().toString()));
                 String mode = renderers[renderer.getSelectedItemPosition()];
                 String relayCode = code.getText().toString().trim();
-                JSONArray selectedRooms = null;
-                if(selectionScope[0]!=null && selectionScope[0].equals(url.getText().toString().trim()+"\n"+token.getText().toString())) {
-                    selectedRooms = new JSONArray();
+                JSONArray selectedRooms = null,excludedRoomCodes=null;
+                if(selectionScope[0]!=null && selectionScope[0].equals(endpoint.toString()+"\n"+token.getText().toString())) {
+                    selectedRooms = new JSONArray();excludedRoomCodes=new JSONArray();
                     for(int i=0;i<availableRooms.size();i++)if(roomChecks.get(i).isChecked()) {
                         ConnectionProbe.Room room=availableRooms.get(i);JSONObject item=new JSONObject();
                         item.put("code",room.code);item.put("machine",room.machine);item.put("project",room.project);selectedRooms.put(item);
-                    }
+                    }else excludedRoomCodes.put(availableRooms.get(i).code);
                     if(selectedRooms.length()==0){probeStatus.setText("请至少勾选一个房间。");return;}
                     relayCode=selectedRooms.getJSONObject(0).getString("code");
-                } else if(relayCode.isEmpty()&&!isLoopbackEndpoint(endpoint)&&(verifiedDirect[0]==null||!verifiedDirect[0].authorizesDirect(url.getText().toString().trim(),relayCode,token.getText().toString()))) {
+                } else if(relayCode.isEmpty()&&!isLoopbackEndpoint(endpoint)&&(verifiedDirect[0]==null||!verifiedDirect[0].authorizesDirect(endpoint.toString(),relayCode,token.getText().toString()))) {
                     probeStatus.setText("请先点击测试连接并勾选房间。");return;
                 }
                 preferences.edit().putString("url", endpoint.toString()).putString("code", relayCode)
@@ -320,10 +345,10 @@ public final class MainActivity extends Activity {
                 connection.put("code", relayCode);
                 connection.put("token", token.getText().toString());
                 connection.put("renderer", mode);
-                if(selectedRooms!=null)connection.put("selectedRooms",selectedRooms);
+                if(selectedRooms!=null){connection.put("selectedRooms",selectedRooms);connection.put("discoverAllRooms",true);connection.put("excludedRoomCodes",excludedRoomCodes);}
                 localBase = LocalAssets.originForEndpoint(endpoint.toString());
-                saveConnectionDraft=null;
                 openTerminal();
+                if(terminal!=null)saveConnectionDraft=null;
             } catch (IllegalArgumentException | JSONException error) { url.setError(error.getMessage()); }
         });
         TextView changes = new TextView(this);
@@ -338,9 +363,9 @@ public final class MainActivity extends Activity {
             changes.setText("最近更新：适配手机与折叠屏，改善连接和终端显示。");
         }
         form.addView(changes);
-        button(form, "任务完成通知", view -> {
+        button(advanced, "任务完成通知", view -> {
             try {
-                JSONObject target=new JSONObject();target.put("endpoint",validEndpoint(url.getText().toString().trim()).toString());
+                JSONObject target=new JSONObject();target.put("endpoint",validEndpoint(ConnectionEndpoint.fromAddress(url.getText().toString(),port.getText().toString())).toString());
                 target.put("code",code.getText().toString().trim());target.put("token",token.getText().toString());
                 target.put("renderer",renderers[renderer.getSelectedItemPosition()]);showTaskNotifications(target);
             } catch(Exception error) { url.setError("请先填写有效的连接参数"); }
@@ -436,7 +461,7 @@ public final class MainActivity extends Activity {
         connectionFormGeneration++;
         try{
             hotAssets=HotAssets.load(getExternalFilesDir(null));
-            if(connection!=null&&connection.has("selectedRooms")&&!supportsRoomSelection(verifiedSnapshotForOpen())) {
+            if(connection!=null&&connection.has("selectedRooms")&&!supportsRoomSelection(verifiedSnapshotForOpen(),connection.optBoolean("discoverAllRooms",false))) {
                 if(updateStore!=null)updateStore.useBundled();
                 preferences.edit().putBoolean("ui-bundled-only",true).commit();
             }
@@ -507,9 +532,10 @@ public final class MainActivity extends Activity {
             updateStore=new RemoteUpdates.Store(getFilesDir().toPath().resolve("remote-ui"),updateTrust,updateFeed);restoreRecoveredUI=updateStore.recoveredOnStart();
         }catch(Exception error){updateStore=null;}
     }
-    private static boolean supportsRoomSelection(java.util.Map<String,byte[]> snapshot) throws Exception {
+    private static boolean supportsRoomSelection(java.util.Map<String,byte[]> snapshot,boolean dynamic) throws Exception {
         byte[] script=snapshot.get("mobile/app.js");
-        return script!=null&&new String(script,"UTF-8").contains("SMA_ROOM_SELECTION_V1");
+        if(script==null)return false;String source=new String(script,"UTF-8");
+        return source.contains("SMA_ROOM_SELECTION_V1")&&(!dynamic||source.contains("SMA_ROOM_SELECTION_V2"));
     }
 
     private java.util.Map<String,byte[]> effectiveSnapshot() throws Exception {

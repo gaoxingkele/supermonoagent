@@ -1,4 +1,4 @@
-/* Android-only terminal document. The daemon remains the owner of every shell. SMA_ROOM_SELECTION_V1 */
+/* Android-only terminal document. The daemon remains the owner of every shell. SMA_ROOM_SELECTION_V1 SMA_ROOM_SELECTION_V2 */
 (() => {
   'use strict';
   const $=id=>document.getElementById(id),C=TerminalClient,M=MobileCore;
@@ -15,6 +15,14 @@
       seen.add(room.code);return false;
     })){stateSelectionError();return;}
     selectedRooms=config.selectedRooms.map(room=>({code:room.code,machine:String(room.machine||'').slice(0,40),project:String(room.project||'').slice(0,40)}));
+  }
+  const discoverAllRooms=config.discoverAllRooms===true,excludedRoomCodes=new Set();
+  if(config.discoverAllRooms!==undefined&&typeof config.discoverAllRooms!=='boolean'){stateSelectionError();return;}
+  if(discoverAllRooms){
+    if(!selectedRooms||!Array.isArray(config.excludedRoomCodes)||config.excludedRoomCodes.length>64||config.excludedRoomCodes.some(code=>{
+      if(typeof code!=='string'||!code||code.length>128||/[\u0000-\u001f\u007f]/.test(code)||excludedRoomCodes.has(code)||selectedRooms.some(room=>room.code===code))return true;
+      excludedRoomCodes.add(code);return false;
+    })){stateSelectionError();return;}
   }
   function stateSelectionError(){$('status').textContent='房间选择无效，请返回连接设置重新测试';$('notice').hidden=false;$('notice').textContent='请至少选择一个可用房间。';}
   const home={id:'home',name:selectedRooms?.[0].machine||'默认电脑',endpoint:config.endpoint,code:selectedRooms?selectedRooms[0].code:config.code||''};
@@ -36,7 +44,8 @@
       hostTokens.set(id,config.token||'');
     }
   }
-  function roomAllowed(h){return !selectedRoomCodes||safeEndpoint(h)!==selectedRoomEndpoint||selectedRoomCodes.has(h.code);}
+  function roomCodeAllowed(endpoint,code){return endpoint!==selectedRoomEndpoint||!selectedRoomCodes||(discoverAllRooms?!excludedRoomCodes.has(code):selectedRoomCodes.has(code));}
+  function roomAllowed(h){return roomCodeAllowed(safeEndpoint(h),h.code);}
   const connections=new Map(),watchers=new Map();
   const sessionKey=(id=active,hid=hostId)=>JSON.stringify([hid,id]);
   const targetKey=h=>JSON.stringify([new URL(h.endpoint).toString().replace(/\/+$/,''),h.code||'']);
@@ -214,7 +223,7 @@
     const discovery=message.capabilities?.token_discovery===true,wanted=new Set();
     for(const entry of message.hosts.slice(0,64)){
       if(!entry||typeof entry.code!=='string'||!entry.code||entry.code.length>128)continue;
-      if(selectedRoomCodes&&w.url===selectedRoomEndpoint&&!selectedRoomCodes.has(entry.code))continue;
+      if(!roomCodeAllowed(w.url,entry.code))continue;
       const known=w.known.filter(h=>h.code===entry.code);
       for(const h of known){const c=connection(h);c.directoryOnline=entry.online===true;if(entry.online===true){c.machine=String(entry.machine||'');c.project=String(entry.project||'');}}
       if(known.length||!discovery||entry.online!==true||!Number.isInteger(entry.token_index)||entry.token_index<0||entry.token_index>=w.tokens.length)continue;
@@ -491,14 +500,38 @@
   $('sessions').onclick=()=>{refreshWatchers();renderHosts();renderList();$('session-dialog').showModal();};$('sessions-close').onclick=()=>$('session-dialog').close();
   $('session-search').oninput=renderList;
   let editingHost=null;
-  function editHost(h=null){editingHost=h;$('host-form').reset();$('host-name').value=h?.name||'';$('host-endpoint').value=h?.endpoint||selected().host.endpoint;$('host-code').value=h?.code||'';$('host-token').value=h?hostTokens.get(h.id)||'':'';$('host-error').hidden=true;$('session-dialog').close();$('host-dialog').showModal();}
+  let hostEditorTarget='';
+  function mobileServerAddress(address){
+    let value=String(address||'').trim();
+    if(!value.includes('://')){const slash=value.indexOf('/'),authority=slash<0?value:value.slice(0,slash),path=slash<0?'':value.slice(slash);value='https://'+(!authority.startsWith('[')&&authority.indexOf(':')!==authority.lastIndexOf(':')?'['+authority+']':authority)+path;}
+    const url=new URL(value);if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.search||url.hash)throw new Error('请填写 IP、域名或不含凭据的完整 URL');
+    const authority=value.split('/')[2],explicit=/(?:\]|[^:]):([0-9]+)$/.exec(authority||''),embedded=explicit?Number(explicit[1]):null;
+    if(embedded!==null&&(embedded<1||embedded>65535))throw new Error('端口应为 1–65535');
+    return {url,embedded};
+  }
+  function mobileServerEndpoint(address,port=''){
+    const {url,embedded}=mobileServerAddress(address);
+    if(embedded===null&&String(port).trim()){if(!/^[0-9]{1,5}$/.test(String(port).trim())||Number(port)<1||Number(port)>65535)throw new Error('端口应为 1–65535');url.port=String(Number(port));}
+    return url.toString().replace(/\/+$/,'');
+  }
+  function hostFormTarget(){try{return JSON.stringify([mobileServerEndpoint($('host-endpoint').value,$('host-port').value),$('host-code').value.trim()]);}catch{return '';}}
+  function editHost(h=null){
+    editingHost=h;$('host-form').reset();$('host-name').value=h?.name||'';
+    const endpoint=new URL(h?.endpoint||selected().host.endpoint),port=endpoint.port||(endpoint.protocol==='https:'?'443':'80');endpoint.port='';
+    $('host-endpoint').value=(endpoint.protocol==='https:'?endpoint.host:endpoint.origin)+endpoint.pathname.replace(/\/+$/,'');$('host-port').value=port;$('host-port').disabled=false;
+    $('host-code').value=h?.code||'';hostEditorTarget=hostFormTarget();$('host-token').value=h?hostTokens.get(h.id)||'':'';$('host-error').hidden=true;$('session-dialog').close();$('host-dialog').showModal();
+  }
   $('host-add').onclick=()=>editHost();
+  $('host-discover').onclick=()=>{$('host-token').value='';location.assign('/settings');};
   // A credential belongs to an exact normalized endpoint and room. Editing either requires re-entry.
-  for(const id of ['host-endpoint','host-code'])$(id).oninput=()=>{if(editingHost)$('host-token').value='';};
+  for(const id of ['host-endpoint','host-port','host-code'])$(id).oninput=()=>{
+    if(id==='host-endpoint'){try{const {embedded}=mobileServerAddress($('host-endpoint').value);$('host-port').disabled=embedded!==null;if(embedded!==null)$('host-port').value=String(embedded);}catch{$('host-port').disabled=false;}}
+    const target=hostFormTarget();if(target!==hostEditorTarget)$('host-token').value='';hostEditorTarget=target;
+  };
   const closeHost=()=>{$('host-token').value='';editingHost=null;$('host-dialog').close();$('session-dialog').showModal();};
   $('host-cancel').onclick=closeHost;$('host-dialog').addEventListener('cancel',e=>{e.preventDefault();closeHost();});
   $('host-form').onsubmit=e=>{e.preventDefault();try{
-    const u=new URL($('host-endpoint').value.trim());if(!['http:','https:'].includes(u.protocol)||u.username||u.password||u.search||u.hash)throw new Error('请填写有效 HTTP(S) 地址');
+    const u=new URL(mobileServerEndpoint($('host-endpoint').value,$('host-port').value));
     const name=$('host-name').value.trim();if(!name)throw new Error('请填写电脑名称');if(!editingHost&&hosts.filter(h=>!h.autoDirectory).length>=30)throw new Error('最多保存30台电脑');
     const h=editingHost||{id:'host-'+Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join('-')};const old=editingHost&&targetKey(h);
     Object.assign(h,{name,endpoint:u.toString().replace(/\/+$/,''),code:$('host-code').value.trim()});if(old&&old!==targetKey(h)){

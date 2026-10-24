@@ -1,10 +1,14 @@
 # Android mobile client
 
+The main connection page accepts relay IP/address and a separate port (HTTPS 443 by default); a complete HTTP(S) URL remains supported. Tokens are remembered by default with endpoint-bound Android Keystore encryption. Changing the endpoint or port clears the old autofill, and a temporary decrypt failure never deletes a saved credential. Manual room entry is in advanced settings.
+
+“测试连接” queries all rooms authorized by the Token and selects them by default. “连接” opens the chosen rooms. New connections explicitly opt into continued room discovery: new authorized rooms are included, while rooms unchecked during setup stay excluded. Older saved configurations that specified a fixed room set retain that narrower behavior. These native address/port controls require the new APK; a UI-only update cannot add them to an older Java shell.
+
 The latest build is listed in [distribution artifacts](../dist/README.md). It maintains independent saved-host directory connections, renders/subscribes only the active terminal, isolates drafts and input mode by host/session, and closes transports while backgrounded. Changing endpoint or room clears the prior authority's token and session state. It also supports authorized known-room discovery; see [security and deployment](global-workspace-security.md). Build availability does not imply physical fault-recovery acceptance; see [the current verification record](todo-completion.md).
 
 Build it with `scripts/build-android.ps1 -OutputDir dist/android/<next-version>`; each build increments the manifest version. Use that same numeric version for Windows. Generic builds contain no personal connection defaults. Device installation and fault-recovery status are recorded in [the current verification record](todo-completion.md). The production app has received an API2 shell update while retaining its data. A later isolated QA recovery build was rejected by the phone installer; that build's physical throw/hang recovery remains unverified.
 
-The Android application is a small Java shell around the device's hardware-accelerated **Android System WebView**. The APK packages a dedicated mobile terminal document and the existing xterm dependencies. It connects directly by WebSocket to the configured daemon/relay using the existing protocol; it adds no extra relay hop. The Windows clients and shared browser workspace are unchanged. No Chromium engine is bundled. Android 8 (API 26) or newer is required; keep Android System WebView updated through the device's supported update mechanism.
+The Android application is a small Java shell around the device's hardware-accelerated **Android System WebView**. The APK packages a dedicated mobile terminal document and the existing xterm dependencies. It connects directly by WebSocket to the configured daemon/relay using the existing protocol; it adds no extra relay hop. No Chromium engine is bundled. Android 8 (API 26) or newer is required; keep Android System WebView updated through the device's supported update mechanism.
 
 ## Build on Windows
 

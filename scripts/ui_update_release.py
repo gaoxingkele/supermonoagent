@@ -44,7 +44,7 @@ if lock_path.is_symlink():raise SystemExit('Refusing publication lock symlink')
 with lock_path.open('a+b') as lock:
     if os.name=='nt':
         import msvcrt
-        if lock.seek(0,2)==0:lock.write(b'0');lock.flush()
+        # Byte-range locks beyond EOF need no initialization write.
         lock.seek(0);msvcrt.locking(lock.fileno(),msvcrt.LK_LOCK,1)
     else:
         import fcntl
@@ -194,7 +194,7 @@ def build_lock(output):
     with lock.open('a+b') as stream:
         if os.name=='nt':
             import msvcrt
-            if stream.seek(0,2)==0:stream.write(b'\0');stream.flush()
+            # A contender may already own this range on an empty file.
             stream.seek(0);msvcrt.locking(stream.fileno(),msvcrt.LK_LOCK,1)
         else:
             import fcntl

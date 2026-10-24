@@ -22,6 +22,7 @@
   let homeConfig={...config}, savedHosts=loadHosts(), selectedHost='local', editingHost='', homeRelays=[];
   let relayProfiles=loadRelayProfiles(),profileLegacy='connection',roomMenu=null;
   let runtimeDefaultToken='',prefilledTokenTarget='',defaultTokenEdited=false;
+  let relayProbe=null;
   const hosts=new Map(), directories=new Map(), relayAccounts=new Map();
   let restoredUI=null;
   try{const raw=read(sessionStorage,'sma.workspace.ui-state');if(raw.length<=65536){const value=JSON.parse(raw||'null');if(value&&Array.isArray(value.tabs))restoredUI=value;}}catch{}
@@ -614,23 +615,28 @@
   }
   function profileToken(profile){
     const key='sma.workspace.profile-token.'+profile.id;
-    const target=JSON.stringify([profile.endpoint,profile.code||'']);
-    for(const storage of [sessionStorage,localStorage]){const binding=read(storage,key+'.target');if(binding===target||(!profile.code&&binding===profile.endpoint)){const value=read(storage,key);if(value)return value;}}
+    const target=profileBinding(profile);
+    for(const storage of [sessionStorage,localStorage]){const binding=read(storage,key+'.target');if(binding===target||(!profile.code&&!profile.excludedRooms?.length&&binding===profile.endpoint)){const value=read(storage,key);if(value)return value;}}
     return '';
   }
+  function profileBinding(profile){return JSON.stringify([profile.endpoint,profile.code||'',...(profile.excludedRooms?.length?[profile.excludedRooms]:[])]);}
+  function roomAllowed(scope,code){return (!scope.onlyRoom||scope.code===code)&&!scope.excludedRooms?.includes(code);}
   function loadRelayProfiles(){
     try{return JSON.parse(read(localStorage,'sma.workspace.relay-profiles')||'[]').filter((profile,index,all)=>{
       if(!profile||typeof profile.id!=='string'||!profile.id||profile.id.length>128||typeof profile.endpoint!=='string'||all.findIndex(item=>item?.id===profile.id)!==index)return false;
       if(profile.code!==undefined&&(typeof profile.code!=='string'||profile.code.length>128||/[\x00-\x1f\x7f]/.test(profile.code)))return false;
+      if(profile.excludedRooms!==undefined&&(!Array.isArray(profile.excludedRooms)||profile.excludedRooms.length>64||profile.excludedRooms.some(code=>typeof code!=='string'||!code||code.length>128||/[\x00-\x1f\x7f]/.test(code))))return false;
       try{return C.socketURL(profile.endpoint,location.origin)===profile.endpoint;}catch{return false;}
-    }).slice(0,32).map(({id,endpoint,code})=>({id,endpoint,code:code||''}));}catch{return [];}
+    }).slice(0,32).map(({id,endpoint,code,excludedRooms})=>({id,endpoint,code:code||'',excludedRooms:[...new Set(excludedRooms||[])]}));}catch{return [];}
   }
   function profileEndpoint(address,port){
     address=address.trim();if(!address)throw new Error('请填写 IP 或服务器地址。');
     if(port&&(!/^\d+$/.test(port)||Number(port)<1||Number(port)>65535))throw new Error('端口应为 1～65535。');
-    const explicit=/^[a-z]+:\/\//i.test(address),url=new URL(explicit?address:'https://'+address);
+    const explicit=/^[a-z]+:\/\//i.test(address);
+    if(!explicit&&!address.startsWith('[')&&address.split('/')[0].split(':').length>2){const slash=address.indexOf('/');address='['+(slash<0?address:address.slice(0,slash))+']'+(slash<0?'':address.slice(slash));}
+    const embedded=address.match(/^(?:[a-z]+:\/\/)?(?:\[[^\]]+\]|[^/?#:]+):(\d+)(?:[/?#]|$)/i),url=new URL(explicit?address:'https://'+address);
     if(!explicit&&['localhost','127.0.0.1','[::1]'].includes(url.hostname))url.protocol='http:';
-    if(port)url.port=port;
+    if(embedded)url.port=embedded[1];else if(port)url.port=port;
     if(url.hostname==='117.50.48.22'&&url.port==='8817'&&!explicit)url.protocol='http:';
     return C.socketURL(url.toString(),location.origin);
   }
@@ -638,32 +644,67 @@
     const list=$('relay-profile-list');if(!list)return;list.replaceChildren();
     relayProfiles.forEach((profile,index)=>{
       const directory=directories.get(profile.endpoint),token=profileToken(profile);
-      const count=(directory?.hosts||[]).filter(host=>host.online&&directory.tokens[host.token_index]===token&&(!profile.code||host.code===profile.code)).length;
+      const count=(directory?.hosts||[]).filter(host=>host.online&&directory.tokens[host.token_index]===token&&(!profile.code||host.code===profile.code)&&!profile.excludedRooms?.includes(host.code)).length;
       const row=node('div','relay-profile-row');row.append(node('span','',profile.endpoint),node('small','muted','凭据 '+(index+1)+' · '+(!token?'需要填写 Token':directory?.phase==='connected'?count+' 个房间':directory?.phase==='unsupported'?'中继暂不支持此凭据的自动发现':'正在连接…')));
       row.append(button('移除','移除连接 '+(index+1),()=>{
         relayProfiles=relayProfiles.filter(item=>item.id!==profile.id);save(localStorage,'sma.workspace.relay-profiles',JSON.stringify(relayProfiles));
         for(const storage of [localStorage,sessionStorage])for(const suffix of ['', '.target'])save(storage,'sma.workspace.profile-token.'+profile.id+suffix,'');
         refreshDirectories();renderRelayProfiles();
-      }));list.append(row);
+      }));
+      if(token)for(const room of (directory?.availableHosts||directory?.hosts||[]).filter(room=>room.online&&directory.tokens[room.token_index]===token&&(!profile.code||profile.code===room.code))){
+        const label=node('label','check relay-room-choice'),check=node('input');check.type='checkbox';check.checked=!profile.excludedRooms?.includes(room.code);
+        check.onchange=()=>{
+          if(!check.checked&&(profile.excludedRooms||[]).length>=64&&!profile.excludedRooms.includes(room.code)){check.checked=true;return;}
+          const excluded=new Set(profile.excludedRooms||[]);check.checked?excluded.delete(room.code):excluded.add(room.code);profile.excludedRooms=[...excluded];
+          const key='sma.workspace.profile-token.'+profile.id;
+          for(const storage of [sessionStorage,localStorage])if(read(storage,key))save(storage,key+'.target',profileBinding(profile));
+          save(localStorage,'sma.workspace.relay-profiles',JSON.stringify(relayProfiles));refreshDirectories();renderRelayProfiles();
+        };
+        label.append(check,node('span','',(room.machine||room.code)+' · '+room.code));row.append(label);
+      }
+      list.append(row);
     });
     $('relay-profile-status').textContent=relayProfiles.length?'房间会自动显示在左侧，无需填写房间号。':'添加连接后，将自动显示此 Token 有权访问的房间。';
   }
   function showRelayProfiles(legacy='connection'){
-    profileLegacy=legacy;closeAppMenu();$('relay-profile-error').textContent='';
+    profileLegacy=legacy;closeAppMenu();cancelRelayProbe();$('relay-profile-error').textContent='';
     $('relay-profiles-dialog').querySelector('details').open=false;
-    let url;try{url=new URL(C.socketURL(currentHost()?.config.relay||$('default-relay').value,location.origin));}catch{url=new URL(C.socketURL($('default-relay').value,location.origin));}
-    $('relay-profile-address').value=url.hostname;$('relay-profile-port').value=url.port||(url.protocol==='wss:'?'443':'80');$('relay-profile-room').value='';$('relay-profile-token').value='';$('relay-profile-remember').checked=false;prefilledTokenTarget='';defaultTokenEdited=false;
+    let url;try{url=new URL(C.socketURL(currentHost()?.config.code?currentHost().config.relay:relayProfiles.at(-1)?.endpoint||homeRelays[0]?.url||$('default-relay').value,location.origin));}catch{url=new URL(C.socketURL($('default-relay').value,location.origin));}
+    $('relay-profile-address').value=['/','/ws','/ws/'].includes(url.pathname)?url.hostname:url.toString();$('relay-profile-port').value=url.port||(url.protocol==='wss:'?'443':'80');$('relay-profile-room').value='';$('relay-profile-token').value='';$('relay-profile-remember').checked=read(localStorage,'sma.workspace.profile-remember')!=='off';prefilledTokenTarget='';defaultTokenEdited=false;
+    const stored=[...relayProfiles].reverse().find(profile=>profile.endpoint===url.toString()&&!profile.code&&profileToken(profile));
+    if(stored){$('relay-profile-token').value=profileToken(stored);prefilledTokenTarget=stored.endpoint;defaultTokenEdited=true;}
     renderRelayProfiles();$('relay-profiles-dialog').showModal();prefillRuntimeToken();$('relay-profile-address').focus();
     const local=hosts.get('local');if(local?.connected&&homeRelayAccess())send(owner(local),16,{sessions:openTabs.map(id=>panes.get(id)).filter(pane=>pane?.host===local).map(pane=>pane.raw)});
   }
   function prefillRuntimeToken(){
     if(defaultTokenEdited||!$('relay-profiles-dialog').open)return;
     let target;try{target=profileEndpoint($('relay-profile-address').value,$('relay-profile-port').value);}catch{return;}
-    if(target!==C.socketURL($('default-relay').value,location.origin))return;
-    $('relay-profile-token').value=runtimeDefaultToken;prefilledTokenTarget=runtimeDefaultToken?target:'';
-    $('relay-profile-token').title=prefilledTokenTarget?'默认来自本机 token.txt，可手动替换':'';
+    const local=hosts.get('local'),isDefault=target===C.socketURL($('default-relay').value,location.origin);
+    const configured=homeRelayAccess()&&local?.connected&&homeRelays.some(relay=>{try{return C.socketURL(relay.url,location.origin)===target;}catch{return false;}});
+    const token=(isDefault?runtimeDefaultToken:'')||(configured?local.config.token:'');
+    if(!isDefault&&!configured)return;
+    $('relay-profile-token').value=token;prefilledTokenTarget=token?target:'';
+    $('relay-profile-token').title=token?(isDefault&&runtimeDefaultToken?'默认来自本机 token.txt，可手动替换':'来自本机已配置的中继连接，可手动替换'):'';
   }
   function closeAppMenu(){const menu=$('app-menu');if(menu)menu.hidden=true;$('app-menu-toggle')?.setAttribute('aria-expanded','false');}
+  function cancelRelayProbe(clear=true){
+    const probe=relayProbe;relayProbe=null;if(probe){clearTimeout(probe.timer);probe.socket.onclose=null;probe.socket.close();}
+    $('relay-profile-connect').disabled=true;$('relay-profile-connect').textContent='连接所选房间';$('relay-profile-form').querySelector('button[type=submit]').disabled=false;
+    if(clear){$('relay-probe-rooms').replaceChildren();$('relay-probe-status').textContent='';}
+  }
+  function renderRelayProbe(probe){
+    const list=$('relay-probe-rooms');list.replaceChildren();
+    for(const [code,selected] of probe.selected)if(selected&&!probe.rooms.some(room=>room.code===code))probe.selected.delete(code);
+    for(const room of probe.rooms){
+      if(!probe.selected.has(room.code))probe.selected.set(room.code,true);
+      const label=node('label','check relay-room-choice'),check=node('input');check.type='checkbox';check.checked=probe.selected.get(room.code);
+      check.onchange=()=>{if(!check.checked&&[...probe.selected.values()].filter(value=>!value).length>=64){check.checked=true;return;}probe.selected.set(room.code,check.checked);$('relay-profile-connect').disabled=!probe.rooms.some(room=>probe.selected.get(room.code));};
+      label.append(check,node('span','',(room.machine||room.code)+' · '+room.code));list.append(label);
+    }
+    $('relay-profile-connect').disabled=probe.rooms.length>0&&!probe.rooms.some(room=>probe.selected.get(room.code));
+    $('relay-profile-connect').textContent=probe.rooms.length?'连接所选房间':'保存中继';
+    $('relay-probe-status').textContent=probe.rooms.length?'测试成功，发现 '+probe.rooms.length+' 个房间；'+(probe.restoredSelection?'已保留上次勾选。':'默认全选。'):'服务器已连接，当前没有授权的在线房间；可保存中继，等待房间上线。';
+  }
   function closeRoomMenu(){roomMenu?.remove();roomMenu=null;}
   async function closeRoomWindows(context,windows){
     const host=context.host;
@@ -798,20 +839,50 @@
   $('menu-connect').onclick=()=>showRelayProfiles();
   $('refresh-relays').onclick=()=>refreshRelayCatalogs();
   $('relay-profiles-close').onclick=()=>$('relay-profiles-dialog').close();
+  $('relay-profiles-dialog').addEventListener('close',()=>cancelRelayProbe());
   $('relay-profiles-advanced').onclick=()=>{$('relay-profiles-dialog').close();profileLegacy==='workspace'?showWorkspace():showConnection();};
   $('relay-profile-form').onsubmit=event=>{
-    event.preventDefault();try{
+    event.preventDefault();cancelRelayProbe();$('relay-profile-error').textContent='';try{
       const target=profileEndpoint($('relay-profile-address').value,$('relay-profile-port').value.trim()),token=$('relay-profile-token').value.trim(),code=$('relay-profile-room').value.trim();
       if(code.length>128||/[\x00-\x1f\x7f]/.test(code))throw new Error('房间号格式无效。');
       if(!token||token.length>4096)throw new Error('请填写有效的 Token。');
+      const previous=relayProfiles.find(profile=>profile.endpoint===target&&(profile.code||'')===code&&profileToken(profile)===token);
+      const excluded=previous?.excludedRooms||[];
+      const socket=new WebSocket(target),probe={target,token,code,socket,timer:0,rooms:[],selected:new Map(excluded.map(code=>[code,false])),restoredSelection:excluded.length>0};relayProbe=probe;
+      const live=()=>relayProbe===probe&&$('relay-profiles-dialog').open;
+      const failed=message=>{if(!live())return;cancelRelayProbe();$('relay-profile-error').textContent=message;};
+      $('relay-profile-form').querySelector('button[type=submit]').disabled=true;$('relay-probe-status').textContent='正在测试连接并获取全部授权房间…';
+      probe.timer=setTimeout(()=>failed('测试连接超时，请检查服务器地址、端口和 Token。'),5000);
+      socket.onopen=()=>{if(live())socket.send(JSON.stringify({op:'watch',rooms:code?[{code,token}]:[],tokens:[token]}));};
+      socket.onmessage=event=>{
+        if(!live()||typeof event.data!=='string'||event.data.length>1048576)return;
+        try{
+          const data=JSON.parse(event.data);if(data.op!=='directory'||!Array.isArray(data.hosts)||data.hosts.length>64)return;
+          clearTimeout(probe.timer);$('relay-profile-form').querySelector('button[type=submit]').disabled=false;
+          const seen=new Set();probe.rooms=data.hosts.filter(room=>room&&room.online===true&&typeof room.code==='string'&&room.code.length>0&&room.code.length<=128&&!/[\x00-\x1f\x7f]/.test(room.code)&&(!code||room.code===code)&&(data.capabilities?.token_discovery===true?room.token_index===0:!!code&&room.code===code)).filter(room=>{if(seen.has(room.code))return false;seen.add(room.code);return true;}).map(room=>({code:room.code,machine:String(room.machine||'').slice(0,40)}));
+          renderRelayProbe(probe);
+        }catch{failed('服务器返回了无效的房间列表。');}
+      };
+      socket.onerror=()=>failed('测试连接失败，请检查加密入口、地址和端口。');socket.onclose=()=>failed('目录连接已关闭，请重新测试连接。');
+    }catch(error){$('relay-profile-error').textContent=error.message;}
+  };
+  $('relay-profile-connect').onclick=()=>{
+    const probe=relayProbe;if(!probe)return;
+    try{
+      const {target,token,code}=probe;
+      if(target!==profileEndpoint($('relay-profile-address').value,$('relay-profile-port').value.trim())||token!==$('relay-profile-token').value.trim()||code!==$('relay-profile-room').value.trim())throw new Error('连接信息已修改，请重新测试。');
+      if(probe.rooms.length&&!probe.rooms.some(room=>probe.selected.get(room.code)))throw new Error('请至少勾选一个房间。');
       let profile=relayProfiles.find(item=>item.endpoint===target&&(item.code||'')===code&&(profileToken(item)===token||!profileToken(item)));
       if(!profile){if(relayProfiles.length>=32)throw new Error('最多添加 32 组连接。');profile={id:crypto.randomUUID(),endpoint:target,code};relayProfiles.push(profile);}
-      const binding=JSON.stringify([target,code]),key='sma.workspace.profile-token.'+profile.id;save(sessionStorage,key,token);save(sessionStorage,key+'.target',binding);
+      profile.excludedRooms=[...probe.selected].filter(([,selected])=>!selected).map(([code])=>code);
+      const binding=profileBinding(profile),key='sma.workspace.profile-token.'+profile.id;save(sessionStorage,key,token);save(sessionStorage,key+'.target',binding);
       save(localStorage,key,$('relay-profile-remember').checked?token:'');save(localStorage,key+'.target',$('relay-profile-remember').checked?binding:'');
-      save(localStorage,'sma.workspace.relay-profiles',JSON.stringify(relayProfiles));$('relay-profile-token').value='';prefilledTokenTarget='';$('relay-profile-error').textContent='';refreshDirectories();renderRelayProfiles();
+      save(localStorage,'sma.workspace.profile-remember',$('relay-profile-remember').checked?'on':'off');
+      save(localStorage,'sma.workspace.relay-profiles',JSON.stringify(relayProfiles));cancelRelayProbe();prefilledTokenTarget=target;defaultTokenEdited=true;$('relay-profile-error').textContent='';refreshDirectories();renderRelayProfiles();
     }catch(error){$('relay-profile-error').textContent=error.message;}
   };
   $('relay-profile-token').addEventListener('input',()=>{prefilledTokenTarget='';defaultTokenEdited=true;});
+  for(const id of ['relay-profile-address','relay-profile-port','relay-profile-room','relay-profile-token'])$(id).addEventListener('input',()=>cancelRelayProbe());
   for(const id of ['relay-profile-address','relay-profile-port'])$(id).addEventListener('input',()=>{
     if(!prefilledTokenTarget)return;let same=false;try{same=profileEndpoint($('relay-profile-address').value,$('relay-profile-port').value)===prefilledTokenTarget;}catch{}
     if(!same){$('relay-profile-token').value='';prefilledTokenTarget='';defaultTokenEdited=true;$('relay-profile-token').title='';}
@@ -1031,9 +1102,11 @@
   }
   function refreshDirectories(){
     const wanted=new Map();
-    for(const profile of relayProfiles){const token=profileToken(profile);if(!token)continue;if(!wanted.has(profile.endpoint))wanted.set(profile.endpoint,[]);wanted.get(profile.endpoint).push({code:profile.code||'',token,onlyRoom:!!profile.code});}
+    // Invalid saved scope bindings must not reopen a broader implicit home scope.
+    const explicitScope=(url,token)=>relayProfiles.some(profile=>profile.endpoint===url&&(profileToken(profile)===token||[sessionStorage,localStorage].some(storage=>read(storage,'sma.workspace.profile-token.'+profile.id)===token)));
+    for(const profile of relayProfiles){const token=profileToken(profile);if(!token)continue;if(!wanted.has(profile.endpoint))wanted.set(profile.endpoint,[]);wanted.get(profile.endpoint).push({code:profile.code||'',token,onlyRoom:!!profile.code,excludedRooms:profile.excludedRooms||[]});}
     for(const host of [...hosts.values()].sort((a,b)=>Number(b.connected)-Number(a.connected)))if(!host.autoDirectory&&host.config.authMode!=='account'&&host.config.code&&host.config.token){
-      const url=JSON.parse(endpoint(host.config))[0];if(!wanted.has(url))wanted.set(url,[]);
+      const url=JSON.parse(endpoint(host.config))[0];if(explicitScope(url,host.config.token))continue;if(!wanted.has(url))wanted.set(url,[]);
       const rooms=wanted.get(url);if(!rooms.some(room=>room.code===host.config.code)&&rooms.length<64)rooms.push({code:host.config.code,token:host.config.token});
     }
     const local=hosts.get('local');
@@ -1041,6 +1114,7 @@
       if(typeof relay.url!=='string')continue;
       const code=typeof relay.code==='string'?relay.code:'';
       let url;try{url=JSON.parse(endpoint({relay:relay.url,code}))[0];}catch{continue;}
+      if(explicitScope(url,local.config.token))continue;
       if(!wanted.has(url))wanted.set(url,[]);const rooms=wanted.get(url);
       if(!rooms.some(room=>room.code===code&&room.token===local.config.token)&&rooms.length<64)rooms.push({code,token:local.config.token});
     }
@@ -1050,7 +1124,8 @@
       if(!directory){directory={url,rooms:[],generation:0,ws:null,retry:0,retryTimer:0,signature:'',hosts:[],phase:'connecting',revision:0};directories.set(url,directory);}
       const signature=JSON.stringify(rooms);if(directory.signature===signature)continue;
       const oldTokens=directory.tokens||[],tokens=[...new Set(rooms.map(room=>room.token))].slice(0,32);
-      const retained=(directory.hosts||[]).filter(host=>Number.isInteger(host.token_index)&&tokens.includes(oldTokens[host.token_index])&&rooms.some(scope=>scope.token===oldTokens[host.token_index]&&(!scope.onlyRoom||scope.code===host.code))).map(host=>({...host,token_index:tokens.indexOf(oldTokens[host.token_index])}));
+      const retained=(directory.hosts||[]).filter(host=>Number.isInteger(host.token_index)&&tokens.includes(oldTokens[host.token_index])&&rooms.some(scope=>scope.token===oldTokens[host.token_index]&&roomAllowed(scope,host.code))).map(host=>({...host,token_index:tokens.indexOf(oldTokens[host.token_index])}));
+      directory.availableHosts=(directory.availableHosts||directory.hosts||[]).filter(host=>tokens.includes(oldTokens[host.token_index])&&rooms.some(scope=>scope.token===oldTokens[host.token_index]&&(!scope.onlyRoom||scope.code===host.code))).map(host=>({...host,token_index:tokens.indexOf(oldTokens[host.token_index])}));
       directory.rooms=rooms.filter((room,index)=>room.code&&rooms.findIndex(item=>item.code===room.code)===index).map(({code,token})=>({code,token}));directory.scopes=rooms;directory.tokens=tokens;directory.signature=signature;directory.hosts=retained;directory.selfRooms??=new Set();directory.revision=0;
       syncDiscoveredHosts(directory,retained);
       // Close before replacing credentials, so stale authorized metadata cannot be displayed.
@@ -1073,13 +1148,14 @@
         directory.hosts=data.hosts.filter(host=>typeof host.code==='string'&&host.code.length>0&&host.code.length<=128&&(known.has(host.code)||(discovery&&Number.isInteger(host.token_index)&&host.token_index>=0&&host.token_index<directory.tokens.length))).map(host=>({code:host.code,online:host.online===true,
           ...(discovery&&Number.isInteger(host.token_index)&&host.token_index>=0&&host.token_index<directory.tokens.length?{token_index:host.token_index}:{}),
           ...(host.online===true?{machine:String(host.machine||'').slice(0,40),project:String(host.project||'').slice(0,40)}:{})}));
-        directory.hosts=directory.hosts.map(host=>Number.isInteger(host.token_index)?host:{...host,token_index:directory.tokens.indexOf(directory.rooms.find(room=>room.code===host.code)?.token)}).filter(host=>directory.scopes.some(scope=>scope.token===directory.tokens[host.token_index]&&(!scope.onlyRoom||scope.code===host.code)));
+        directory.availableHosts=directory.hosts.map(host=>Number.isInteger(host.token_index)?host:{...host,token_index:directory.tokens.indexOf(directory.rooms.find(room=>room.code===host.code)?.token)}).filter(host=>directory.scopes.some(scope=>scope.token===directory.tokens[host.token_index]&&(!scope.onlyRoom||scope.code===host.code)));
+        directory.hosts=directory.availableHosts.filter(host=>directory.scopes.some(scope=>scope.token===directory.tokens[host.token_index]&&roomAllowed(scope,host.code)));
         directory.revision=data.revision;directory.phase='connected';directory.retry=0;syncDiscoveredHosts(directory,directory.hosts);renderDiscovery();
-      }catch{directory.phase='unsupported';directory.hosts=[];syncDiscoveredHosts(directory,[]);renderDiscovery();}
+      }catch{directory.phase='unsupported';directory.hosts=[];directory.availableHosts=[];syncDiscoveredHosts(directory,[]);renderDiscovery();}
     };
     socket.onerror=()=>{};
     socket.onclose=event=>{
-      if(!live())return;directory.hosts=[];directory.phase=[4000,4001,4003].includes(event.code)?'unsupported':'offline';syncDiscoveredHosts(directory,[]);renderDiscovery();
+      if(!live())return;directory.hosts=[];directory.availableHosts=[];directory.phase=[4000,4001,4003].includes(event.code)?'unsupported':'offline';syncDiscoveredHosts(directory,[]);renderDiscovery();
       if(directory.phase!=='unsupported')directory.retryTimer=setTimeout(()=>{if(live())connectDirectory(directory);},C.retryDelay(directory.retry++));
     };
   }
@@ -1162,7 +1238,7 @@
   };
   const meterTimer=setInterval(()=>{for(const host of hosts.values())host.rates=host.meter.sample(performance.now());updateConnection();renderHosts();},1000);
   const activityTimer=setInterval(updateSessionDots,300);
-  addEventListener('beforeunload',()=>{clearInterval(meterTimer);clearInterval(activityTimer);for(const host of hosts.values())stopHost(host);for(const directory of directories.values())stopDirectory(directory);cancelAccountLogin();for(const account of relayAccounts.values()){stopAccountDirectory(account);clearTimeout(account.expiryTimer);}});
+  addEventListener('beforeunload',()=>{cancelRelayProbe();clearInterval(meterTimer);clearInterval(activityTimer);for(const host of hosts.values())stopHost(host);for(const directory of directories.values())stopDirectory(directory);cancelAccountLogin();for(const account of relayAccounts.values()){stopAccountDirectory(account);clearTimeout(account.expiryTimer);}});
   // Launch secrets are consumed once. Fragments never reach HTTP access logs.
   if(params.has('token')||launch.has('token')){
     save(sessionStorage,'sma.workspace.token',config.token);const clean=new URL(location.href);clean.searchParams.delete('token');launch.delete('token');clean.hash=launch.toString();history.replaceState(null,'',clean);

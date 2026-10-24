@@ -1,5 +1,19 @@
 # Three Windows clients, one daemon
 
+## Simple relay connection
+
+The primary connection form asks for server IP/address, port (HTTPS defaults to 443), and Token. “记住此服务器的 Token” is selected by default; turn it off for session-only storage. Credentials are autofilled only for their saved endpoint or the relay configured by the authenticated local daemon. Editing the server clears the autofilled credential and invalidates any pending test.
+
+Click “测试连接” to retrieve all authorized online rooms, selected by default, then “连接所选房间”. The room list continues updating; newly authorized rooms are included automatically. Uncheck an unwanted room to detach its client views while its backend terminals keep running. Manual room filtering is under advanced settings. An empty directory can be saved to wait for rooms to come online.
+
+From the executable directory, start Windows with only the relay and Token options:
+
+```powershell
+.\SuperMonoAgent.exe --relay wss://117.50.48.22/ws --token "YOUR_TOKEN"
+```
+
+No mode, bind address, port or room argument is required: the default workspace uses the local daemon at `127.0.0.1:6769`. A new daemon configuration registers the computer name as its room. Existing saved room numbers and running backends retain their configuration; startup options configure a newly started daemon. An explicit `--code` remains available. `--token-file` is also supported as an alternative to `--token`.
+
 ## Remote terminal colors
 
 The modern workspace now shares Android's display-only text highlighter, enabled by default. The footer's “文本高亮” button toggles it and saves the local preference. Files, numbers, quoted strings, inline code, function names and error labels can receive color when the application supplied none. This is auxiliary text highlighting, not a complete programming-language parser. It never rewrites terminal bytes or replaces explicit ANSI foreground/background colors. Closing a view releases its decorations without stopping the terminal.
@@ -8,7 +22,7 @@ The 2026-10-23 read-only JINLONG3090 sample contained reset/bold/dim/underline S
 
 The desktop and Android UI fix was published as **0.2.19** to the existing HTTPS update channel and downloaded again for signature and archive verification. Use “检查更新” and install the update on each client. This publication does not force-reload any open view or restart a remote daemon. Evidence: `.omx/artifacts/remote-terminal-colors/publication-verified.json`.
 
-The current Windows release is **0.2.32**, matching Android, in `dist/windows/0.2.32/`. Windows releases use the same numeric version as Android, never feature-based names. The build reads Android's manifest version and embeds it in EXE FileVersion/ProductVersion, `version.txt` and `build-manifest.json`; the default output is `dist/windows/<version>/`. When building both platforms, build Android first because its existing build advances the release version, then build Windows. Numeric output folders must match the build version, and each platform's build holds an exclusive project lock. Older named folders below are historical artifacts.
+The current Windows release is **0.2.33**, matching Android, in `dist/windows/0.2.33/`. Windows releases use the same numeric version as Android, never feature-based names. The build reads Android's manifest version and embeds it in EXE FileVersion/ProductVersion, `version.txt` and `build-manifest.json`; the default output is `dist/windows/<version>/`. When building both platforms, build Android first because its existing build advances the release version, then build Windows. Numeric output folders must match the build version, and each platform's build holds an exclusive project lock. Older named folders below are historical artifacts.
 
 The top-left “菜单” sits between the sidebar toggle and supermono, with “检查更新”, “下载并更新”, “刷新中继” and “连接工作区”. “刷新中继” requests a fresh authorized room directory from every configured relay and retrieves each computer's current window catalog. Live terminal sockets and views stay open; disconnected directory connections can retry. It lists only rooms accessible to the configured credentials. Repeated clicks are throttled. The connection dialog accepts address/IP, port and Token; multiple credential profiles discover their authorized rooms automatically. Tokens stay in session storage unless “在此设备保存 Token” is selected, and are bound to their endpoint. Advanced room/account settings remain collapsed.
 

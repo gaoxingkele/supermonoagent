@@ -75,6 +75,7 @@ async def check_scope(playwright):
             page=await browser.new_page();await page.goto(url)
             await page.wait_for_function('window.smaWorkspace?.connected')
             await page.locator('#connect-button').click()
+            await page.locator('.relay-profile-advanced').evaluate('(details)=>details.open=true')
             await page.locator('#relay-profile-room').fill('profile-room-0')
             await add_profile(page,endpoint,daemons[0].token)
             await wait_room(page,0)

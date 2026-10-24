@@ -8,6 +8,14 @@ Windows 客户端与 Android APK：启动方法见 [Windows 说明](docs/windows
 
 ## 启动
 
+Windows 桌面端在 EXE 所在目录只需两个选项：
+
+```powershell
+.\SuperMonoAgent.exe --relay wss://117.50.48.22/ws --token "YOUR_TOKEN"
+```
+
+默认使用本地 `127.0.0.1:6769` 后台；首次配置的房间号默认取本机名称，已有保存的房间号保留。连接页面填写 IP/地址、默认端口和 Token，点击“测试连接”后默认勾选全部授权房间，再连接所选；Token 默认记住，可取消。
+
 ```powershell
 D:\Python314\python.exe -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .

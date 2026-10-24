@@ -27,8 +27,11 @@ def main(argv: list[str] | None = None) -> None:
     if args and args[0] in {"-h", "--help"}:
         parser.print_help()
         return
-    mode = parser.parse_args(args[:1]).mode
-    remaining = args[1:] if args else []
+    if args and args[0].startswith("-"):
+        mode, remaining = "workspace", args
+    else:
+        mode = parser.parse_args(args[:1]).mode
+        remaining = args[1:] if args else []
     module = importlib.import_module(MODES[mode])
     if mode == "microsoft" and not os.environ.get("SUPERMONO_URL") and not any(
         value in {"--diagnose", "--install", "--help", "-h", "--url"} or value.startswith("--url=")

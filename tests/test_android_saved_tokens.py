@@ -52,6 +52,13 @@ public class SavedTokensCheck {
     reject(()->SavedConnectionTokens.unseal(scope,bad,KEY));
    reject(()->SavedConnectionTokens.seal(scope,"",KEY));reject(()->SavedConnectionTokens.seal(scope,null,KEY));
    reject(()->SavedConnectionTokens.seal(scope,String.join("",Collections.nCopies(4097,"x")),KEY));
+  }else if(mode.equals("address-fields")){
+   String[][] cases={{"117.50.48.22","","https://117.50.48.22"},{"relay.example.test","443","https://relay.example.test"},{"relay.example.test/agent","8443","https://relay.example.test:8443/agent"},{"https://relay.example.test:9443/agent","443","https://relay.example.test:9443/agent"},{"2001:db8::1","443","https://[2001:db8::1]"},{"[2001:db8::1]","8443","https://[2001:db8::1]:8443"},{"http://127.0.0.1","8123","http://127.0.0.1:8123"}};
+   for(String[] row:cases)check(ConnectionEndpoint.fromAddress(row[0],row[1]).equals(row[2]));
+   for(String old:new String[]{"https://example.test","https://example.test:8443/prefix/","https://[::1]:9443/daemon","http://127.0.0.1:8123/prefix","http://117.50.48.22:8817/ws"})
+    check(SavedConnectionTokens.canonicalEndpoint(old).equals(SavedConnectionTokens.canonicalEndpoint(ConnectionEndpoint.fromAddress(ConnectionEndpoint.displayAddress(old),ConnectionEndpoint.displayPort(old)))));
+   for(String bad:new String[]{"0","65536","-1","abc","443/token"})reject(()->ConnectionEndpoint.fromAddress("relay.example.test",bad));
+   for(String bad:new String[]{"https://user:secret@example.test","https://example.test?token=secret","https://example.test#fragment","http://example.test","https://example.test:0"})reject(()->ConnectionEndpoint.fromAddress(bad,"443"));
   }else if(mode.equals("edit-policy")){
    SavedConnectionTokens.EditState edit=new SavedConnectionTokens.EditState();
    check(edit.action(true,"")==SavedConnectionTokens.EditState.Action.KEEP);
@@ -86,6 +93,6 @@ public class SavedTokensCheck {
     return run
 
 
-@pytest.mark.parametrize('check', ['roundtrip', 'random', 'scope', 'key', 'tamper', 'format', 'canonical', 'edit-policy'])
+@pytest.mark.parametrize('check', ['roundtrip', 'random', 'scope', 'key', 'tamper', 'format', 'canonical', 'edit-policy', 'address-fields'])
 def test_native_saved_credentials_enforce_authenticated_endpoint_binding(saved_tokens, check):
     assert saved_tokens(check) == 'ok'

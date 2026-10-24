@@ -351,8 +351,8 @@ class UpdateStore:
     @contextmanager
     def _locked(self):
         with self._thread_lock,open(self.root/'store.lock','a+b') as handle:
-            if handle.seek(0,2)==0:
-                handle.write(b'0'); handle.flush()
+            # Windows can lock a byte beyond EOF. Never initialize it before
+            # locking: another process may already hold that empty-file range.
             handle.seek(0)
             if os.name=='nt':
                 import msvcrt

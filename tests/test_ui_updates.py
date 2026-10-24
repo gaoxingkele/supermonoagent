@@ -288,6 +288,32 @@ class UiUpdatesTest(unittest.TestCase):
             with self.assertRaises(U.UpdateError):
                 store.acknowledge(boot['ticket'])
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows byte-range lock regression')
+    def test_empty_lock_file_already_locked_by_another_process_waits_without_writing(self):
+        import threading
+        import time
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            code="import sys,msvcrt; f=open(sys.argv[1],'a+b'); msvcrt.locking(f.fileno(),msvcrt.LK_NBLCK,1); print('locked',flush=True); sys.stdin.buffer.read(1); f.seek(0); msvcrt.locking(f.fileno(),msvcrt.LK_UNLCK,1); f.close()"
+            holder=subprocess.Popen([sys.executable,'-c',code,str(root/'store.lock')],
+                                    stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            release=None
+            try:
+                self.assertEqual(holder.stdout.readline().strip(),b'locked')
+                self.assertEqual((root/'store.lock').stat().st_size,0)
+                def release_lock():
+                    time.sleep(.2)
+                    holder.stdin.write(b'\n');holder.stdin.flush()
+                release=threading.Thread(target=release_lock)
+                release.start()
+                store=U.UpdateStore(root,'desktop',self.baseline,self.trust)
+                self.assertEqual(store.status()['active_revision'],'bundled')
+                self.assertEqual((root/'store.lock').stat().st_size,0)
+            finally:
+                if release is not None:release.join(timeout=3)
+                if holder.poll() is None and release is None:holder.terminate()
+                holder.communicate(timeout=5)
+
     def test_two_real_processes_share_atomic_store_and_dead_owner_recovers(self):
         with tempfile.TemporaryDirectory() as directory:
             directory=Path(directory)

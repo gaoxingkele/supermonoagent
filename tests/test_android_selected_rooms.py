@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EDGE = Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
 
 
-async def selected_page(browser, relay_url, token, rooms, saved=None, credentials=None):
+async def selected_page(browser, relay_url, token, rooms, saved=None, credentials=None, selection=None):
     async def http(connection, request):
         name = urlsplit(request.path).path.removeprefix('/mobile/')
         path = ROOT / ('src/supermonoagent/static/' + name[7:] if name.startswith('vendor/') else 'android/assets/mobile/' + name)
@@ -37,6 +37,7 @@ async def selected_page(browser, relay_url, token, rooms, saved=None, credential
     })(""" + json.dumps({'saved': saved or [], 'credentials': credentials or []}) + ");")
     endpoint = relay_url.replace('ws://', 'http://').removesuffix('/ws')
     config = {'endpoint': endpoint, 'token': token, 'code': 'private-room', 'renderer': 'dom', 'selectedRooms': rooms}
+    config.update(selection or {})
     url = f'http://127.0.0.1:{server.sockets[0].getsockname()[1]}/mobile/index.html#' + quote(json.dumps(config))
     return page, url
 
@@ -137,3 +138,60 @@ async def check_invalid(playwright, rooms):
             assert '房间选择无效' in await page.locator('#status').text_content()
         finally:
             await browser.close()
+
+
+@pytest.mark.parametrize('exclude_private',[False,True])
+def test_native_dynamic_discovery_includes_new_rooms_but_never_reopens_excluded(exclude_private):
+    playwright=pytest.importorskip('playwright.async_api')
+    if not EDGE.exists():pytest.skip('Local Edge required')
+    async def check():
+        async with discovery_fixture() as (local,remote,private,relay,relay_url,page_url,windows,sessions,start):
+            private.token=private.hub.default_owner=private.hub.groups['default'].owner=local.token
+            await relay._replace_tokens(relay.rooms['private-room'],[local.token])
+            async with playwright.async_playwright() as runtime:
+                browser=await runtime.chromium.launch(executable_path=str(EDGE),headless=True)
+                try:
+                    selection={'discoverAllRooms':True,'excludedRoomCodes':['private-room'] if exclude_private else []}
+                    page,url=await selected_page(browser,relay_url,local.token,[{'code':'home-room','machine':'Home'}],selection=selection)
+                    phone_codes=[]
+                    def socket_created(ws):
+                        def sent(value):
+                            if isinstance(value,str):
+                                frame=json.loads(value)
+                                if frame.get('op')=='phone':phone_codes.append(frame['code'])
+                        ws.on('framesent',sent)
+                    page.on('websocket',socket_created);await page.goto(url)
+                    expected=1 if exclude_private else 2
+                    await page.wait_for_function('count=>MobileTerminal?.ready&&MobileTerminal.hosts.length===count&&MobileTerminal.hosts.every(h=>h.connected)',arg=expected)
+                    await start(remote,'new-room')
+                    await page.wait_for_function('count=>MobileTerminal.hosts.length===count&&MobileTerminal.hosts.every(h=>h.connected)',arg=expected+1)
+                    assert 'new-room' in phone_codes
+                    assert ('private-room' in phone_codes) is not exclude_private
+                    await page.evaluate('MobileTerminal.pause();MobileTerminal.resume()')
+                    await page.wait_for_function('count=>MobileTerminal.ready&&MobileTerminal.hosts.length===count&&MobileTerminal.hosts.every(h=>h.connected)',arg=expected+1)
+                    relay._publish();await page.wait_for_timeout(100)
+                    assert ('private-room' in phone_codes) is not exclude_private
+                    assert all(not h['subscription'] for h in await page.evaluate('MobileTerminal.hosts') if h['id']!='home')
+                    assert not any(s.pty.written for s in sessions)
+                finally:await browser.close()
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize('selection',[
+    {'discoverAllRooms':'true','excludedRoomCodes':[]},
+    {'discoverAllRooms':True},
+    {'discoverAllRooms':True,'excludedRoomCodes':['home-room']},
+    {'discoverAllRooms':True,'excludedRoomCodes':['other','other']},
+])
+def test_invalid_dynamic_selection_cannot_bypass_home_or_open_transports(selection):
+    playwright=pytest.importorskip('playwright.async_api')
+    if not EDGE.exists():pytest.skip('Local Edge required')
+    async def check():
+        async with playwright.async_playwright() as runtime:
+            browser=await runtime.chromium.launch(executable_path=str(EDGE),headless=True)
+            try:
+                page,url=await selected_page(browser,'ws://127.0.0.1:9/ws','fixture',[{'code':'home-room'}],selection=selection)
+                sockets=[];page.on('websocket',lambda ws:sockets.append(ws.url));await page.goto(url)
+                assert await page.evaluate('typeof MobileTerminal')=='undefined' and not sockets
+            finally:await browser.close()
+    asyncio.run(check())

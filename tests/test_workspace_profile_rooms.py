@@ -93,8 +93,11 @@ async def add_profile(page, endpoint, token, remember=False):
     await page.locator('#relay-profile-token').fill(token)
     await page.locator('#relay-profile-remember').set_checked(remember)
     await page.locator('#relay-profile-form button[type=submit]').click()
+    await page.locator('#relay-profile-connect').wait_for(state='visible')
+    await page.wait_for_function("!document.querySelector('#relay-profile-connect').disabled")
+    await page.locator('#relay-profile-connect').click()
     assert await page.locator('#relay-profile-error').inner_text() == ''
-    assert await page.locator('#relay-profile-token').input_value() == ''
+    assert await page.locator('#relay-profile-token').input_value() == token
 
 
 async def server_barrier(page, host):

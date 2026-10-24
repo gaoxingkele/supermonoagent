@@ -31,4 +31,29 @@ public final class ConnectionEndpoint {
         if("http".equalsIgnoreCase(uri.getScheme())&&!local)throw new IllegalArgumentException("Network connections require HTTPS; HTTP is only allowed on loopback");
         return uri.toString();
     }
+
+    /** IP/host input defaults to verified HTTPS; an embedded URL port is authoritative. */
+    public static String fromAddress(String address,String port) {
+        String value=address==null?"":address.trim();
+        if(!value.contains("://")){
+            int slash=value.indexOf('/');String authority=slash<0?value:value.substring(0,slash),path=slash<0?"":value.substring(slash);
+            if(!authority.startsWith("[")&&authority.indexOf(':')!=authority.lastIndexOf(':'))authority="["+authority+"]";
+            value="https://"+authority+path;
+        }
+        URI uri=parse(value);int chosen=uri.getPort();
+        if(chosen<0){String text=port==null?"":port.trim();if(!text.isEmpty()&&!text.matches("[0-9]{1,5}"))throw new IllegalArgumentException("Enter a valid port");chosen=text.isEmpty()?(uri.getScheme().equalsIgnoreCase("https")?443:80):Integer.parseInt(text);}
+        if(chosen<1||chosen>65535)throw new IllegalArgumentException("Enter a port from 1 to 65535");
+        String host=uri.getHost();if(host.indexOf(':')>=0&&!host.startsWith("["))host="["+host+"]";
+        boolean standard=uri.getScheme().equalsIgnoreCase("https")&&chosen==443||uri.getScheme().equalsIgnoreCase("http")&&chosen==80;
+        return normalize(uri.getScheme()+"://"+host+(standard?"":":"+chosen)+(uri.getRawPath()==null?"":uri.getRawPath()));
+    }
+    public static int embeddedPort(String address){
+        try{String value=address.trim();return parse(value.contains("://")?value:"https://"+value).getPort();}catch(Exception incomplete){return -1;}
+    }
+    public static String displayAddress(String endpoint){
+        try{URI uri=URI.create(normalize(endpoint));String host=uri.getHost();if(host.indexOf(':')>=0&&!host.startsWith("["))host="["+host+"]";return (uri.getScheme().equalsIgnoreCase("https")?"":uri.getScheme()+"://")+host+(uri.getRawPath()==null?"":uri.getRawPath());}catch(Exception invalid){return endpoint;}
+    }
+    public static String displayPort(String endpoint){
+        try{URI uri=URI.create(normalize(endpoint));return Integer.toString(uri.getPort()<0?(uri.getScheme().equalsIgnoreCase("https")?443:80):uri.getPort());}catch(Exception invalid){return "443";}
+    }
 }

@@ -2,9 +2,13 @@
 
 ## 当前状态摘要（2026-10-24）
 
+- [x] 连接设置简化：Windows/Android 主入口采用中继 IP/地址、默认端口和默认记忆的 Token，测试后列出全部授权房间并默认全选；手填房间移入高级设置。已取消房间保持取消，新授权房间自动同步。Windows 无模式启动支持 `SuperMonoAgent.exe --relay URL --token TOKEN`，后台默认 `127.0.0.1:6769`；新状态房间默认本机名，已有房间与运行后台保留。代码与定向证据见 `tests/test_workspace_simple_connect.py`、`tests/test_machine_room_startup.py`、`tests/test_launcher_default_options.py` 及 `.omx/artifacts/simple-relay-setup/`；Android 原生页面仍需使用包含该改动的新 APK，不以源码验证替代真机安装。
+
+- [x] 本轮并发回归修复：Windows UI 存储、打包器及发布事务取消获取文件锁之前的空文件初始化写入，避免另一进程已经锁住空文件时触发 PermissionError。两个真实子进程的确定性用例先复现失败，修复后更新存储/发布 23 项、9 子测试通过，含真实 WebView 恢复的较宽回归 33 项通过。整套修复前基线为 538 passed、1 skipped、57 subtests，唯一失败即此并发项；不将该基线写成最终整套全绿。证据：`.omx/artifacts/simple-relay-setup/{full-suite.xml,update-lock.xml,locks-final.xml}`。
+
 - [x] Windows 左上角菜单新增“刷新中继”：重新查询全部已配置中继的授权房间和各电脑窗口清单；保持在线终端及当前视图，支持目录断线重试，连续点击限流。两个真实隔离中继的目录漏推送、窗口漏推送与重试测试通过；工作区相关回归 30 项、Node 42 项通过。证据：`.omx/artifacts/relay-menu-refresh/`。
 
-本节覆盖下面的历史快照；全目标仍未通过完整完成审计。最新双端构建为 **0.2.32**，版本目录不自动等于正式验收：Android 0.2.24（code26）已有本轮真机基础验证，Windows 0.2.28 已完成默认 Token 的实际打包 UI 定向验证；随后观察到外部安装 Android 0.2.27。产物索引见 `dist/README.md`。
+本节覆盖下面的历史快照；全目标仍未通过完整完成审计。最新双端构建为 **0.2.33**，版本目录不自动等于正式验收：Android 0.2.24（code26）已有本轮真机基础验证，Windows 0.2.28 已完成默认 Token 的实际打包 UI 定向验证；随后观察到外部安装 Android 0.2.27。产物索引见 `dist/README.md`。
 
 | 事项 | 当前结果 | 权威依据与未关闭边界 |
 | --- | --- | --- |
