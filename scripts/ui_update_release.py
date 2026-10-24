@@ -141,7 +141,7 @@ def files_for_platform(root,platform,feed):
 def source_fingerprint(root):
     paths=[root/'src/supermonoagent/workspace.py',root/'src/supermonoagent/defaults.py']
     paths += [root/'src/supermonoagent/static'/name for name in DESKTOP if name!='workspace.html']
-    paths += [root/'src/supermonoagent/static'/name for name in ('clipboard-files.js','mylib-assistant.js')]
+    paths += [root/'src/supermonoagent/static'/name for name in ('clipboard-files.js','mylib-assistant.js','assistant-chat.js')]
     paths += [root/'android/assets/mobile'/name for name in MOBILE]
     paths += [root/'android/assets/mobile/agent-modes'/(name+'.json') for name in AGENT_MODES]
     return {str(path.relative_to(root)):digest(path.read_bytes()) for path in paths}

@@ -34,8 +34,22 @@
 
 当前新版后台通过 OP22 提供目标终端启动目录、目标技能清单及固定账本页面；只对后台所有者开放，异步读取后再核查会话与权限。目录是终端启动目录，不跟踪 shell 内后续 cd；旧后台没有该能力时仍可显示本机技能建议。测试见 `tests/test_assistant_context.py`、`tests/test_daemon_assistant_context.py`、`tests/test_workspace_tab_picker.py`。不从页面文字推断模式，不将故障线索视为验证证据，不自动执行 propose/decide。
 
-后续开发源码已增加 provider-neutral 模型配置：五个非凭据字段（入口、模型名称、服务地址、自动附带上下文、字符上限），受同源原生接口保护，按启动状态目录隔离、原子保存。损坏配置只返回默认值，不自动覆盖原文件；拒绝密钥字段、URL 凭据和非 loopback 明文 HTTP。配置界面不发模型请求，实际调用仍待入口选择与适配。此增量未随 0.2.37 发布，不将保存偏好称为已配置模型服务。
+开发源码已接通两种独立模型入口及每窗口对话。设置仍只持久化五个非凭据字段；API 密钥通过原生接口仅保存在本次进程内，绑定确切服务地址，切换入口／地址或关闭应用后清除。默认不附带终端输出；用户勾选附带或点击“分析当前窗口”才发送最近最多 200 行，并受字符、消息与字节上限约束。已知连接 Token 和 API 密钥在请求与答复中脱敏；不能保证识别终端里所有其他秘密，发送前应查看上下文。对话按窗口隔离，切换、重连、关闭和修改设置时丢弃过期结果；取消后等待原请求真正结束。
 
-source_path: `src/supermonoagent/assistant_preferences.py`, `src/supermonoagent/desktop_assistant.py`, `tests/test_assistant_preferences.py`, `tests/test_assistant_preferences_ui.py`
+API 入口使用标准 Chat Completions 文本请求，关闭工具、流式及服务端存储；支持 HTTPS 和严格 loopback HTTP，拒绝重定向及环境代理，不把返回的错误正文、密钥或终端内容写入日志。Codex 入口通过单独进程使用 CLI 已保存的登录，不读取／复制 auth.json；当前验证限 Windows/.NET、CLI 0.164.0 及标准 ChatGPT 工作区。每次请求使用临时私有 HTTPS 网关，模型请求必须 tools=[]，工具响应在进入 CLI 前整批拒绝。未知 CLI 版本、MCP／插件或其他不支持配置会拒绝。
+
+Codex 配置是可信本地边界：app-server 可能在 thread/start 重读配置，同时有本地程序修改配置时，配置中的 MCP 可在检查前初始化；网关仍拒绝任何带工具的模型请求。不能将“无模型工具执行”描述成“任意本地配置均不会启动进程”。进程私有 JobObject、取消、超时和临时 TLS 清理均有测试。实际 CLI 测试仅使用独立假登录及 loopback 假上游，未调用用户真实账号或云模型。此增量已随 0.2.38 Windows 完整包发布。
+
+source_path: `src/supermonoagent/assistant_preferences.py`, `src/supermonoagent/assistant_service.py`, `src/supermonoagent/assistant_api.py`, `src/supermonoagent/assistant_codex.py`, `src/supermonoagent/assistant_codex_gateway.py`, `src/supermonoagent/desktop_assistant.py`, `src/supermonoagent/static/assistant-chat.js`, `tests/test_assistant_chat_integration.py`。CLI 证据：`.omx/artifacts/assistant-codex/capability-evidence.md`。
 
 独立文件与助理任务使用每连接有界队列及专用执行器，避免慢文件系统拖住终端输入和心跳。原生 WebView2 已使用测试剪贴板源验证建议显示及上传桥接，证据为 `.omx/artifacts/file-paste/native-webview-evidence.json`；不以此替代真实系统剪贴板验收。目标电脑尚未使用新后台、未配置 mylib 或模型服务时，不能宣称这些能力已在该电脑上线。
+
+## metaRSI 后续建议质量
+
+2026-10-25 只读核实：库 manifest 的 49 项没有 `meta-rsi`，但 `mylib_assistant.py` 显式补充 `../skills/meta-rsi`；`assistant_context.py` 复用同一索引。因此本机 50 项及目标清单没有因 manifest 缺项漏掉该技能。
+
+当前建议与项目经验仍分开：`mylib_assistant.py::_evolution` 在至少两条故障行时提供通用待验证卡；这些行不等于两个独立故障。`static/mylib-assistant.js` 并行取建议与账本后分别显示，模型对话目前也只附带终端输出，没有关联已有试验或否决项。只读页面为 README、negatives、trials，未覆盖 nodes、ideas 中更完整的影子规则、信号及想法；已有模式文本只代表生成记录，不能称为重新核验。
+
+下一步在原有独立助理通道内结合只读账本，形成“具体问题、相关旧记录、可检验假设、验收方法、来源、未验证声明”。缺失或过期账本明确降级；模型输出不构成通过验证。自动登记实验与准入仍属第三期，不能为获取只读状态而周期执行会写记录的 tick，也不能自动批准 propose／decide。
+
+source_path: `src/supermonoagent/mylib_assistant.py`, `src/supermonoagent/assistant_context.py`, `src/supermonoagent/static/mylib-assistant.js`, `src/supermonoagent/static/assistant-chat.js`, `D:/aicoding/mylib/skills/meta-rsi/SKILL.md`, `D:/aicoding/mylib/skills/meta-rsi/references/IDEATION.md`。

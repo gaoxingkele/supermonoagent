@@ -7,7 +7,9 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import threading
 import time
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 from unittest.mock import patch
 import zipfile
@@ -24,6 +26,57 @@ from test_ui_updates import OPENSSL, sign
 
 EDGE=Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
 FEED='https://updates.example/updates/stable/manifest.json'
+
+
+class NativeRecoveryNavigation:
+    """Correlate native completion to recovery's new document, not SDK latches."""
+    def __init__(self, window_id):
+        self.window_id = window_id
+        self.loaded = threading.Event()
+        self._lock = threading.Lock()
+        self._state = {'navigation_id': None, 'uri': None, 'completed_id': None,
+                       'success': False}
+
+    def starting(self, uri, navigation_id):
+        query = parse_qs(urlsplit(uri).query)
+        if query.get('native_window') != [self.window_id] or not query.get('ui_recovery'):
+            return
+        with self._lock:
+            self._state = {'navigation_id': navigation_id, 'uri': uri,
+                           'completed_id': None, 'success': False}
+            self.loaded.clear()
+
+    def completed(self, navigation_id, success):
+        with self._lock:
+            if self._state['navigation_id'] is None or navigation_id != self._state['navigation_id']:
+                return
+            self._state.update(completed_id=navigation_id, success=bool(success))
+            if success:
+                self.loaded.set()
+
+    def snapshot(self):
+        with self._lock:
+            return dict(self._state)
+
+
+def test_native_recovery_navigation_ignores_old_loaded_latch_and_navigation():
+    witness = NativeRecoveryNavigation('owned')
+    sdk_loaded = threading.Event()
+    sdk_loaded.set()  # Initial load and a late old injection can keep this true.
+    witness.completed(1, True)
+    assert sdk_loaded.is_set() and not witness.loaded.is_set()
+    witness.starting('http://127.0.0.1/workspace?native_window=other&ui_recovery=x', 2)
+    witness.completed(2, True)
+    assert not witness.loaded.is_set()
+    witness.starting('http://127.0.0.1/workspace?native_window=owned&ui_recovery=x', 3)
+    witness.completed(1, True)  # Old bad document finally completes after abort.
+    assert not witness.loaded.is_set()
+    witness.completed(3, False)
+    assert not witness.loaded.is_set()
+    witness.completed(3, True)
+    assert witness.loaded.is_set() and witness.snapshot()['completed_id'] == 3
+    witness.starting('http://127.0.0.1/workspace?native_window=owned&ui_recovery=y', 4)
+    assert not witness.loaded.is_set()
 
 
 def test_bundled_update_entry_is_visible_text():
@@ -510,8 +563,10 @@ from supermonoagent.frontend import Frontend
 from supermonoagent.desktop import NativeUpdateRecovery
 from supermonoagent import ui_updates as U
 from test_client_integration import ControlledPty
+from test_desktop_ui_updates import NativeRecoveryNavigation
 ready=threading.Event();done=threading.Event();state={};result={'passed':False}
 window_id='owned-native-update-test'
+navigation=NativeRecoveryNavigation(window_id)
 
 async def service():
   try:
@@ -539,6 +594,18 @@ recovery=NativeUpdateRecovery(window,state['url'])
 def check():
   try:
     assert window.events.loaded.wait(15),'initial UI did not load'
+    # loaded is a reusable, unversioned SDK event. Native navigation IDs are
+    # needed because late injection for the interrupted document can set it.
+    from System import Action
+    def starting(_sender,args):
+      navigation.starting(str(args.Uri),int(args.NavigationId))
+    def completed(_sender,args):
+      navigation.completed(int(args.NavigationId),bool(args.IsSuccess))
+    def observe_native_navigation():
+      core=window.native.webview.CoreWebView2
+      core.NavigationStarting += starting
+      core.NavigationCompleted += completed
+    window.native.webview.Invoke(Action(observe_native_navigation))
     deadline=time.monotonic()+10
     while (state['frontend'].update_store.status()['pending'] or not state['frontend'].update_candidate) and time.monotonic()<deadline:time.sleep(.03)
     assert state['frontend'].update_store.status()['pending'] is None,'initial ready was not committed'
@@ -552,22 +619,32 @@ def check():
     started=time.monotonic();time.sleep(.3)
     result['bridge_clients_during_hang']=len(state['frontend'].update_clients)
     deadline=time.monotonic()+30
-    while (recovery.recoveries<1 or not window.events.loaded.is_set()) and time.monotonic()<deadline:time.sleep(.05)
+    while (recovery.recoveries<1 or not navigation.loaded.is_set()) and time.monotonic()<deadline:time.sleep(.05)
     assert recovery.recoveries==1,'native recovery did not navigate'
-    assert window.events.loaded.wait(8),'recovered document did not load'
-    # No evaluate/run_js is attempted during the actual while(true) interval.
-    current=window.run_js('({marker:window.updateMarker,connected:smaWorkspace.connected,agent:navigator.userAgent})')
+    assert navigation.loaded.is_set(),('recovery navigation did not complete successfully',navigation.snapshot())
+    result['recovery_navigation']=navigation.snapshot()
+    # Only a successful completion of the ui_recovery navigation permits JS
+    # observation. No evaluate/run_js is attempted during the while(true).
+    observations=[];current=None
     deadline=time.monotonic()+3
-    while not current.get('connected') and time.monotonic()<deadline:
-      time.sleep(.05);current=window.run_js('({marker:window.updateMarker,connected:smaWorkspace.connected,agent:navigator.userAgent})')
+    while time.monotonic()<deadline:
+      assert navigation.loaded.is_set(),'a new recovery navigation began during readiness checks'
+      current=window.run_js('({marker:window.updateMarker,ready:document.readyState,connected:!!window.smaWorkspace?.connected,agent:navigator.userAgent,href:location.href})')
+      observations.append({'kind':type(current).__name__,'marker':current.get('marker') if isinstance(current,dict) else None,'connected':current.get('connected') if isinstance(current,dict) else False})
+      if isinstance(current,dict) and current.get('marker')=='desktop-ui-1' and current.get('ready')=='complete' and current.get('connected'):
+        break
+      time.sleep(.05)
+    result['recovered_document_observations']=observations
+    assert isinstance(current,dict) and current.get('marker')=='desktop-ui-1' and current.get('ready')=='complete' and current.get('connected'),('recovered document did not become ready',observations,navigation.snapshot())
+    assert current['href']==navigation.snapshot()['uri'],('observed a different document',current['href'],navigation.snapshot())
     status=state['frontend'].update_store.status()
     send=ctypes.windll.user32.SendMessageW;send.argtypes=[ctypes.c_void_p,ctypes.c_uint,ctypes.c_size_t,ctypes.c_ssize_t];send.restype=ctypes.c_void_p
     handle=int(window.native.Handle.ToInt64())
-    result.update(passed=current['marker']=='desktop-ui-1' and current['connected'],active_revision=status['active_revision'],failed_sequences=status['failed_sequences'],native_recoveries=recovery.recoveries,native_interruptions=recovery.interruptions,recovery_seconds=time.monotonic()-started,connected_after_recovery=current['connected'],runtime=current['agent'],stable_url_has_credentials=('#' in recovery.reload_url or 'token=' in recovery.reload_url),icon_big=bool(send(handle,0x7f,1,0)),icon_small=bool(send(handle,0x7f,0,0) or send(handle,0x7f,2,0)),pty_input_bytes=len(state['session'].pty.written))
+    result.update(passed=True,active_revision=status['active_revision'],failed_sequences=status['failed_sequences'],native_recoveries=recovery.recoveries,native_interruptions=recovery.interruptions,recovery_seconds=time.monotonic()-started,connected_after_recovery=current['connected'],runtime=current['agent'],stable_url_has_credentials=('#' in recovery.reload_url or 'token=' in recovery.reload_url),icon_big=bool(send(handle,0x7f,1,0)),icon_small=bool(send(handle,0x7f,0,0) or send(handle,0x7f,2,0)),pty_input_bytes=len(state['session'].pty.written))
   except BaseException as error:
     result.update(error=repr(error),traceback=traceback.format_exc())
   finally:
-    result.update(native_recoveries=recovery.recoveries,native_interruptions=recovery.interruptions,interrupt_error=recovery.interruption_error,runtime_armed=recovery.runtime_armed,served_document=state['frontend'].update_windows.get(window_id),final_store=state['frontend'].update_store.status()['active_revision'])
+    result.update(native_recoveries=recovery.recoveries,native_interruptions=recovery.interruptions,interrupt_error=recovery.interruption_error,runtime_armed=recovery.runtime_armed,recovery_navigation=navigation.snapshot(),served_document=state['frontend'].update_windows.get(window_id),final_store=state['frontend'].update_store.status()['active_revision'])
     recovery.stop();done.set();(WORK/'native-result.json').write_text(json.dumps(result,indent=2),encoding='utf-8');window.destroy()
 webview.start(check,gui='edgechromium',icon=str(icon));done.set();thread.join(timeout=5)
 raise SystemExit(0 if result['passed'] else 1)

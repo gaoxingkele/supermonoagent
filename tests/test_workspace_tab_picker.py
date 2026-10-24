@@ -4,6 +4,17 @@ from pathlib import Path
 from test_workspace_profile_rooms import fixture, run, server_barrier
 
 
+def test_window_actions_start_in_header_before_javascript_runs():
+    from supermonoagent.workspace import PAGE
+
+    header = PAGE.split('<header class="titlebar">', 1)[1].split('</header>', 1)[0]
+    tab_row = PAGE.split('<div class="workspace-toolbar">', 1)[1].split('<div id="notice"', 1)[0]
+    for control in ('preset', 'new-session', 'split-horizontal', 'split-vertical', 'maximize'):
+        assert f'id="{control}"' in header
+        assert f'id="{control}"' not in tab_row
+    assert 'id="tabs"' in tab_row
+
+
 def test_all_tabs_menu_reaches_overflow_and_keeps_terminal_input_untouched(tmp_path):
     run(lambda playwright: check_picker(playwright, tmp_path))
 
@@ -37,6 +48,9 @@ async def check_picker(playwright, tmp_path):
         before = await page.locator('#tabs').evaluate('(el)=>el.scrollLeft')
         await page.locator('#tabs-scroll-left').click()
         await page.wait_for_function('before=>document.querySelector("#tabs").scrollLeft<before', arg=before)
+        before_right = await page.locator('#tabs').evaluate('(el)=>el.scrollLeft')
+        await page.locator('#tabs-scroll-right').click()
+        await page.wait_for_function('before=>document.querySelector("#tabs").scrollLeft>before', arg=before_right)
         await toggle.click()
         await page.keyboard.press('Escape')
         assert await toggle.evaluate('(el)=>el===document.activeElement')

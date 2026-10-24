@@ -64,11 +64,12 @@ def test_native_bridge_rejects_navigation_before_library_access(tmp_path):
     exposed, scripts = [], []
     current = ["http://127.0.0.1:6771/workspace"]
     window = SimpleNamespace(expose=lambda *methods: exposed.extend(methods), run_js=scripts.append,
-        get_current_url=lambda: current[0], events=SimpleNamespace(loaded=Event()))
+        get_current_url=lambda: current[0], events=SimpleNamespace(loaded=Event(), closed=Event()))
     library(tmp_path)
     preferences_path = tmp_path / 'assistant-preferences.json'
     assistant = DesktopAssistant(window, current[0], tmp_path, preferences_path=preferences_path)
-    assert exposed == [assistant.recommend_skills, assistant.get_assistant_preferences, assistant.save_assistant_preferences]
+    assert exposed == [assistant.recommend_skills, assistant.get_assistant_preferences, assistant.save_assistant_preferences,
+        assistant.set_assistant_api_key, assistant.assistant_chat, assistant.cancel_assistant_chat]
     assert assistant.get_assistant_preferences()['status'] == 'default'
     assert not preferences_path.exists()
     assistant._loaded()
@@ -82,5 +83,8 @@ def test_native_bridge_rejects_navigation_before_library_access(tmp_path):
             assistant.get_assistant_preferences()
         with pytest.raises(ValueError):
             assistant.save_assistant_preferences({})
+        for action in (lambda: assistant.set_assistant_api_key('fixture'), lambda: assistant.assistant_chat({'question': 'no'}), assistant.cancel_assistant_chat):
+            with pytest.raises(ValueError):
+                action()
         assistant._loaded()
     assert len(scripts) == 1

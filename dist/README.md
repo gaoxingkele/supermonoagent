@@ -1,10 +1,10 @@
 # 发布产物
 
-最新 Windows 构建：**0.2.37**；当前公开 Android APK 为 **0.2.36**。Android 异常／挂死回滚的修复后真机验收尚未完成，见 [TODO](../docs/TODO.md)。
+最新 Windows 构建：**0.2.38**；当前公开 Android APK 为 **0.2.36**。Android 异常／挂死回滚的修复后真机验收尚未完成，见 [TODO](../docs/TODO.md)。
 
-- Windows 一键安装 ZIP：`windows/SuperMonoAgent-0.2.37-Setup.zip`（通用无凭据版）。自动注入默认 Token 的专用包通过受限下载链接单独提供，不提交 Git。使用方法见 [一键安装说明](../docs/windows-oneclick-install.md)。
+- Windows 一键安装 ZIP：`windows/SuperMonoAgent-0.2.38-Setup.zip`（通用无凭据版）。自动注入默认 Token 的专用包通过受限下载链接单独提供，不提交 Git。使用方法见 [一键安装说明](../docs/windows-oneclick-install.md)。
 
-- Windows：`windows/0.2.37/`，保留完整目录，运行 `02-Orca-Workspace.vbs`。
+- Windows：`windows/0.2.38/`，保留完整目录，运行 `02-Orca-Workspace.vbs`。助手模型配置见 [说明](../docs/assistant-models.md)。
 - Android：`android/0.2.36/SuperMonoAgent.apk`，支持保留应用数据的覆盖安装。
 - 历史构建保留在各自目录；后续版本使用数字版本号。
 

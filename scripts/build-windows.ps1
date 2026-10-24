@@ -82,6 +82,7 @@ Copy-Item "$repoRoot/docs/windows-clients.md" "$dist/README.md" -Force
 Copy-Item "$repoRoot/docs/windows-installation-plan.md" "$dist/windows-installation-plan.md" -Force
 Copy-Item "$repoRoot/docs/windows-oneclick-install.md" "$dist/windows-oneclick-install.md" -Force
 Copy-Item "$repoRoot/docs/clipboard-files.md" "$dist/clipboard-files.md" -Force
+Copy-Item "$repoRoot/docs/assistant-models.md" "$dist/assistant-models.md" -Force
 $exe = Join-Path $dist 'SuperMonoAgent/SuperMonoAgent.exe'
 $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
 "$sha  SuperMonoAgent/SuperMonoAgent.exe" | Set-Content "$dist/SuperMonoAgent.exe.sha256" -Encoding ascii

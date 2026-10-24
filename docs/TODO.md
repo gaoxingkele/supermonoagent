@@ -2,7 +2,7 @@
 
 ## 新增：mylib 助理与文件粘贴（2026-10-25，开发中）
 
-- [x] Windows **0.2.37** 完整包已发布至原中继的完整程序更新频道；公开 ZIP 不含 Token，专用包通过受限链接注入默认配置。TLS 回读、签名、归档 hash、一键安装及重复安装保留凭据均通过，中继未重启。源码与 Windows dist 已推送 GitHub `dc252a3088434f5af8051031b85bd995b3eb2f24`。证据：`.omx/artifacts/windows-sidecars/{final-publication.json,https-download-verification.json,full-installer-verification.json}`。
+- [x] Windows **0.2.38** 完整包已发布至原中继完整程序频道，序号 `1792885303036790`；公开 ZIP 不含 Token，专用包通过受限链接注入默认配置。TLS 回读、RSA 验签、归档 hash、一键安装及重复安装保留凭据均通过，中继未重启。源码与完整 Windows dist 随本次版本提交。证据：`.omx/artifacts/windows-assistant-0.2.38/{final-publication.json,https-download-verification.json,full-installer-verification.json,public-archive-audit.json}`；上一版 0.2.37 的提交与验收保留在 `dc252a3` 及 `windows-sidecars/`。
 
 - [x] 标签导航发布验收：新建、左右/上下排列、最大化已移至顶部菜单行；标签行仅留页签及左右滚动按钮。顶部“全部窗口”按电脑列出当前已开标签，可切换并滚入可见区。18 标签、430px 窄屏、键盘 Escape、无终端输入的隔离测试通过，已包含在 0.2.37 中。
 
@@ -10,20 +10,23 @@
 - [x] 独立本地技能检索模块：维护清单、路径约束、有限上下文、来源及匹配理由；当前本机索引 50 项。关联测试 16 passed、6 subtests passed（含桌面启动回归）。
 - [x] 右侧助理栏源码与原生桥接验收：可折叠/暂停/复制建议，窗口切换异步结果隔离及 HTML 文本显示通过；真实隐藏 WebView2 已显示技能建议，已随 0.2.37 发布。
 - [x] metaRSI 账本只读接入：OP22 从目标终端启动目录读取固定 wiki 页面、显示目标技能库可用性；故障输出生成带线索与可证伪条件的待验证建议，不推断实时工作目录或自动批准变更。
-- [ ] 模型对话与智能分析：已询问使用本机 Codex 登录还是已有模型 API，实际调用入口未选定。模型配置界面与中立偏好存储已在开发源码完成（83 passed、6 subtests），可保存入口、模型、地址和上下文偏好，不接收密钥或发起模型调用，尚未包含在已发布 0.2.37 二进制中。当前本地匹配不等于模型对话。实验登记／验证和受保护变更准入未自动化。
+- [x] 模型对话与智能分析实现交付：0.2.38 已接通 API／本机 Codex 两种文本引擎、独立窗口对话、显式上下文、取消及凭据内存保存。真实隐藏 WebView2、loopback API 和真实 CLI 假登录已验证，未读取用户真实登录文件或调用云模型。独立审查修复凭据历史重放、取消先到及配置保存竞态，35 项复核通过。用户需自行选择并配置实际模型服务；生产账号调用未验收。配置条件与边界见 [使用说明](assistant-models.md)。
+- [ ] metaRSI 建议质量：目前故障行触发通用“待验证”卡，项目账本另行显示，尚未把既有试验／否决经验结合进具体假设。下一步先接入只读证据，明确问题、相关旧记录、可检验假设与验收方法，避免重复建议；不自动批准规则。技能已通过显式补充纳入 50 项索引，无需为此改库 manifest。依据及边界见 [助理设计](mylib-assistant-design.md)。
+- [ ] metaRSI 第三期登记与验证：实验／假设登记和验证结果关联尚未接入助手；保持项目隔离及原生账本为事实源，受保护准入仍需明确决定，不自动执行规则批准。此项属于已有设计第三期，不能把已发布的文本建议称为完成执行闭环。
 - [ ] Windows 文件/截图粘贴完整验收：OP21、原生桥接、分块/校验、进度/取消及目标绑定已接通；直连／中继、真实 WebView2 测试源、取消／切换／重连及打包 EXE 的真实自有 cmd 后台均通过。真实系统剪贴板打开仍返回访问拒绝，未覆盖用户剪贴板，未宣称该环节通过。接收目录可通过后台参数指定，暂无图形设置。详见 [文件粘贴](clipboard-files.md)。
 - [x] 本轮终端稳定性回归：整套 816 passed、3 skipped、57 subtests；随后签名 UI 接入与原生版本比较的定向验证通过。慢磁盘、默认线程池仅 1 线程时，同一条直连／中继连接仍可处理输入和心跳。没有操作用户活跃 PTY。
+- [x] 0.2.38 发布回归：冻结产品源码的整套结果为 1027 passed、3 skipped、57 subtests，另 1 项原生恢复测试因旧加载事件竞态失败。仅修复测试等待条件后，完整更新测试组 12 passed，真实 WebView2 挂死恢复独立通过两次，匹配新 NavigationId／文档标记及连接，约 20 秒恢复且 PTY 输入 0。Node 44 passed；不能把上述分组相加冒充一次整套绿灯。原始失败与修后证据均保留：`.omx/artifacts/assistant-full-suite-frozen.xml`、`windows-assistant-0.2.38/native-hang-frozen-suite-failure.json`、`ui-updates/native-hung-renderer-recovery.json`。
 - [x] 新模块纳入现有签名 UI 资源：复用 workspace.js，保持 17/16 资源格式及 API2 兼容；后续侧栏和文件界面可热更新。新装程序不再把低于／等于内置数字版本的 UI 提示为更新，继承观察序号不阻止更高版本。
 - [x] 用户指定的 0.2.36 安装目录原包：已在隔离目录实测完整安装与默认凭据匹配。新版启动器补激活已有主窗及成功反馈，仍不强开第二个主窗；未擅自安装到真实用户目录或关闭运行后台。
 - [ ] Codex 恢复 goal 菜单位置：真实 Codex 0.164 的 `auto/always` 原生首次绘制就居中；100×40 时标题在第17行/列、输入在第37行，同尺寸回放的可见文本和坐标一致。`never` 也未得到干净的输入栏上方布局。上方布局仍未实现，已询问是否扩大到 Codex 本体适配；未修改终端渲染或用户配置。证据和边界见 [菜单诊断](codex-goal-menu.md)、`tests/test_codex_goal_popup.py`。
 
-方案见 [助理设计](mylib-assistant-design.md)。已发布功能需使用 0.2.37；文件接收和项目账本查询需目标电脑新版后台。未勾选项仍未完成。
+方案见 [助理设计](mylib-assistant-design.md)。最新模型对话和顶部栏结构需使用 0.2.38；文件接收和项目账本查询需目标电脑新版后台。未勾选项仍未完成。
 
 ### 2026-10-25：剩余上线与真机事项核实
 
 - [ ] **目标后台升级**：默认 Token 的新鲜 WSS 目录可见 USA、61914c、JINLONG3090 三个在线房间；只读 HELLO 确认各有 3 个终端会话，三个后台均未声明 `file_transfer` 或 `assistant_context`。因此新客户端的文件接收／账本能力尚未在这些运行后台上线。为保留现有会话，没有重启、关闭或向终端输入命令。升级需对应电脑的可信本地安装与会话维护安排。
 - [ ] **严格房间登记迁移**：空凭据目录返回 0 台，默认 Token 可见 3 台，生产仍报告 `host_enrollment:false`。中继服务 active，当前进程未显式带 `--enrollment-file`；这不等于已证明默认文件不存在。全体主机的 owner secret 交付与迁移就绪状态仍未确认，没有切换严格模式或重启中继。
-- [ ] **Android 修复后实机回滚与 OS 输入法**：新鲜设备查询为生产版 0.2.34、独立 QA 0.0.2；已核对修复 QA 0.0.3 的包名与 SHA-256。设备处于 Dozing、锁屏显示状态，未发起新安装或启动应用。旧安装会话 81224 已失败，不当作等待中的进程；需用户解锁并完成新的 OEM 安装验证后再测，已发状态问题。
+- [ ] **Android 修复后实机回滚与 OS 输入法**：设备解锁后已重试安装独立 QA 0.0.3，包名与 SHA-256 已核对；生产版数据未动。81224、22808 均已明确失败；新会话 92077 仍在运行，已到荣耀指纹验证，需用户完成本次物理手势，已发状态问题。QA 当前仍为 0.0.2，尚不能执行修复后的 throw3／hang3；不以等待中的安装冒充成功。新证据：`.omx/artifacts/android-ui-rollback-qa/install-fresh-pending.json`。
 
 本次仅发送目录认证和 HELLO，没有发送输入、resize、打开／关闭终端命令，也没有操作生产手机数据。证据：`.omx/artifacts/remaining-todo-audit-20261025/{directory-capabilities.json,host-readiness.json,relay-service.json,phone-readiness.json}`。
 

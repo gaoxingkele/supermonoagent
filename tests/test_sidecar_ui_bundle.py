@@ -14,6 +14,7 @@ def test_features_travel_in_existing_signed_workspace_resource():
         assert marker not in code  # No backend code or credentials in UI bytes.
     assert 'window.SuperMonoFilePaste=' in code
     assert "toggle.id='mylib-toggle'" in code
+    assert 'assistant-chat-section' in code
 
 
 def test_legacy_static_tree_keeps_terminal_core_when_optional_files_missing(tmp_path):
