@@ -39,4 +39,6 @@
 
 原生隐藏 WebView2 已完成真实桥接上传与建议显示，192000 字节及 SHA-256 一致，PTY 输入为 0，测试子进程全部退出。取消、切换目标、重连、上传中普通文字、分批内存读取及慢磁盘响应均有回归；`test_file_transfer_responsiveness.py` 还将默认线程池限制为一个线程，确认同连接输入和心跳仍及时响应。
 
-真实系统剪贴板仍未验收：本环境 `CreateWindowStationW` 及只读 `OpenClipboard(None)` 均返回拒绝访问；没有覆盖或修改用户剪贴板。证据见 `.omx/artifacts/file-paste/{native-clipboard-evidence.json,clipboard-metadata-preflight.json}`。后续完成实际剪贴板验收及打包发布；接收目录当前支持后台参数配置，尚无图形设置入口。不得以注入的测试剪贴板替代实际系统验收。
+真实系统剪贴板仍未验收：本环境 `CreateWindowStationW` 及只读 `OpenClipboard(None)` 均返回拒绝访问；没有覆盖或修改用户剪贴板。后续在 WinSta0/Default 中约 1 秒重试 20 次仍返回错误 5，未找到占用窗口。调用者使用 NULL HWND 时，占用查询也可能返回 NULL，因此权限策略与占用原因尚未区分，不能断言永久不可访问。证据见 `.omx/artifacts/file-paste/{native-clipboard-evidence.json,clipboard-metadata-preflight.json,clipboard-access-diagnosis.json}`；占用查询边界见 [微软说明](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getopenclipboardwindow)。
+
+0.2.37 已发布，实际系统剪贴板验收仍待完成；接收目录当前支持后台参数配置，尚无图形设置入口。不得以注入的测试剪贴板替代实际系统验收。

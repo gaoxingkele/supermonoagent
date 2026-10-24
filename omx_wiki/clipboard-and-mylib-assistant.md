@@ -38,3 +38,9 @@ source_path: `.omx/artifacts/file-paste/native-webview-evidence.json`, `.omx/art
 实际用户提供的 `D:/BaiduSyncdisk/temp/SuperMonoAgent-0.2.36-Setup` 已验证可安装到隔离目录、默认凭据匹配，未执行普通用户目录安装、注册或启动。启动器原有主窗口分支静默返回；后续源码增加激活尝试与成功说明，不强开第二个窗口。源码修复不等于原下载目录已经更新。
 
 source_path: `.omx/artifacts/actual-setup-20261025/verification.json`, `scripts/windows-installer/Launch.ps1`, `scripts/windows-installer/Install.cmd`, `tests/test_windows_installer.py`
+
+## 暂停目标菜单的后续定位
+
+真实 Codex 0.164.0 在 auto/always 中首次绘制就将目标恢复菜单放在中间，同尺寸 OutputPump 回放的可见文本及坐标一致；never 模式也未达到干净的输入栏上方布局。不能依据合成裁切实验去认定这个原生菜单是前端错误。用户所需位置仍待原生布局或独立显示适配，产品终端渲染未修改。
+
+source_path: `docs/codex-goal-menu.md`, `tests/test_codex_goal_popup.py`, `.omx/artifacts/goal-popup/aggregate-evidence.json`
