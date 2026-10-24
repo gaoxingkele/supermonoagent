@@ -2,13 +2,18 @@
 
 ## 当前状态摘要（2026-10-24）
 
+- [x] 守护进程运行日志：后台写 UTF-8 轮转文件，**不自动弹出任何日志窗口**。根据用户最新要求，在唯一的 SuperMono 主窗口内集中展示所有已连接电脑的 daemon 状态，并选择查看其日志；所有者才可读取日志，普通账号/委托会话不能读取全局日志。保留高级 `logs` 命令；记录连接/重试、终端数量与 15 秒心跳，不记录终端内容或 Token。旧后台不强制重启，仍可查看连接状态，运行日志需新版后台正常启动。源码见 `daemon.py`、`daemon_logs.py`；验证记录见 `.omx/artifacts/daemon-live-logs/`。
+- [x] Windows 安装方式评估与方案：见 [安装方案](windows-installation-plan.md)，已核实完整目录、内置运行时、外部依赖与签名状态，比较用户级安装器、winget、npm；推荐先实现用户级安装入口，再接 winget。安装器及包管理仓库发布为待实施方案，不宣称本轮已经安装到多台电脑。
+
+本轮集中监控交付：0.2.34 单主窗口 UI、日志后台与完整包已构建；125 项关联回归、44 项 Node 测试通过，真实双后台面板测试确认不打开新窗口、不改变当前终端或发送 PTY 操作。打包 EXE 的所有者日志 RPC 与 `logs --once` 已在隔离后台验证；公网 17/16 文件快照回读验签通过。日志需各电脑使用新版后台，旧后台仍显示状态而不被强制重启。证据：`.omx/artifacts/daemon-live-logs/`、`.omx/artifacts/daemon-monitor-ui/`。
+
 - [x] 连接设置简化：Windows/Android 主入口采用中继 IP/地址、默认端口和默认记忆的 Token，测试后列出全部授权房间并默认全选；手填房间移入高级设置。已取消房间保持取消，新授权房间自动同步。Windows 无模式启动支持 `SuperMonoAgent.exe --relay URL --token TOKEN`，后台默认 `127.0.0.1:6769`；新状态房间默认本机名，已有房间与运行后台保留。代码与定向证据见 `tests/test_workspace_simple_connect.py`、`tests/test_machine_room_startup.py`、`tests/test_launcher_default_options.py` 及 `.omx/artifacts/simple-relay-setup/`；Android 原生页面仍需使用包含该改动的新 APK，不以源码验证替代真机安装。
 
 - [x] 本轮并发回归修复：Windows UI 存储、打包器及发布事务取消获取文件锁之前的空文件初始化写入，避免另一进程已经锁住空文件时触发 PermissionError。两个真实子进程的确定性用例先复现失败，修复后更新存储/发布 23 项、9 子测试通过，含真实 WebView 恢复的较宽回归 33 项通过。整套修复前基线为 538 passed、1 skipped、57 subtests，唯一失败即此并发项；不将该基线写成最终整套全绿。证据：`.omx/artifacts/simple-relay-setup/{full-suite.xml,update-lock.xml,locks-final.xml}`。
 
 - [x] Windows 左上角菜单新增“刷新中继”：重新查询全部已配置中继的授权房间和各电脑窗口清单；保持在线终端及当前视图，支持目录断线重试，连续点击限流。两个真实隔离中继的目录漏推送、窗口漏推送与重试测试通过；工作区相关回归 30 项、Node 42 项通过。证据：`.omx/artifacts/relay-menu-refresh/`。
 
-本节覆盖下面的历史快照；全目标仍未通过完整完成审计。最新双端构建为 **0.2.33**，版本目录不自动等于正式验收：Android 0.2.24（code26）已有本轮真机基础验证，Windows 0.2.28 已完成默认 Token 的实际打包 UI 定向验证；随后观察到外部安装 Android 0.2.27。产物索引见 `dist/README.md`。
+本节覆盖下面的历史快照；全目标仍未通过完整完成审计。最新双端构建为 **0.2.34**，版本目录不自动等于正式验收：Android 0.2.24（code26）已有本轮真机基础验证，Windows 0.2.28 已完成默认 Token 的实际打包 UI 定向验证；随后观察到外部安装 Android 0.2.27。产物索引见 `dist/README.md`。
 
 | 事项 | 当前结果 | 权威依据与未关闭边界 |
 | --- | --- | --- |

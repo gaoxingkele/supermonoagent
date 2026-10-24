@@ -1,5 +1,11 @@
 # 线协议
 
+## 守护进程状态与日志（单主窗口）
+
+能力 `daemon_logs:true` 表示支持二进制 OP20。请求为 `{request:字符串标识,lines:80}`，响应复用 OP20，包含相同 `request`、`pid`、`uptime_seconds` 和 `text` 或 `error/error_code`。服务端固定读取本 daemon 状态目录下当前 `logs/daemon.log`，最多 200 行、32 KiB，不接受客户端指定文件路径；默认页面每两秒只请求当前选中的后台，不订阅新终端或改变尺寸。
+
+只有该后台的根所有者 Token 且非委托会话可读；普通本地账号与账号委托返回 `owner_required`，临时文件错误返回 `unavailable`。文件读取完成后重新验证客户端对象与授权，撤权/断开的结果不再返回。客户端按连接代际、主机对象和请求标识匹配响应，关闭监控后停止请求。已认证状态包的 `service.pid/uptime_seconds` 用于集中状态展示；旧后台没有此能力时仅显示已有连接和终端目录。
+
 ## 后续新增：统一中继账号（TD-008）
 
 这部分实现于本轮源码，公网部署尚未执行。完整配置步骤见 [统一账号部署](relay-account-setup.md)。原有长期 Token/known-room 路径保持独立。
@@ -63,6 +69,7 @@
 | 17 | INPUT_SESSION | 客户端 → daemon | `8 字节 raw session ID + NUL + 原始输入字节` |
 | 18 | TASK_SUBSCRIBE | 客户端 → daemon | `{after?,replay?}`；订阅任务完成事件，`after` 为最后收到的 event_id，`replay:false` 只建立游标 |
 | 19 | TASK_EVENT | daemon → 客户端 | 完成事件 JSON，含 `event_id,session,window,title,machine,project,status,summary,agent,created_at`；基线确认时为 `{type:"cursor",cursor}` |
+| 20 | DAEMON_LOGS | 客户端 ↔ daemon | `{request,lines?}` 获取根所有者的有界运行日志；回复同 request 与 text 或安全错误，仅监控元数据、不改变 PTY |
 
 OP16/17/5 都受 Token 所有权与订阅约束。OP18 的回放按 Token 所有权过滤，relay 客户端还按频道过滤；OP19 只发给已订阅且仍有权限的连接。客户端内部的 host/session 元组键不能放进线协议；不同 daemon 的相同 raw ID 由其所属连接隔离。关闭标签页只从 OP16 订阅集移除该 ID，不发送 OP9。
 

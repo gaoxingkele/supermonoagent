@@ -16,6 +16,7 @@ MODES = {
     "native-attach": "supermonoagent.native_attach",
     "notifications": "supermonoagent.notification_bridge",
     "relay-bridge": "supermonoagent.relay_bridge",
+    "logs": "supermonoagent.daemon_logs",
     "console-snapshot": "supermonoagent.console_snapshot",
 }
 
@@ -47,7 +48,9 @@ def main(argv: list[str] | None = None) -> None:
         original = sys.argv
         try:
             sys.argv = [original[0], *remaining]
-            module.main()
+            result = module.main()
+            if mode == 'logs' and isinstance(result, int) and result:
+                raise SystemExit(result)
         finally:
             sys.argv = original
 

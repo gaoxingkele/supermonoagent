@@ -130,7 +130,7 @@ def port_open(host: str = HOST, port: int = PORT) -> bool:
 
 
 def host_command(host: str = HOST, port: int = PORT, state_dir: str | None = None, *,
-                 relay: str = "", token: str | None = None, token_file: str | None = None, code: str = "") -> list[str]:
+                 relay: str = "", token: str | None = None, token_file: str | None = None, code: str = "", log_window: bool | None = None) -> list[str]:
     entry = ["host"] if getattr(sys, "frozen", False) else ["-m", "supermonoagent"]
     command = [sys.executable, *entry, "--host", host, "--port", str(port)]
     if state_dir:
@@ -139,6 +139,8 @@ def host_command(host: str = HOST, port: int = PORT, state_dir: str | None = Non
         command.extend(["--relay", relay])
     if code:
         command.extend(["--code", code])
+    if log_window is not None:
+        command.append('--log-window' if log_window else '--no-log-window')
     if token is not None and token_file is not None:
         raise ValueError("Use either --token or --token-file")
     if token is not None:
@@ -149,12 +151,12 @@ def host_command(host: str = HOST, port: int = PORT, state_dir: str | None = Non
 
 
 def start_host(host: str = HOST, port: int = PORT, state_dir: str | None = None, *,
-               relay: str = "", token: str | None = None, token_file: str | None = None, code: str = "") -> None:
+               relay: str = "", token: str | None = None, token_file: str | None = None, code: str = "", log_window: bool | None = None) -> None:
     flags = 0
     if sys.platform == "win32":
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     process = subprocess.Popen(
-        host_command(host, port, state_dir, relay=relay, token=token, token_file=token_file, code=code), creationflags=flags, stdin=subprocess.DEVNULL,
+        host_command(host, port, state_dir, relay=relay, token=token, token_file=token_file, code=code, log_window=log_window), creationflags=flags, stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
     )
     for _ in range(75):
@@ -208,6 +210,9 @@ def argument_parser() -> argparse.ArgumentParser:
     credentials.add_argument("--token", default=None, help="Owner token for a new daemon or explicit --url; running local hosts keep their credentials")
     credentials.add_argument("--token-file", default=None, help="Private owner token file for a new daemon or explicit --url")
     parser.add_argument("--code", default="", help="Optional new-host room override; otherwise keep its saved room or use this computer's name")
+    log_window = parser.add_mutually_exclusive_group()
+    log_window.add_argument('--log-window', dest='log_window', action='store_true', default=None, help='Open daemon logs when starting a new host')
+    log_window.add_argument('--no-log-window', dest='log_window', action='store_false', help='Keep daemon file logs without a viewer window')
     page_choice = parser.add_mutually_exclusive_group()
     page_choice.add_argument("--legacy", action="store_true", help="Open the original terminal page")
     page_choice.add_argument("--workspace", action="store_true", help="Open the workspace page in browser mode")
@@ -235,7 +240,7 @@ def connection_url(args: argparse.Namespace, *, browser: bool = False) -> str:
         if args.no_start:
             raise ValueError("No daemon is listening; start the host or omit --no-start")
         startup = {}
-        for name in ("relay", "token", "token_file", "code"):
+        for name in ("relay", "token", "token_file", "code", "log_window"):
             value = getattr(args, name, None)
             if value is not None and (name in {"token", "token_file"} or value != ""):
                 startup[name] = value

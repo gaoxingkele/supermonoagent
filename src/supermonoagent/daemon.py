@@ -1,4 +1,4 @@
-"""One process owns the consoles and the phone sockets. Nothing polls."""
+"""One process owns the consoles and phone sockets without polling terminals."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import importlib
 import json
+import logging
 import math
 import os
 import secrets
@@ -25,8 +26,10 @@ from .accounts import Accounts
 from .defaults import migrate_legacy_relay
 from .hub import Hub
 from .task_events import TaskEventStore
+
 from .protocol import (
     OP_CLOSE,
+    OP_DAEMON_LOGS,
     OP_FOCUS,
     OP_GROUP,
     OP_HELLO,
@@ -50,8 +53,21 @@ from .protocol import (
     unpack_json,
 )
 
+LOGGER = logging.getLogger('supermonoagent.daemon')
+LOGGER.addHandler(logging.NullHandler())
 STATE = Path(os.environ.get("SUPERMONO_STATE_DIR") or Path.home() / ".supermonoagent")
 QUEUE_FRAMES = 32
+
+
+def log_endpoint(value: str) -> str:
+    """Describe a relay without URL credentials, query strings or private paths."""
+    try:
+        parts = urlsplit(value)
+        host = parts.hostname or '?'
+        if ':' in host: host = '['+host+']'
+        return parts.scheme+'://'+host+(':'+str(parts.port) if parts.port else '')
+    except ValueError:
+        return '<invalid endpoint>'
 
 
 def relay_binding_url(value: str) -> str:
@@ -220,6 +236,8 @@ def load_code(explicit: str | None = None) -> str:
 class Daemon:
     def __init__(self, token: str) -> None:
         self.token = token
+        self.started_at = time.monotonic()
+        self.log_state_dir = Path(STATE).resolve()
         self.accounts = Accounts(STATE / "accounts.json")
         self.hub = Hub()
         self.hub.task_events = TaskEventStore(STATE / "task-events.json")
@@ -303,6 +321,7 @@ class Daemon:
     async def handle_socket(self, ws) -> None:
         first = None
         if '?' in ws.request.path:
+            LOGGER.warning('client_rejected reason=query_authentication')
             await ws.close(code=4001, reason='Use first HELLO authentication')
             return
         authorization = ws.request.headers.get('Authorization', '')
@@ -331,10 +350,12 @@ class Daemon:
                 if not self.allowed(offered):
                     raise ValueError('Invalid credentials')
             except (asyncio.TimeoutError, ValueError, TypeError, ProtocolError):
+                LOGGER.warning('client_rejected reason=authentication')
                 await ws.close(code=4001)
                 return
         queue: asyncio.Queue = asyncio.Queue(QUEUE_FRAMES)
         client = self.hub.attach(queue, token=offered)
+        LOGGER.info('client_connected clients=%d', len(self.hub.clients))
         sender = asyncio.create_task(self._send(ws, queue, client))
         self._direct_sockets[client.key] = (ws, sender)
         try:
@@ -365,6 +386,7 @@ class Daemon:
         finally:
             self._direct_sockets.pop(client.key, None)
             self.hub.detach(client.key)
+            LOGGER.info('client_disconnected clients=%d', len(self.hub.clients))
             sender.cancel()
             await asyncio.gather(sender, return_exceptions=True)
 
@@ -428,6 +450,25 @@ class Daemon:
         if not self.client_authorized(client):
             self._revoke_clients()
             return [], 4001
+        if op == OP_DAEMON_LOGS:
+            body = unpack_json(payload)
+            request = body.get('request', '')
+            lines = body.get('lines', 80)
+            if not isinstance(request, str) or len(request) > 64 or type(lines) is not int or lines < 0:
+                raise ProtocolError('Invalid daemon log request')
+            reply = {'request': request, 'pid': os.getpid(), 'uptime_seconds': int(time.monotonic()-self.started_at)}
+            if client.delegated or client.token != self.token:
+                return [pack_json(OP_DAEMON_LOGS, {**reply, 'error_code': 'owner_required', 'error': '运行日志仅对后台所有者开放。'})], None
+            from .daemon_logs import read_log_tail
+            try:
+                text = await asyncio.to_thread(read_log_tail, self.log_state_dir, min(lines, 200))
+            except OSError:
+                text = None
+            # Reading a file may outlive an authorization or socket generation.
+            if not self.client_authorized(client) or client.delegated or client.token != self.token:
+                return [], 4001
+            result = {'text': text} if text is not None else {'error_code': 'unavailable', 'error': '运行日志暂不可用，请检查日志目录权限。'}
+            return [pack_json(OP_DAEMON_LOGS, {**reply, **result})], None
         if op == OP_HELLO:
             body = unpack_json(payload) if payload else {}
             offered = str(body.get("token") or "")
@@ -477,6 +518,7 @@ class Daemon:
         if op == OP_WINDOW:
             body = unpack_json(payload) if payload else {}
             window = self.hub.open_window(body.get("title"), str(body.get("group") or ""), client.token)
+            LOGGER.info('window_opened windows=%d', len(self.hub.windows))
             self.hub.select(client, window.id)
             return [self._state(client)], None
         if op == OP_SELECT:
@@ -492,8 +534,10 @@ class Daemon:
             try:
                 session = self.hub.open_cli(window_id, str(body.get("shell") or "powershell"), body.get("cwd"))
             except FileNotFoundError as exc:
+                LOGGER.warning('terminal_open_failed error=%s', type(exc).__name__)
                 return [self._state(client, error=str(exc))], None
             self.hub.follow(client, session.id)
+            LOGGER.info('terminal_opened windows=%d terminals=%d', len(self.hub.windows), len(self.hub.sessions))
             return [self._state(client)], None
         if op == OP_FOCUS:
             body = unpack_json(payload)
@@ -521,6 +565,7 @@ class Daemon:
             return [], None
         if op == OP_CLOSE:
             body = unpack_json(payload) if payload else {}
+            before = len(self.hub.windows), len(self.hub.sessions)
             if body.get("window"):
                 if self.hub.owns(client.token, str(body["window"])):
                     self.hub.close_window(str(body["window"]))
@@ -528,6 +573,8 @@ class Daemon:
                 session = self.hub.sessions.get(str(body["session"]))
                 if session is not None and self.hub.owns(client.token, session.window_id):
                     self.hub.close_session(str(body["session"]))
+            if before != (len(self.hub.windows), len(self.hub.sessions)):
+                LOGGER.info('terminal_closed windows=%d terminals=%d', len(self.hub.windows), len(self.hub.sessions))
             return [], None
         if op == OP_PING:
             return [pack(OP_PONG, payload)], None
@@ -653,6 +700,8 @@ class Daemon:
             relays.append({"name": item.get("name") or item["url"], "url": item["url"], "up": item["url"] in self.relay_live})
         return {
             "ok": True,
+            "pid": os.getpid(),
+            "uptime_seconds": int(time.monotonic()-self.started_at),
             "accounts": len(self.accounts.users),
             "windows": len(self.hub.windows),
             "sessions": len(self.hub.sessions),
@@ -754,7 +803,7 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
 
     target = urlsplit(url)
     if target.scheme != 'wss' and not loopback(target.hostname or ''):
-        print('relay requires wss:// for non-loopback endpoints', flush=True)
+        LOGGER.warning('relay_refused reason=insecure_transport')
         return
     while True:
         try:
@@ -775,6 +824,7 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
                     daemon._relay_generations[url] = generation
                     daemon._relay_sockets[url] = ws
                     daemon.relay_live.add(url)
+                    LOGGER.info('relay_connected server=%s room=%s', log_endpoint(url), code)
                     daemon.publish_status()
                     uplink: asyncio.Queue = asyncio.Queue(QUEUE_FRAMES)
                     phones: dict[int, tuple[object, asyncio.Task]] = {}
@@ -791,6 +841,7 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
                             return
                         client, job = current
                         daemon.forget_relay_client(client, reason)
+                        LOGGER.info('relay_client_disconnected clients=%d', len(daemon.hub.clients))
                         if job is not asyncio.current_task():
                             job.cancel()
                         retained = []
@@ -871,6 +922,7 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
                                             await ws.send(json.dumps({"op": "joined", "id": phone_id, "ok": False}))
                                         continue
                                     phones[phone_id] = (attached, asyncio.create_task(bridge(phone_id, attached)))
+                                    LOGGER.info('relay_client_connected clients=%d', len(daemon.hub.clients))
                                     if delegated:
                                         await ws.send(json.dumps({"op": "joined", "id": phone_id, "ok": True}))
                                 elif ctrl.get("op") == "leave":
@@ -900,6 +952,7 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
                         if daemon._relay_generations.get(url) is generation:
                             daemon._relay_generations.pop(url, None)
                             daemon.relay_live.discard(url)
+                            LOGGER.info('relay_disconnected server=%s', log_endpoint(url))
                         if daemon._relay_sockets.get(url) is ws:
                             daemon._relay_sockets.pop(url, None)
                         daemon.publish_status()
@@ -916,8 +969,20 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            print(f"relay {url} {exc}", flush=True)
+            close_code = getattr(getattr(exc, 'rcvd', None), 'code', None)
+            LOGGER.warning('relay_retry server=%s error=%s close_code=%s errno=%s retry_seconds=2',
+                           log_endpoint(url), type(exc).__name__, close_code, getattr(exc, 'errno', None))
             await asyncio.sleep(2)
+
+
+async def log_daemon_status(daemon: Daemon, interval: float = 15) -> None:
+    """An event-loop heartbeat uses metadata only; it never reads a PTY."""
+    started = time.monotonic()
+    while True:
+        LOGGER.info('heartbeat uptime_seconds=%d windows=%d terminals=%d clients=%d relays_online=%d relays_configured=%d',
+                    int(time.monotonic()-started), len(daemon.hub.windows), len(daemon.hub.sessions),
+                    len(daemon.hub.clients), len(daemon.relay_live), len(daemon.relay_targets))
+        await asyncio.sleep(interval)
 
 
 def main() -> None:
@@ -932,6 +997,9 @@ def main() -> None:
     credentials.add_argument("--token-file", metavar="PATH", help="Read and save the host owner token from a private file")
     parser.add_argument("--state-dir", help="Isolated state directory; ignores global token-file defaults unless --token-file is explicit")
     parser.add_argument("--no-relay", action="store_true", help="Do not load saved outbound relays")
+    log_window = parser.add_mutually_exclusive_group()
+    log_window.add_argument('--log-window', dest='log_window', action='store_true', default=None, help='Open the independent scrolling daemon log window')
+    log_window.add_argument('--no-log-window', dest='log_window', action='store_false', help='Keep file logs without opening a window')
     transport_options(parser)
     parser.add_argument('--relay-owner-secret', default='', help='Distinct enrolled relay room owner secret')
     binding = parser.add_mutually_exclusive_group()
@@ -1018,27 +1086,46 @@ def main() -> None:
     async def run() -> None:
         daemon.hub.attach_loop(asyncio.get_running_loop())
         daemon.sync_relays()
-        async with serve(
-            daemon.handle_socket,
-            args.host,
-            args.port,
-            process_request=daemon.serve_http,
-            ssl=context,
-            max_size=1024 * 1024,
-            ping_interval=25,
-            ping_timeout=25,
-        ):
-            print(f"page  {'https' if context else 'http'}://{args.host}:{args.port}/#token={token}")
-            for item in daemon.relay_targets:
-                print(f"relay {item['url']}  code {item['code']}")
-            await asyncio.Future()
-        for task, _code in daemon._uplinks.values():
-            task.cancel()
+        heartbeat = None
+        try:
+            async with serve(
+                daemon.handle_socket, args.host, args.port, process_request=daemon.serve_http,
+                ssl=context, max_size=1024 * 1024, ping_interval=25, ping_timeout=25,
+            ):
+                LOGGER.info('daemon_listening address=%s port=%d room=%s', args.host, args.port, code)
+                for item in daemon.relay_targets:
+                    LOGGER.info('relay_configured server=%s room=%s', log_endpoint(item['url']), item['code'])
+                # The main workspace owns the consolidated monitor. Never pop
+                # a console for each host; the console remains an explicit CLI tool.
+                show_logs = args.log_window is True
+                if show_logs:
+                    from .daemon_logs import open_log_window
+                    try:
+                        if not open_log_window(STATE):
+                            LOGGER.warning('log_window_unavailable reason=launch_failed')
+                    except OSError as error:
+                        LOGGER.warning('log_window_unavailable error=%s', type(error).__name__)
+                heartbeat = asyncio.create_task(log_daemon_status(daemon))
+                await asyncio.Future()
+        finally:
+            jobs = [task for task, _code in daemon._uplinks.values()]
+            if heartbeat is not None: jobs.append(heartbeat)
+            for task in jobs: task.cancel()
+            if jobs: await asyncio.gather(*jobs, return_exceptions=True)
 
+    from .daemon_logs import configure_logging, shutdown_logging
+    logger = configure_logging(STATE, secrets=[token, *[item.get('owner_secret', '') for item in daemon.relay_targets]])
+    LOGGER.info('daemon_start pid=%d machine=%s address=%s port=%d', os.getpid(), default_machine(), args.host, args.port)
     try:
         asyncio.run(run())
     except KeyboardInterrupt:
-        return
+        LOGGER.info('daemon_interrupted')
+    except Exception as error:
+        LOGGER.error('daemon_failed error=%s errno=%s winerror=%s', type(error).__name__, getattr(error, 'errno', None), getattr(error, 'winerror', None))
+        raise
+    finally:
+        LOGGER.info('daemon_stopped')
+        shutdown_logging(logger)
 
 
 if __name__ == "__main__":

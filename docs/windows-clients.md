@@ -1,4 +1,21 @@
-# Three Windows clients, one daemon
+# Windows workspace and shared daemon
+
+Windows installation and multi-computer rollout options are evaluated in [the installation plan](windows-installation-plan.md). It separates the current portable package from the proposed user-level installer and future winget/npm channels.
+
+## Live daemon logs
+
+The top-left “菜单 → 守护进程状态” opens a consolidated monitor inside the existing SuperMono workspace. It lists the connected computers, room IDs, connection phase, window/terminal counts and available process/uptime metadata. Select a computer to read its daemon log; no additional application or terminal window is opened. Closing the monitor does not stop the daemon or its terminals.
+
+New daemons report startup, relay connections/retries, client connections, terminal creation/closure and a metadata-only heartbeat every 15 seconds. Log snapshots are owner-only and bounded; older backends still show connection/catalog status and display an upgrade notice for unavailable logs. Terminal contents, command arguments and authentication credentials are not recorded. For advanced debugging in an existing shell, run:
+
+```powershell
+.\SuperMonoAgent\SuperMonoAgent.exe logs
+.\SuperMonoAgent\SuperMonoAgent.exe logs --once
+```
+
+Logs are UTF-8 at `%USERPROFILE%\.supermonoagent\logs\daemon.log`, with a 2 MiB active-file target and three rotated backups. A custom `--state-dir` uses its own `logs` directory; pass the same directory to the advanced `logs` command. Reads use delete-sharing handles and do not block rotation.
+
+No daemon opens a console automatically, including when its state comes from `SUPERMONO_STATE_DIR`. `--log-window` is an explicit advanced opt-in only. Existing backends are never restarted for this feature: an older already-running daemon cannot retroactively produce these logs, so switch it normally after its sessions can be ended. Log-page addresses intentionally omit Tokens; ordinary launchers still load local credentials.
 
 ## Simple relay connection
 
@@ -22,7 +39,7 @@ The 2026-10-23 read-only JINLONG3090 sample contained reset/bold/dim/underline S
 
 The desktop and Android UI fix was published as **0.2.19** to the existing HTTPS update channel and downloaded again for signature and archive verification. Use “检查更新” and install the update on each client. This publication does not force-reload any open view or restart a remote daemon. Evidence: `.omx/artifacts/remote-terminal-colors/publication-verified.json`.
 
-The current Windows release is **0.2.33**, matching Android, in `dist/windows/0.2.33/`. Windows releases use the same numeric version as Android, never feature-based names. The build reads Android's manifest version and embeds it in EXE FileVersion/ProductVersion, `version.txt` and `build-manifest.json`; the default output is `dist/windows/<version>/`. When building both platforms, build Android first because its existing build advances the release version, then build Windows. Numeric output folders must match the build version, and each platform's build holds an exclusive project lock. Older named folders below are historical artifacts.
+The current Windows release is **0.2.34**, matching Android, in `dist/windows/0.2.34/`. Windows releases use the same numeric version as Android, never feature-based names. The build reads Android's manifest version and embeds it in EXE FileVersion/ProductVersion, `version.txt` and `build-manifest.json`; the default output is `dist/windows/<version>/`. When building both platforms, build Android first because its existing build advances the release version, then build Windows. Numeric output folders must match the build version, and each platform's build holds an exclusive project lock. Older named folders below are historical artifacts.
 
 The top-left “菜单” sits between the sidebar toggle and supermono, with “检查更新”, “下载并更新”, “刷新中继” and “连接工作区”. “刷新中继” requests a fresh authorized room directory from every configured relay and retrieves each computer's current window catalog. Live terminal sockets and views stay open; disconnected directory connections can retry. It lists only rooms accessible to the configured credentials. Repeated clicks are throttled. The connection dialog accepts address/IP, port and Token; multiple credential profiles discover their authorized rooms automatically. Tokens stay in session storage unless “在此设备保存 Token” is selected, and are bound to their endpoint. Advanced room/account settings remain collapsed.
 

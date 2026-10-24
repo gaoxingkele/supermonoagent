@@ -23,6 +23,7 @@
   let relayProfiles=loadRelayProfiles(),profileLegacy='connection',roomMenu=null;
   let runtimeDefaultToken='',prefilledTokenTarget='',defaultTokenEdited=false;
   let relayProbe=null;
+  const daemonMonitor={hostID:'',timer:null,pending:null,sequence:0,denied:null};
   const hosts=new Map(), directories=new Map(), relayAccounts=new Map();
   let restoredUI=null;
   try{const raw=read(sessionStorage,'sma.workspace.ui-state');if(raw.length<=65536){const value=JSON.parse(raw||'null');if(value&&Array.isArray(value.tabs))restoredUI=value;}}catch{}
@@ -55,7 +56,7 @@
       Object.assign(this,{id,name,config:{...settings},ws:null,generation:0,retry:0,retryTimer:0,pingTimer:0,
         connected:false,supported:false,helloSent:false,catalog:[],groups:[],controls:{},capabilities:{},identity:{},activity:new Map(),agents:new Map(),
         selectedGroup:'',collapsed:read(sessionStorage,'sma.workspace.collapsed.'+id)==='true',initialCatalog:true,nextSplit:'',sessionsBeforeOpen:new Set(),subscriptionSignature:'',
-        phase:'offline',error:'',pingSentAt:null,meter:new C.ConnectionMeter(performance.now()),rates:{tx:0,rx:0}});
+        phase:'offline',error:'',pingSentAt:null,daemonInfo:null,meter:new C.ConnectionMeter(performance.now()),rates:{tx:0,rx:0}});
     }
   }
   function aggregateCatalog(){
@@ -101,6 +102,8 @@
       channel:host.id==='local'?params.get('channel')||undefined:undefined}))));
   }
   function stopHost(host){
+    host.daemonInfo=null;
+    invalidateDaemonMonitorHost(host);
     if(host.id==='local'){runtimeDefaultToken='';if(prefilledTokenTarget){$('relay-profile-token').value='';prefilledTokenTarget='';}}
     host.generation++;clearTimeout(host.retryTimer);clearInterval(host.pingTimer);
     if(host.ws){host.ws.onclose=null;host.ws.close();host.ws=null;}host.connected=false;host.supported=false;host.activity.clear();updateSessionDots();
@@ -131,6 +134,7 @@
         }
         const {op,payload}=C.unpack(new Uint8Array(event.data));
         if(op===2||op===7)sync(host,JSON.parse(decoder.decode(payload)),op===2);
+        else if(op===20)receiveDaemonLogs(host,JSON.parse(decoder.decode(payload)));
         else if(op===3||op===8){
           if(op===8&&payload.length===0)return;
           const data=C.sessionPayload(payload),pane=panes.get(key(host,data.session));
@@ -150,6 +154,7 @@
     host.ws.onerror=()=>{if(validOwner(context)){host.error='连接失败，正在等待重试';updateConnection();}};
     host.ws.onclose=event=>{
       if(!validOwner(context))return;
+      host.daemonInfo=null;invalidateDaemonMonitorHost(host);
       host.connected=false;host.supported=false;clearInterval(host.pingTimer);
       for(const pane of panes.values())if(pane.host===host){pane.ready=false;pane.term.options.disableStdin=true;}
       host.phase=event.code===4001?'auth-failed':'reconnecting';host.meter.reset(performance.now());host.rates={tx:0,rx:0};
@@ -175,6 +180,7 @@
     }
     if(info.error)host.error=String(info.error);
     if(info.capabilities)host.capabilities=info.capabilities;
+    if(info.service&&typeof info.service==='object')updateDaemonInfo(host,info.service);
     for(const field of ['machine','project'])if(typeof info[field]==='string')host.identity[field]=info[field].slice(0,40);
     if(info.controls){host.controls=info.controls;for(const pane of panes.values())if(pane.host===host){acceptResize(pane,info,greeting);if(pane.resumeControl&&host.controls[pane.raw]){pane.resumeControl=false;pane.redrawAfterReplay=true;pane.wantControl=host.controls[pane.raw].owner===true||host.controls[pane.raw].busy===false;}}}
     if(info.windows){host.catalog=info.windows;const sessions=new Set(host.catalog.flatMap(win=>(win.sessions||[]).map(session=>{session.learnedAgent=host.agents.get(session.id)||'';return session.id;})));for(const cache of [host.activity,host.agents])for(const id of cache.keys())if(!sessions.has(id))cache.delete(id);}if(info.groups)host.groups=info.groups;
@@ -195,7 +201,7 @@
     }
     if(host.nextSplit==='new'){const created=host.catalog.flatMap(win=>win.sessions||[]).find(session=>!host.sessionsBeforeOpen.has(session.id));if(created){host.nextSplit='';openView(key(host,created.id));}}
     for(const pane of panes.values())if(pane.host===host){pane.ready=true;pane.term.options.disableStdin=false;const data=sessionInfo(pane.sid);if(data){pane.title.textContent=data.win.title+'（'+agentType(data.session,data.win.title)+'）';TabThemes.apply(pane.title.parentElement,data.win.tab_theme);updateAgentMode(pane);}drainPane(pane);}
-    renderTree();renderTabs();renderHosts();if(layoutChanged)renderLayout();subscribe();updateConnection();updateFooter();if(greeting||host.id==='local')refreshDirectories();
+    renderTree();renderTabs();renderHosts();renderDaemonMonitor();if(layoutChanged)renderLayout();subscribe();updateConnection();updateFooter();if(greeting||host.id==='local')refreshDirectories();
     scheduleVisibleFit();
   }
   function drainPane(pane){
@@ -687,6 +693,71 @@
     $('relay-profile-token').title=token?(isDefault&&runtimeDefaultToken?'默认来自本机 token.txt，可手动替换':'来自本机已配置的中继连接，可手动替换'):'';
   }
   function closeAppMenu(){const menu=$('app-menu');if(menu)menu.hidden=true;$('app-menu-toggle')?.setAttribute('aria-expanded','false');}
+  function updateDaemonInfo(host,info){
+    const pid=Number.isInteger(info.pid)&&info.pid>0&&info.pid<=2147483647?info.pid:null;
+    const uptime=typeof info.uptime_seconds==='number'&&Number.isFinite(info.uptime_seconds)&&info.uptime_seconds>=0&&info.uptime_seconds<=Number.MAX_SAFE_INTEGER?info.uptime_seconds:null;
+    host.daemonInfo={pid,uptime,receivedAt:performance.now()};
+  }
+  function invalidateDaemonMonitorHost(host){
+    if(daemonMonitor.pending?.context.host===host)daemonMonitor.pending=null;
+    if(daemonMonitor.denied?.host===host)daemonMonitor.denied=null;
+    if(daemonMonitor.hostID===host.id){$('daemon-monitor-log').textContent='';$('daemon-monitor-status').textContent='连接已变更，等待重新读取运行日志。';}
+  }
+  function daemonUptime(host){
+    const info=host.daemonInfo;if(info?.uptime===null||info?.uptime===undefined)return '运行时长未知';
+    const seconds=Math.floor(info.uptime+Math.max(0,performance.now()-info.receivedAt)/1000);
+    return '已运行 '+(seconds>=86400?Math.floor(seconds/86400)+'天 ':'')+Math.floor(seconds%86400/3600)+'时 '+Math.floor(seconds%3600/60)+'分 '+seconds%60+'秒';
+  }
+  function renderDaemonMonitor(){
+    if(!$('daemon-monitor-dialog').open)return;
+    if(!hosts.has(daemonMonitor.hostID)){
+      daemonMonitor.hostID=hosts.has(selectedHost)?selectedHost:hosts.keys().next().value||'';
+      daemonMonitor.pending=null;daemonMonitor.denied=null;$('daemon-monitor-log').textContent='';
+    }
+    const list=$('daemon-monitor-list'),select=$('daemon-monitor-select'),options=[];list.replaceChildren();
+    for(const host of hosts.values()){
+      const label=host.identity.machine||host.name,room=host.config.code||'本机直连';
+      const phase=host.connected?'已连接':({'auth-failed':'验证失败',connecting:'连接中',reconnecting:'重连中',offline:'已断开',invalid:'连接无效',unsupported:'后台版本不兼容'}[host.phase]||'未连接');
+      const row=node('div','daemon-monitor-row');row.setAttribute('role','listitem');row.dataset.host=host.id;row.dataset.current=String(host.id===daemonMonitor.hostID);
+      row.append(node('strong','',label+' · '+room),node('span','',phase+' · '+host.catalog.length+' 个窗口 / '+host.catalog.reduce((count,win)=>count+(win.sessions||[]).length,0)+' 个终端'),node('span','',(host.daemonInfo?.pid?'PID '+host.daemonInfo.pid:'PID 未知')+' · '+daemonUptime(host)));
+      list.append(row);const option=node('option','',label+' · '+room);option.value=host.id;options.push(option);
+    }
+    if(select.options.length!==options.length||options.some((option,index)=>select.options[index].value!==option.value||select.options[index].textContent!==option.textContent))select.replaceChildren(...options);
+    select.value=daemonMonitor.hostID;select.disabled=!hosts.size;
+  }
+  function requestDaemonLogs(){
+    if(!$('daemon-monitor-dialog').open)return;
+    renderDaemonMonitor();const host=hosts.get(daemonMonitor.hostID);
+    if(!host?.connected){daemonMonitor.pending=null;daemonMonitor.denied=null;$('daemon-monitor-log').textContent='';$('daemon-monitor-status').textContent='此电脑未连接，连接恢复后自动读取日志。';return;}
+    if(host.capabilities.daemon_logs!==true){daemonMonitor.pending=null;daemonMonitor.denied=null;$('daemon-monitor-log').textContent='';$('daemon-monitor-status').textContent='此电脑的后台版本不支持运行日志，请升级对应电脑的后台；窗口和终端状态仍可查看。';return;}
+    if(daemonMonitor.denied&&validOwner(daemonMonitor.denied)&&daemonMonitor.denied.host===host)return;
+    const pending=daemonMonitor.pending;
+    if(pending&&validOwner(pending.context)&&pending.context.host===host&&performance.now()<pending.deadline)return;
+    daemonMonitor.pending=null;
+    const context=owner(host),request='daemon-log-'+(++daemonMonitor.sequence)+'-'+Date.now().toString(36);
+    if(send(context,20,{request,lines:80})){
+      daemonMonitor.pending={context,request,deadline:performance.now()+6000};
+      $('daemon-monitor-status').textContent='正在读取 '+(host.identity.machine||host.name)+' 的运行日志…';
+    }else $('daemon-monitor-status').textContent='日志连接暂不可用，稍后自动重试。';
+  }
+  function receiveDaemonLogs(host,info){
+    const pending=daemonMonitor.pending;
+    if(!$('daemon-monitor-dialog').open||!pending||!validOwner(pending.context)||pending.context.host!==host||host.id!==daemonMonitor.hostID||performance.now()>pending.deadline||!info||info.request!==pending.request)return;
+    daemonMonitor.pending=null;
+    if(info.error){daemonMonitor.denied=info.error_code==='owner_required'?pending.context:null;$('daemon-monitor-status').textContent=String(info.error).slice(0,300);$('daemon-monitor-log').textContent='';return;}
+    if(typeof info.text!=='string'){$('daemon-monitor-status').textContent='后台返回的日志内容无效，稍后自动重试。';return;}
+    if(info.pid!==undefined||info.uptime_seconds!==undefined)updateDaemonInfo(host,info);
+    const bytes=encoder.encode(info.text);let start=Math.max(0,bytes.length-32768);while(start<bytes.length&&(bytes[start]&0xc0)===0x80)start++;
+    const text=decoder.decode(bytes.subarray(start)).split('\n').slice(-80).join('\n'),log=$('daemon-monitor-log');
+    const follow=log.scrollHeight-log.clientHeight-log.scrollTop<=4,position=log.scrollTop;
+    log.textContent=text;if(follow)log.scrollTop=log.scrollHeight;else log.scrollTop=position;
+    $('daemon-monitor-status').textContent='每 2 秒更新所选电脑 · 最多 80 行';renderDaemonMonitor();
+  }
+  function closeDaemonMonitor(){clearInterval(daemonMonitor.timer);daemonMonitor.timer=null;daemonMonitor.pending=null;daemonMonitor.denied=null;}
+  function showDaemonMonitor(){
+    closeAppMenu();closeDaemonMonitor();daemonMonitor.hostID=hosts.has(selectedHost)?selectedHost:hosts.keys().next().value||'';
+    $('daemon-monitor-log').textContent='';$('daemon-monitor-status').textContent='';$('daemon-monitor-dialog').showModal();requestDaemonLogs();daemonMonitor.timer=setInterval(requestDaemonLogs,2000);
+  }
   function cancelRelayProbe(clear=true){
     const probe=relayProbe;relayProbe=null;if(probe){clearTimeout(probe.timer);probe.socket.onclose=null;probe.socket.close();}
     $('relay-profile-connect').disabled=true;$('relay-profile-connect').textContent='连接所选房间';$('relay-profile-form').querySelector('button[type=submit]').disabled=false;
@@ -837,6 +908,10 @@
   $('new-project').onclick=()=>showRelayProfiles('workspace');
   $('app-menu-toggle').onclick=()=>{closeRoomMenu();const menu=$('app-menu');menu.hidden=!menu.hidden;$('app-menu-toggle').setAttribute('aria-expanded',String(!menu.hidden));if(!menu.hidden)menu.querySelector('button')?.focus();};
   $('menu-connect').onclick=()=>showRelayProfiles();
+  $('menu-daemon-monitor').onclick=showDaemonMonitor;
+  $('daemon-monitor-close').onclick=()=>$('daemon-monitor-dialog').close();
+  $('daemon-monitor-dialog').addEventListener('close',closeDaemonMonitor);
+  $('daemon-monitor-select').onchange=()=>{daemonMonitor.hostID=$('daemon-monitor-select').value;daemonMonitor.pending=null;daemonMonitor.denied=null;$('daemon-monitor-log').textContent='';requestDaemonLogs();};
   $('refresh-relays').onclick=()=>refreshRelayCatalogs();
   $('relay-profiles-close').onclick=()=>$('relay-profiles-dialog').close();
   $('relay-profiles-dialog').addEventListener('close',()=>cancelRelayProbe());
@@ -1238,7 +1313,7 @@
   };
   const meterTimer=setInterval(()=>{for(const host of hosts.values())host.rates=host.meter.sample(performance.now());updateConnection();renderHosts();},1000);
   const activityTimer=setInterval(updateSessionDots,300);
-  addEventListener('beforeunload',()=>{cancelRelayProbe();clearInterval(meterTimer);clearInterval(activityTimer);for(const host of hosts.values())stopHost(host);for(const directory of directories.values())stopDirectory(directory);cancelAccountLogin();for(const account of relayAccounts.values()){stopAccountDirectory(account);clearTimeout(account.expiryTimer);}});
+  addEventListener('beforeunload',()=>{closeDaemonMonitor();cancelRelayProbe();clearInterval(meterTimer);clearInterval(activityTimer);for(const host of hosts.values())stopHost(host);for(const directory of directories.values())stopDirectory(directory);cancelAccountLogin();for(const account of relayAccounts.values()){stopAccountDirectory(account);clearTimeout(account.expiryTimer);}});
   // Launch secrets are consumed once. Fragments never reach HTTP access logs.
   if(params.has('token')||launch.has('token')){
     save(sessionStorage,'sma.workspace.token',config.token);const clean=new URL(location.href);clean.searchParams.delete('token');launch.delete('token');clean.hash=launch.toString();history.replaceState(null,'',clean);
