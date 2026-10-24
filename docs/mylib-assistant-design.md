@@ -34,4 +34,8 @@
 
 当前新版后台通过 OP22 提供目标终端启动目录、目标技能清单及固定账本页面；只对后台所有者开放，异步读取后再核查会话与权限。目录是终端启动目录，不跟踪 shell 内后续 cd；旧后台没有该能力时仍可显示本机技能建议。测试见 `tests/test_assistant_context.py`、`tests/test_daemon_assistant_context.py`、`tests/test_workspace_tab_picker.py`。不从页面文字推断模式，不将故障线索视为验证证据，不自动执行 propose/decide。
 
+后续开发源码已增加 provider-neutral 模型配置：五个非凭据字段（入口、模型名称、服务地址、自动附带上下文、字符上限），受同源原生接口保护，按启动状态目录隔离、原子保存。损坏配置只返回默认值，不自动覆盖原文件；拒绝密钥字段、URL 凭据和非 loopback 明文 HTTP。配置界面不发模型请求，实际调用仍待入口选择与适配。此增量未随 0.2.37 发布，不将保存偏好称为已配置模型服务。
+
+source_path: `src/supermonoagent/assistant_preferences.py`, `src/supermonoagent/desktop_assistant.py`, `tests/test_assistant_preferences.py`, `tests/test_assistant_preferences_ui.py`
+
 独立文件与助理任务使用每连接有界队列及专用执行器，避免慢文件系统拖住终端输入和心跳。原生 WebView2 已使用测试剪贴板源验证建议显示及上传桥接，证据为 `.omx/artifacts/file-paste/native-webview-evidence.json`；不以此替代真实系统剪贴板验收。目标电脑尚未使用新后台、未配置 mylib 或模型服务时，不能宣称这些能力已在该电脑上线。

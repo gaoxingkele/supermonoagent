@@ -309,7 +309,9 @@ def main(argv: list[str] | None = None, *, browser: bool = False) -> None:
         from .desktop_assistant import DesktopAssistant
         from .desktop_files import DesktopFiles
         try:
-            assistant = DesktopAssistant(window, url, os.environ.get("SUPERMONO_MYLIB", "D:/aicoding/mylib"))
+            assistant_state = Path(args.state_dir or os.environ.get('SUPERMONO_STATE_DIR') or Path.home() / '.supermonoagent')
+            assistant = DesktopAssistant(window, url, os.environ.get("SUPERMONO_MYLIB", "D:/aicoding/mylib"),
+                preferences_path=assistant_state / 'assistant-preferences.json')
         except (OSError, ValueError):
             pass
         try:

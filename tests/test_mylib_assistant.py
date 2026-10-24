@@ -63,11 +63,14 @@ def test_native_bridge_rejects_navigation_before_library_access(tmp_path):
 
     exposed, scripts = [], []
     current = ["http://127.0.0.1:6771/workspace"]
-    window = SimpleNamespace(expose=exposed.append, run_js=scripts.append,
+    window = SimpleNamespace(expose=lambda *methods: exposed.extend(methods), run_js=scripts.append,
         get_current_url=lambda: current[0], events=SimpleNamespace(loaded=Event()))
     library(tmp_path)
-    assistant = DesktopAssistant(window, current[0], tmp_path)
-    assert exposed == [assistant.recommend_skills]
+    preferences_path = tmp_path / 'assistant-preferences.json'
+    assistant = DesktopAssistant(window, current[0], tmp_path, preferences_path=preferences_path)
+    assert exposed == [assistant.recommend_skills, assistant.get_assistant_preferences, assistant.save_assistant_preferences]
+    assert assistant.get_assistant_preferences()['status'] == 'default'
+    assert not preferences_path.exists()
     assistant._loaded()
     assert len(scripts) == 1
     assert assistant.recommend_skills("patent")["indexed"] == 1
@@ -75,5 +78,9 @@ def test_native_bridge_rejects_navigation_before_library_access(tmp_path):
         current[0] = unsafe
         with pytest.raises(ValueError):
             assistant.recommend_skills("patent")
+        with pytest.raises(ValueError):
+            assistant.get_assistant_preferences()
+        with pytest.raises(ValueError):
+            assistant.save_assistant_preferences({})
         assistant._loaded()
     assert len(scripts) == 1
