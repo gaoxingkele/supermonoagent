@@ -2,7 +2,7 @@
 
 ## 新增：mylib 助理与文件粘贴（2026-10-25，开发中）
 
-- [x] Windows **0.2.38** 完整包已发布至原中继完整程序频道，序号 `1792885303036790`；公开 ZIP 不含 Token，专用包通过受限链接注入默认配置。TLS 回读、RSA 验签、归档 hash、一键安装及重复安装保留凭据均通过，中继未重启。源码与完整 Windows dist 随本次版本提交。证据：`.omx/artifacts/windows-assistant-0.2.38/{final-publication.json,https-download-verification.json,full-installer-verification.json,public-archive-audit.json}`；上一版 0.2.37 的提交与验收保留在 `dc252a3` 及 `windows-sidecars/`。
+- [x] Windows **0.2.39** 完整包已发布至原中继完整程序频道，序号 `1792890276205080`；公开 ZIP 不含 Token，专用包通过受限链接注入默认配置。TLS 回读、RSA 验签、归档 hash、一键安装及重复安装保留凭据均通过，中继未重启。源码和完整 Windows／UI dist 随本次版本提交。证据：`.omx/artifacts/windows-metarsi-0.2.39/{final-publication.json,https-download-verification.json,full-installer-verification.json,public-archive-audit.json}`；上一版 0.2.38 与 0.2.37 的提交及验收仍保留。
 
 - [x] 标签导航发布验收：新建、左右/上下排列、最大化已移至顶部菜单行；标签行仅留页签及左右滚动按钮。顶部“全部窗口”按电脑列出当前已开标签，可切换并滚入可见区。18 标签、430px 窄屏、键盘 Escape、无终端输入的隔离测试通过，已包含在 0.2.37 中。
 
@@ -11,16 +11,17 @@
 - [x] 右侧助理栏源码与原生桥接验收：可折叠/暂停/复制建议，窗口切换异步结果隔离及 HTML 文本显示通过；真实隐藏 WebView2 已显示技能建议，已随 0.2.37 发布。
 - [x] metaRSI 账本只读接入：OP22 从目标终端启动目录读取固定 wiki 页面、显示目标技能库可用性；故障输出生成带线索与可证伪条件的待验证建议，不推断实时工作目录或自动批准变更。
 - [x] 模型对话与智能分析实现交付：0.2.38 已接通 API／本机 Codex 两种文本引擎、独立窗口对话、显式上下文、取消及凭据内存保存。真实隐藏 WebView2、loopback API 和真实 CLI 假登录已验证，未读取用户真实登录文件或调用云模型。独立审查修复凭据历史重放、取消先到及配置保存竞态，35 项复核通过。用户需自行选择并配置实际模型服务；生产账号调用未验收。配置条件与边界见 [使用说明](assistant-models.md)。
-- [ ] metaRSI 建议质量交付（0.2.39 候选）：已在独立分支接通旧记录匹配及模型只读账本片段，目标后台固定页增加 nodes／ideas；独立发送开关默认关闭，保持 0.2.38 模型桥兼容。窗口、凭据、代次、通道及会话共同绑定；截断不保留不完整密钥片段。真实隐藏 WebView2／OP22／假模型已验证，门控重连先离线再同代次自动恢复，无需刷新，PTY 输入 0、项目内容和 mtime／ctime 不变。独立审查通过，最终相邻回归及发布仍在收尾。依据及边界见 [助理设计](mylib-assistant-design.md)、`.omx/artifacts/assistant-native-ledger/final-verdict.json`。
+- [x] metaRSI 建议质量实现交付（0.2.39）：已接通旧记录匹配及模型只读账本片段，目标后台固定页增加 nodes／ideas；独立发送开关默认关闭，保持 0.2.38 模型桥兼容。窗口、凭据、代次、通道及会话共同绑定；截断不保留不完整密钥片段。真实隐藏 WebView2／OP22／假模型已验证，门控重连先离线再同代次自动恢复，无需刷新，PTY 输入 0、项目内容和 mtime／ctime 不变。原生验收未使用生产模型账号，不把建议当验证结论；实验登记与准入仍见下项。依据见 [助理设计](mylib-assistant-design.md)、`.omx/artifacts/assistant-native-ledger/final-verdict.json`。
 - [ ] metaRSI 第三期登记与验证：实验／假设登记和验证结果关联尚未接入助手；保持项目隔离及原生账本为事实源，受保护准入仍需明确决定，不自动执行规则批准。此项属于已有设计第三期，不能把已发布的文本建议称为完成执行闭环。
 - [ ] Windows 文件/截图粘贴完整验收：OP21、原生桥接、分块/校验、进度/取消及目标绑定已接通；直连／中继、真实 WebView2 测试源、取消／切换／重连及打包 EXE 的真实自有 cmd 后台均通过。真实系统剪贴板打开仍返回访问拒绝，未覆盖用户剪贴板，未宣称该环节通过。接收目录可通过后台参数指定，暂无图形设置。详见 [文件粘贴](clipboard-files.md)。
 - [x] 本轮终端稳定性回归：整套 816 passed、3 skipped、57 subtests；随后签名 UI 接入与原生版本比较的定向验证通过。慢磁盘、默认线程池仅 1 线程时，同一条直连／中继连接仍可处理输入和心跳。没有操作用户活跃 PTY。
 - [x] 0.2.38 发布回归：冻结产品源码的整套结果为 1027 passed、3 skipped、57 subtests，另 1 项原生恢复测试因旧加载事件竞态失败。仅修复测试等待条件后，完整更新测试组 12 passed，真实 WebView2 挂死恢复独立通过两次，匹配新 NavigationId／文档标记及连接，约 20 秒恢复且 PTY 输入 0。Node 44 passed；不能把上述分组相加冒充一次整套绿灯。原始失败与修后证据均保留：`.omx/artifacts/assistant-full-suite-frozen.xml`、`windows-assistant-0.2.38/native-hang-frozen-suite-failure.json`、`ui-updates/native-hung-renderer-recovery.json`。
+- [x] 0.2.39 相邻回归与热更新：163 passed、3 skipped、9 subtests，Node 44 passed。旧 publisher 测试改为临时自有密钥；翻屏测试等待新快照再验证，原断言保留，未改终端解析或输入核心。UI 0.2.39 已发布，序号 `1792889463746380`；Android ZIP／目录保持公网 0.2.34 原样，仅路径换至新版本。发布锁内比较 Android 描述符，防止覆盖并发手机更新。公网双平台验签／目录回读通过；Android 因全局版本仍可能提示相同内容更新，原生 APK 仍为 0.2.36。证据：`.omx/artifacts/windows-metarsi-0.2.39/{ui-publication.json,ui-https-verification.json}`。
 - [x] 新模块纳入现有签名 UI 资源：复用 workspace.js，保持 17/16 资源格式及 API2 兼容；后续侧栏和文件界面可热更新。新装程序不再把低于／等于内置数字版本的 UI 提示为更新，继承观察序号不阻止更高版本。
 - [x] 用户指定的 0.2.36 安装目录原包：已在隔离目录实测完整安装与默认凭据匹配。新版启动器补激活已有主窗及成功反馈，仍不强开第二个主窗；未擅自安装到真实用户目录或关闭运行后台。
 - [ ] Codex 恢复 goal 菜单位置：真实 Codex 0.164 的 `auto/always` 原生首次绘制就居中；100×40 时标题在第17行/列、输入在第37行，同尺寸回放的可见文本和坐标一致。`never` 也未得到干净的输入栏上方布局。上方布局仍未实现，已询问是否扩大到 Codex 本体适配；未修改终端渲染或用户配置。证据和边界见 [菜单诊断](codex-goal-menu.md)、`tests/test_codex_goal_popup.py`。
 
-方案见 [助理设计](mylib-assistant-design.md)。最新模型对话和顶部栏结构需使用 0.2.38；文件接收和项目账本查询需目标电脑新版后台。未勾选项仍未完成。
+方案见 [助理设计](mylib-assistant-design.md)。0.2.38 外壳可热更新至 0.2.39 账本界面；新装完整包为 0.2.39。文件接收和项目账本查询需目标电脑新版后台，旧三页后台可降级。未勾选项仍未完成。
 
 ### 2026-10-25：剩余上线与真机事项核实
 
