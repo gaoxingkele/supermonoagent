@@ -102,6 +102,8 @@
   const metrics={connections:0,frames:0,bytes:0,writes:0,fallbacks:0};
   let replayNoticeTimer=null,pendingRefresh=null,refreshFeedbackTimer=null;
   const replayFeeds=new WeakMap();
+  let debugPage=0,debugCapacity=16,debugSignature='',debugFrame=null,debugTimer=null;
+  const debugMonitors=new Map(),debugCards=new Map();
   const notice=text=>{clearTimeout(replayNoticeTimer);replayNoticeTimer=null;$('notice').textContent=text;$('notice').hidden=!text;};
   function replayNotice(text){notice(text);if(text)replayNoticeTimer=setTimeout(()=>{replayNoticeTimer=null;if($('notice').textContent===text){$('notice').textContent='';$('notice').hidden=true;}},3000);}
   function cancelRefresh(){clearTimeout(refreshFeedbackTimer);refreshFeedbackTimer=null;if(!pendingRefresh){$('refresh-screen').textContent='\u5237\u65b0';return;}clearTimeout(pendingRefresh.timer);pendingRefresh=null;$('refresh-screen').textContent='\u5237\u65b0';$('refresh-screen').removeAttribute('aria-busy');}
@@ -337,8 +339,138 @@
       }
     }
     $('session-count').textContent=count+' 个终端';$('new').disabled=!connected||createPending;const current=inventory.find(s=>s.id===active);if(current)$('title').textContent=current.title+'（'+M.agentType(current,current.title)+'）';
-    updateSessionDots();
+    updateSessionDots();scheduleDebugGrid();
   }
+  function debugEntries(){
+    const entries=new Map();
+    for(const c of connections.values()){
+      const relay=safeEndpoint(c.host);if(!c.host.code||!relay||!roomAllowed(c.host))continue;
+      for(const session of c.inventory){
+        const key=JSON.stringify([relay,c.host.code,session.id]),previous=entries.get(key);
+        if(!previous||!previous.host.connected)entries.set(key,{key,host:c,session});
+      }
+    }
+    return [...entries.values()];
+  }
+  function stopDebugMonitors(){
+    for(const monitor of debugMonitors.values()){
+      monitor.dead=true;clearTimeout(monitor.retryTimer);clearInterval(monitor.pingTimer);
+      if(monitor.socket){monitor.socket.onclose=null;monitor.socket.close();}
+      for(const preview of monitor.previews.values())preview.dispose();
+    }
+    debugMonitors.clear();
+  }
+  function startDebugMonitor(host,items){
+    // A separate read-only client keeps the visible terminal's subscriptions,
+    // resize lease, drafts and history position entirely untouched.
+    const monitor={host,items,socket:null,previews:new Map(),prompts:new Map(),activity:new Map(),dead:false,ready:false,failed:false,retry:0,retryTimer:null,pingTimer:null};
+    debugMonitors.set(host.host.id,monitor);
+    const valid=()=>!monitor.dead&&!paused&&$('debug-dialog').open;
+    function connectPreview(){
+      if(!valid())return;
+      monitor.ready=false;monitor.failed=false;monitor.lastPing=0;
+      for(const preview of monitor.previews.values())preview.dispose();monitor.previews.clear();
+      for(const item of items)monitor.previews.set(item.session.id,M.createDebugPreview({
+        createTerminal:options=>{const t=new Terminal(options);t.loadAddon(new Unicode11Addon.Unicode11Addon());t.unicode.activeVersion='11';return t;},
+        onText:text=>{if(valid()){monitor.prompts.set(item.session.id,text);scheduleDebugGrid();}},
+        onError:()=>{if(valid())monitor.socket?.close(4000,'调试输出积压');}
+      }));
+      let socket;try{socket=new WebSocket(endpoint(host.host));}catch{monitor.failed=true;scheduleDebugGrid();return;}
+      monitor.socket=socket;socket.binaryType='arraybuffer';let subscribed=false;
+      const current=()=>valid()&&monitor.socket===socket;
+      const sendPreview=(op,value)=>{if(current()&&socket.readyState===1)socket.send(C.pack(op,value instanceof Uint8Array?value:encoder.encode(JSON.stringify(value))));};
+      const hello=()=>sendPreview(1,{token:hostTokens.get(host.host.id)||'',multiplex:true,reliable:true});
+      socket.onopen=()=>{if(!current())return;socket.send(JSON.stringify({op:'phone',code:host.host.code,token:hostTokens.get(host.host.id)||'',reliable:true}));};
+      socket.onmessage=event=>{
+        if(!current())return;
+        try{
+          if(typeof event.data==='string'){const message=JSON.parse(event.data);if(message.op==='ready')hello();else if(message.error)socket.close(4000,'调试连接不可用');return;}
+          const {op,payload}=C.unpack(event.data);
+          if(op===2||op===7){
+            const info=JSON.parse(decoder.decode(payload));if(!info.capabilities?.multiplex){socket.close(4000,'调试协议不兼容');return;}
+            monitor.preservesStyle=info.capabilities.snapshot_sgr===true;monitor.ready=true;monitor.retry=0;
+            for(const item of items){const size=info.controls?.[item.session.id];if(size)monitor.previews.get(item.session.id)?.setGrid(size);}
+            if(!subscribed){subscribed=true;sendPreview(16,{sessions:items.map(item=>item.session.id)});}
+          }else if(op===3||op===8){
+            const feed=C.sessionPayload(payload),preview=monitor.previews.get(feed.session);if(!preview)return;
+            if(op===3&&feed.bytes.length)monitor.activity.set(feed.session,performance.now());
+            preview.push(op===8?C.snapshotBytes(feed.bytes,feed.session,monitor.preservesStyle):feed.bytes,op===8);
+          }else if(op===11)monitor.lastPing=0;
+          scheduleDebugGrid();
+        }catch{socket.close(4000,'调试数据异常');}
+      };
+      socket.onerror=()=>{if(current()){monitor.failed=true;scheduleDebugGrid();}};
+      socket.onclose=()=>{
+        if(!current())return;monitor.ready=false;monitor.failed=true;clearInterval(monitor.pingTimer);
+        for(const preview of monitor.previews.values())preview.dispose();monitor.previews.clear();scheduleDebugGrid();
+        monitor.retryTimer=setTimeout(connectPreview,C.retryDelay(monitor.retry++));
+      };
+      clearInterval(monitor.pingTimer);monitor.pingTimer=setInterval(()=>{
+        if(!current()||!monitor.ready)return;
+        if(monitor.lastPing&&performance.now()-monitor.lastPing>30000){socket.close(4000,'调试连接超时');return;}
+        if(!monitor.lastPing)monitor.lastPing=performance.now();sendPreview(10,encoder.encode('mobile-debug'));
+      },15000);
+    }
+    connectPreview();
+  }
+  function createDebugCard(item){
+    const tile=document.createElement('button');tile.className='debug-tile';tile.dataset.key=item.key;
+    const name=document.createElement('strong');name.className='debug-tile-name';
+    const host=document.createElement('span');host.className='debug-tile-host';
+    const state=document.createElement('span');state.className='debug-tile-state';
+    const dot=document.createElement('i');dot.className='session-dot';dot.setAttribute('aria-hidden','true');
+    const status=document.createElement('span');state.append(dot,status);
+    const prompt=document.createElement('div');prompt.className='debug-tile-prompt';
+    const label=document.createElement('small');label.textContent='最新终端提示';
+    const marquee=document.createElement('div');marquee.className='debug-marquee';
+    const track=document.createElement('div');track.className='debug-marquee-track';
+    const text=document.createElement('span'),repeat=document.createElement('span');repeat.setAttribute('aria-hidden','true');track.append(text,repeat);marquee.append(track);prompt.append(label,marquee);tile.append(name,host,state,prompt);
+    tile.onclick=()=>{if(!connections.get(item.host.host.id)?.inventory.some(s=>s.id===item.session.id))return;$('debug-dialog').close();chooseHost(item.host.host.id);activate(item.session.id);};
+    $('debug-grid').append(tile);debugCards.set(item.key,{tile,name,host,status,marquee,text,repeat});
+  }
+  function scheduleDebugGrid(){
+    if(paused||!$('debug-dialog').open||debugFrame!==null)return;
+    debugFrame=requestAnimationFrame(()=>{debugFrame=null;renderDebugGrid();});
+  }
+  function renderDebugGrid(){
+    if(paused||!$('debug-dialog').open)return;
+    const page=M.debugGridPage(debugEntries(),debugPage,debugCapacity);debugPage=page.page;
+    const signature=JSON.stringify([debugPage,debugCapacity,page.items.map(item=>[item.key,item.host.host.id])]);
+    if(signature!==debugSignature){
+      stopDebugMonitors();debugCards.clear();$('debug-grid').replaceChildren();debugSignature=signature;
+      const groups=new Map();for(const item of page.items){createDebugCard(item);const id=item.host.host.id;if(!groups.has(id))groups.set(id,[]);groups.get(id).push(item);}
+      for(const items of groups.values())startDebugMonitor(items[0].host,items);
+    }
+    $('debug-grid').style.setProperty('--debug-columns',debugCapacity===16?'4':'3');$('debug-grid').dataset.density=String(debugCapacity);
+    $('debug-count').textContent='共 '+page.total+' 个终端';$('debug-page').textContent=(page.page+1)+' / '+page.pages;
+    $('debug-prev').disabled=page.page===0;$('debug-next').disabled=page.page===page.pages-1;
+    $('debug-empty').hidden=page.total>0;$('debug-grid').hidden=!page.total;
+    for(const item of page.items){
+      const card=debugCards.get(item.key),monitor=debugMonitors.get(item.host.host.id),sid=item.session.id;
+      const state=monitor?.failed?'disconnected':!monitor?.ready?'connecting':M.sessionState(true,monitor.activity.get(sid),performance.now());
+      const label={refreshing:'正在刷新',waiting:'暂无新输出',disconnected:'已断开',connecting:'连接中'}[state];
+      const name=item.session.title||'未命名窗口',host=item.host.machine||item.host.host.name;
+      card.name.textContent=name;card.name.title=name;card.host.textContent=host+' · '+M.agentType(item.session);card.host.title=card.host.textContent;
+      card.tile.dataset.state=state;card.status.textContent=label;card.tile.setAttribute('aria-current',String(item.host===selected()&&sid===active));
+      const prompt=monitor?.prompts.get(sid)||(state==='disconnected'?'连接断开，提示暂不可用':monitor?.prompts.has(sid)?'暂无提示文本':'正在读取终端提示…');
+      if(card.text.textContent!==prompt){card.text.textContent=prompt;card.repeat.textContent=prompt;card.marquee.title=prompt;}
+      card.marquee.classList.toggle('is-scrolling',card.text.getBoundingClientRect().width-(parseFloat(getComputedStyle(card.text).paddingRight)||0)>card.marquee.clientWidth+1);
+      card.tile.setAttribute('aria-label',host+' · '+name+' · '+label+' · '+prompt);
+    }
+  }
+  function pauseDebugGrid(){
+    clearInterval(debugTimer);debugTimer=null;if(debugFrame!==null)cancelAnimationFrame(debugFrame);debugFrame=null;
+    stopDebugMonitors();debugSignature='';
+  }
+  function resumeDebugGrid(){
+    if(paused||!$('debug-dialog').open)return;
+    clearInterval(debugTimer);debugTimer=setInterval(scheduleDebugGrid,400);scheduleDebugGrid();
+  }
+  $('debug').onclick=()=>{debugPage=0;$('debug-dialog').showModal();resumeDebugGrid();};
+  $('debug-close').onclick=()=>$('debug-dialog').close();$('debug-dialog').addEventListener('close',pauseDebugGrid);
+  $('debug-density').onchange=()=>{debugCapacity=$('debug-density').value==='9'?9:16;debugPage=0;scheduleDebugGrid();};
+  $('debug-prev').onclick=()=>{debugPage--;scheduleDebugGrid();};$('debug-next').onclick=()=>{debugPage++;scheduleDebugGrid();};
+  new ResizeObserver(()=>{const board=$('debug-board');$('debug-grid').style.setProperty('--debug-side',Math.max(0,Math.min(board.clientWidth,board.clientHeight))+'px');scheduleDebugGrid();}).observe($('debug-board'));
   function disposeTerminal(){
     cancelRefresh();const strip=$('terminal-status');if(strip){strip.textContent='';strip.hidden=true;}
     agentModeGeneration++;agentModeRequest=null;$('agent-mode').disabled=true;
@@ -577,8 +709,8 @@
   $('copy').onclick=()=>{if(!term)return;let text=term.getSelection();if(!text){const b=term.buffer.active;text=Array.from({length:term.rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)||'').join('\n');}
     $('copy-text').value=text;$('settings-dialog').close();$('copy-dialog').showModal();$('copy-text').focus();$('copy-text').select();};$('copy-close').onclick=()=>$('copy-dialog').close();
   new ResizeObserver(()=>{scheduleFit();updateTerminalStatus();}).observe($('screen'));window.visualViewport?.addEventListener('resize',scheduleFit);
-  function pause(){if(paused)return;paused=true;clearInterval(activityTimer);activityTimer=null;if(active)drafts.set(sessionKey(),$('draft').value);for(const c of connections.values())stopSocket(c);refreshWatchers();writer?.dispose();if(fitFrame!==null)cancelAnimationFrame(fitFrame);fitFrame=null;if(scrollFrame!==null)cancelAnimationFrame(scrollFrame);scrollFrame=null;state('后台已暂停连接；服务器终端继续运行');}
-  function resume(){if(!paused)return;paused=false;startActivityTimer();for(const c of connections.values())connect(c);refreshWatchers();}
+  function pause(){if(paused)return;paused=true;pauseDebugGrid();clearInterval(activityTimer);activityTimer=null;if(active)drafts.set(sessionKey(),$('draft').value);for(const c of connections.values())stopSocket(c);refreshWatchers();writer?.dispose();if(fitFrame!==null)cancelAnimationFrame(fitFrame);fitFrame=null;if(scrollFrame!==null)cancelAnimationFrame(scrollFrame);scrollFrame=null;state('后台已暂停连接；服务器终端继续运行');}
+  function resume(){if(!paused)return;paused=false;startActivityTimer();for(const c of connections.values())connect(c);refreshWatchers();resumeDebugGrid();}
   document.addEventListener('visibilitychange',()=>document.hidden?pause():resume());
   window.addEventListener('pagehide',pause);
   function captureUIState(){

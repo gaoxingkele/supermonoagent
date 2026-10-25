@@ -293,10 +293,19 @@ def remote_root(value):
     if not re.fullmatch(r'/[A-Za-z0-9_./-]+',value) or any(part in {'.','..',''} for part in value[1:].split('/')):raise ValueError('Remote root must be a normalized absolute Linux path without shell metacharacters')
     return value
 
+def android_promotion_guard(remote,stage_only,preserve_android):
+    if type(preserve_android) is not bool:raise ValueError('preserve_android must be boolean')
+    if type(stage_only) is not bool:raise ValueError('stage_only must be boolean')
+    if preserve_android and not stage_only and remote=='/var/lib/supermono-updates/stable':
+        raise ValueError('The shared channel revision can cause Android UI rollback even when its archive is unchanged. '
+                         'Reuse/preserve promotion is blocked: publish the current Desktop and Android sources together, '
+                         'or use a future independent platform channel. Local builds and stage-only remain available.')
+
+
 def _publish_public_snapshot(directory,*,target,port=22,key=None,remote='/var/lib/supermono-updates/stable',trust=None,openssl=None,runner=run,stage_only=False,preserve_android=False):
     target=ssh_target(target);remote=remote_root(remote)
     if type(port) is not int or not 1<=port<=65535:raise ValueError('Invalid SSH port')
-    if type(preserve_android) is not bool:raise ValueError('preserve_android must be boolean')
+    android_promotion_guard(remote,stage_only,preserve_android)
     directory=Path(directory).resolve();trust=trust or json.loads((ROOT/'src/supermonoagent/static/update-trust.json').read_text())
     metadata=verify_local(directory,trust,openssl);revision=metadata['revision']
     options=['-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=15','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=2']
@@ -328,7 +337,7 @@ def publish(directory,*,target,port=22,key=None,remote='/var/lib/supermono-updat
     # replace an archive between the signature check and transfer-hash calculation.
     ssh_target(target);remote_root(remote)
     if type(port) is not int or not 1<=port<=65535:raise ValueError('Invalid SSH port')
-    if type(preserve_android) is not bool:raise ValueError('preserve_android must be boolean')
+    android_promotion_guard(remote,stage_only,preserve_android)
     with tempfile.TemporaryDirectory(prefix='sma-ui-public-release-') as tmp:
         snapshot=Path(tmp)
         for name in ['desktop.zip','android.zip','manifest.json']:shutil.copyfile(Path(directory)/name,snapshot/name)
@@ -353,6 +362,8 @@ def main(publishing=False):
     args=parser(publishing).parse_args()
     if publishing and (args.stage_only or args.publish) and not args.ssh_target:raise ValueError('Remote mode needs --ssh-target')
     if publishing and args.ssh_target and not(args.build_only or args.stage_only or args.publish):raise ValueError('Select --build-only, --stage-only or --publish explicitly')
+    if publishing and args.ssh_target and not args.build_only:
+        android_promotion_guard(args.remote_root,args.stage_only,args.preserve_android or args.reuse_android_from is not None)
     if publishing and args.release:
         if args.revision:raise ValueError('--release and --revision cannot be combined')
         if args.reuse_android_from:raise ValueError('--release and --reuse-android-from cannot be combined')

@@ -1,5 +1,11 @@
 # 修改 TODO
 
+## 2026-10-25：Android 总览回退紧急修复（旧长期目标暂停期间的独立任务）
+
+- [x] UI **0.2.40** 已发布并从公网回读验签：恢复右上角总览入口，默认十六宫格，保留九宫格切换。源码、候选 ZIP、实际公网下载 ZIP 均通过八种布局及只读监测检查；60 项 pytest、4 项 Node 总览单测通过。
+- [x] 已确认回退根因：0.2.39 用旧 0.2.34 Android ZIP 升高共享 revision，覆盖了设备已有的新功能；不再把“旧负载字节不变”称为 Android 不受影响。共享生产频道正式提升 reuse／preserve 负载已在发起 SSH 前阻止，默认完整双端发布保留。详见 [回退修复记录](android-overview-regression.md)。
+- 当前未通过 USB 实测该手机更新，需在设备“检查界面更新”下载 0.2.40 并重载；不需要安装 APK。原长期目标仍暂停，不继续其手机安装、原生 Codex 或后台升级任务。
+
 ## 新增：mylib 助理与文件粘贴（2026-10-25，开发中）
 
 - [x] Windows **0.2.39** 完整包已发布至原中继完整程序频道，序号 `1792890276205080`；公开 ZIP 不含 Token，专用包通过受限链接注入默认配置。TLS 回读、RSA 验签、归档 hash、一键安装及重复安装保留凭据均通过，中继未重启。源码和完整 Windows／UI dist 随本次版本提交。证据：`.omx/artifacts/windows-metarsi-0.2.39/{final-publication.json,https-download-verification.json,full-installer-verification.json,public-archive-audit.json}`；上一版 0.2.38 与 0.2.37 的提交及验收仍保留。

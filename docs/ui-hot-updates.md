@@ -36,19 +36,22 @@ Android API 29+ 可以终止本应用挂死的 renderer 后重建 WebView；API 
 
 本项目后续发布显式指定统一三段数字版本号，例如 `0.2.39`；工具保留旧编号的兼容解析，但本项目不再使用自动时间戳编号发布。也支持 `--build-only`，或 `--stage-only --ssh-target ...` 先上传校验、不切换频道。要激活已经生成的同一版本，增加 `--release .omx/ui-releases/stable/releases/版本号`。同 revision 只有完全相同的三个公共文件才能重用，不能覆盖成另一套内容。
 
-### 只改桌面，复用当前 Android 负载
+### 复用 Android 基线仅用于本地构建或暂存
 
-先将当前可信频道的 `manifest.json`、`desktop.zip`、`android.zip` 保存为完整本地基线目录。以下一条命令打包新桌面界面并发布，Android ZIP 和目录逐字节复用：
+共享频道使用一个全局 revision。把公网旧 Android ZIP 原样放入新 revision，仍会让手机安装该旧快照，覆盖设备上较新的内置或本地 UI；0.2.39 复用 0.2.34 Android 后丢失 9／16 宫格就是这个回退。描述符和 ZIP 散列不变不能证明“不会影响 Android”。
+
+因此，`--reuse-android-from` 自动启用的 `preserve_android`，以及直接传入的 `preserve_android=True`／`--preserve-android`，均禁止向共享生产根目录 `/var/lib/supermono-updates/stable` 正式 promotion。CLI 和发布 API 在任何 SSH 命令前拒绝。正式修复必须用当前 Desktop 与 Android 双端源码一起构建发布；真正的单平台发布需要未来独立的平台频道。
+
+复用功能仅保留用于本地验签构建、`--stage-only` 暂存和明确隔离的自定义根目录。先将可信 `manifest.json`、`desktop.zip`、`android.zip` 保存为完整本地基线目录，本地构建示例：
 
 ```powershell
-.venv/Scripts/python.exe scripts/publish-ui-update.py --publish `
-  --revision 0.2.39 --reuse-android-from .omx/ui-baseline `
-  --ssh-target publisher@117.50.48.22 --ssh-key C:/secure/id_ed25519
+.venv/Scripts/python.exe scripts/publish-ui-update.py --build-only `
+  --revision 0.2.40 --reuse-android-from .omx/ui-baseline
 ```
 
-工具先按现有公钥验证整个基线、有效期和双平台归档，再冻结输入；复用模式不读取本地 Android 源文件。新目录只替换 Android URL，ZIP、API2 和文件目录保持原样。生产发布锁内还会比较当前 Android 描述符：若其他发布者已更新 Android，则拒绝覆盖，需重新取得当前基线。发布已有版本时可显式加 `--preserve-android` 使用同一保护。
+工具按现有公钥验证整个基线、有效期和双平台归档，并冻结输入；复用模式不读取本地 Android 源文件。隔离根目录及暂存仍保留发布锁内的 Android 描述符比较，以防并发发布改变基线。这项比较只防服务器上的并发变更，不能保护手机上较新的 UI。`--release` 不会自动识别历史复用包；不得将这类包改用普通发布参数绕过护栏。
 
-两端仍共用频道版本，Android 即使负载相同，也可能因新版本提示或重新下载；这不代表 Android 原生壳升级。固定保留桌面 17／手机 16 个资源。桌面 0.2.38 外壳具备模型桥接，0.2.39 的账本界面可在该外壳上热更新；新增两页读取能力仍需目标后台 0.2.39，旧后台的三页可以继续使用。
+默认完整双端构建与发布保持不变，固定保留桌面 17／手机 16 个资源及 API2。桌面 0.2.38 外壳具备模型桥接；新增两页账本读取能力仍需目标后台 0.2.39，旧后台的三页可以继续使用。
 
 输出位于 `.omx/ui-releases/stable/releases/版本号/`：`desktop.zip`、`android.zip`、签名 `manifest.json`。根目录 `manifest.json` 指向最后完成的本地频道版本。发布会先验证远端文件 SHA-256，最后原子替换频道 manifest；旧版本与旧 manifest 保留。构建及发布使用 OS 锁，进程死亡不会留下永久占用的标记锁。
 

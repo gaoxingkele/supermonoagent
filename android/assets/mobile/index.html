@@ -2,13 +2,19 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="color-scheme" content="dark"><title>SuperMonoAgent Mobile</title>
 <link rel="stylesheet" href="vendor/xterm.css"><link rel="stylesheet" href="app.css"></head>
-<body><header><button id="sessions" aria-label="切换终端">☰</button><div class="heading"><strong id="title">终端</strong><small id="status">正在连接</small></div><button id="control">接管</button><button id="options" aria-label="终端设置">⋯</button></header>
+<body><header><button id="sessions" aria-label="切换终端">☰</button><div class="heading"><strong id="title">终端</strong><small id="status">正在连接</small></div><button id="debug" aria-haspopup="dialog" aria-controls="debug-dialog">调试</button><button id="control">接管</button><button id="options" aria-label="终端设置">⋯</button></header>
 <div id="notice" role="status" hidden></div><main id="screen" aria-label="远端终端"></main>
 <div id="resume" hidden><span>正在查看历史</span><button id="bottom">回到底部 ↓</button></div>
 <dialog id="composer" aria-labelledby="composer-heading"><div class="dialog-heading"><div><h2 id="composer-heading">编辑指令</h2><p id="composer-target" class="hint"></p></div><button id="composer-close">关闭</button></div><textarea id="draft" rows="5" aria-label="输入指令" placeholder="输入指令；Enter 发送，Shift+Enter 换行" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea><p id="composer-status" class="hint" role="status">收到终端回显后自动按一次回车。</p><div class="form-actions"><button id="send">发送</button></div></dialog>
 <div id="terminal-status" role="status" aria-label="Codex status" hidden></div>
 <nav id="terminal-actions" aria-label="历史翻页与终端操作"><button id="page-up" aria-label="向上翻一页历史">上翻</button><button id="page-down" aria-label="向下翻一页历史">下翻</button><button id="history-top" aria-label="跳到历史顶部">顶部</button><button id="history-bottom" aria-label="跳到最新输出">底部</button><button data-key="enter" aria-label="发送回车">回车</button><button id="refresh-screen" aria-label="从服务器刷新当前画面">刷新</button></nav>
 <nav id="keys" aria-label="终端辅助键"><button data-key="escape">Esc</button><button data-key="tab">Tab</button><button id="ctrl" aria-pressed="false">Ctrl</button><button data-key="f2">F2</button><button data-key="up">↑</button><button data-key="down">↓</button><button data-key="left">←</button><button data-key="right">→</button><button id="mode" aria-haspopup="dialog" aria-expanded="false">编辑</button><button id="github" aria-haspopup="dialog">提交 GitHub</button></nav>
+<dialog id="debug-dialog" aria-labelledby="debug-heading">
+<div class="dialog-heading"><div><h2 id="debug-heading">中继终端总览</h2><p class="hint">只读监测当前页；点击方块打开终端</p></div><button id="debug-close" aria-label="关闭调试总览">关闭</button></div>
+<div class="debug-toolbar"><label for="debug-density">排列 <select id="debug-density"><option value="9">九宫格</option><option value="16" selected>十六宫格</option></select></label><span id="debug-count" class="hint" role="status"></span></div>
+<div id="debug-board"><div id="debug-grid" data-density="16" aria-label="中继终端方块列表"></div><p id="debug-empty" class="empty-state" hidden>暂无中继终端，请检查连接或返回连接设置测试。</p></div>
+<div class="debug-pagination"><button id="debug-prev" aria-label="上一页终端">上一页</button><span id="debug-page" class="hint"></span><button id="debug-next" aria-label="下一页终端">下一页</button></div>
+</dialog>
 <dialog id="session-dialog" aria-labelledby="workspace-heading">
 <div class="dialog-heading"><div><h2 id="workspace-heading">工作空间</h2><p id="host-identity" class="hint">选择电脑和终端</p></div><button id="sessions-close" aria-label="关闭工作空间">关闭</button></div>
 <section aria-labelledby="computers-heading"><div class="section-heading"><h3 id="computers-heading">电脑</h3><button id="host-add">＋ 添加电脑</button></div><div id="host-list"></div></section>

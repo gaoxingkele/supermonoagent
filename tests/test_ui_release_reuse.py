@@ -390,7 +390,8 @@ def test_cli_preserves_android_automatically_for_reuse_or_explicitly_for_release
         return {}
 
     monkeypatch.setattr(release, 'publish', publish)
-    arguments = ['publish-ui-update.py', '--publish', '--ssh-target', 'fixture@localhost']
+    arguments = ['publish-ui-update.py', '--publish', '--ssh-target', 'fixture@localhost',
+                 '--remote-root', '/fixture-root']
     if existing:
         arguments.extend(['--release', str(fixture['baseline'])])
     if reuse:
@@ -407,3 +408,59 @@ def test_preserve_flag_validation_occurs_before_file_access_or_commands():
     with pytest.raises(ValueError, match='boolean'):
         release.publish('missing-fixture', target='fixture@localhost', preserve_android='false',
                         runner=lambda *a, **k: pytest.fail('invalid flag must not run commands'))
+
+
+@pytest.mark.parametrize('publisher', [release.publish, release._publish_public_snapshot])
+def test_shared_production_promotion_rejects_preserve_before_reads_or_ssh(publisher):
+    calls = []
+    with pytest.raises(ValueError, match='shared.*revision.*Android.*rollback'):
+        publisher('missing-fixture', target='fixture@localhost', preserve_android=True,
+                  runner=lambda *a, **k: calls.append(a))
+    assert calls == []
+
+
+@pytest.mark.parametrize('option', ['--reuse-android-from', '--preserve-android'])
+def test_cli_rejects_shared_production_promotion_before_build_or_publish(monkeypatch, option):
+    import sys
+    monkeypatch.setattr(release, 'package', lambda *a, **k: pytest.fail('unsafe CLI must reject before build'))
+    monkeypatch.setattr(release, 'publish', lambda *a, **k: pytest.fail('unsafe CLI must reject before SSH'))
+    args = ['publish-ui-update.py', '--publish', '--ssh-target', 'fixture@localhost']
+    if option == '--reuse-android-from':
+        args += [option, 'missing-baseline', '--revision', '0.2.40']
+    else:
+        args += [option, '--release', 'missing-release']
+    monkeypatch.setattr(sys, 'argv', args)
+    with pytest.raises(ValueError, match='shared.*revision.*Android.*rollback'):
+        release.main(publishing=True)
+
+
+@pytest.mark.parametrize('stage_only,preserve', [(True, True), (False, False)])
+def test_shared_root_allows_staging_or_default_full_publish_with_no_real_ssh(
+        fixture, stage_only, preserve):
+    calls = []
+    result = release.publish(fixture['baseline'], target='fixture@localhost',
+        trust=fixture['signer'][3], openssl=fixture['signer'][0], stage_only=stage_only,
+        preserve_android=preserve, runner=lambda args, **kwargs: calls.append((args, kwargs)))
+    assert result['staged_only'] is stage_only
+    assert len(calls) == 3
+    assert calls[0][0][0] == 'ssh' and calls[1][0][0] == 'scp' and calls[2][0][0] == 'ssh'
+    # These are captured command arguments only, never run against a host.
+    assert b'/var/lib/supermono-updates/stable' in calls[2][1]['input']
+
+
+def test_cli_reuse_can_stage_on_shared_root_without_promoting(fixture, monkeypatch, capsys):
+    import sys
+    captured = {}
+    monkeypatch.setattr(release, 'package', lambda *a, **k: fixture['baseline'])
+
+    def publish(*args, **kwargs):
+        captured.update(kwargs)
+        return {'staged_only': True}
+
+    monkeypatch.setattr(release, 'publish', publish)
+    monkeypatch.setattr(sys, 'argv', ['publish-ui-update.py', '--stage-only', '--ssh-target',
+        'fixture@localhost', '--revision', '0.2.40', '--reuse-android-from', str(fixture['baseline'])])
+    release.main(publishing=True)
+    assert captured['stage_only'] is True and captured['preserve_android'] is True
+    assert captured['remote'] == '/var/lib/supermono-updates/stable'
+    assert json.loads(capsys.readouterr().out)['published'] is False

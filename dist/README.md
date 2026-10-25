@@ -1,5 +1,7 @@
 # 发布产物
 
+最新签名界面包：**0.2.40**，修复 Android 总览入口回退并默认十六宫格；支持 API2 热更新的既有原生壳可通过界面更新获得。验证见 [回退修复](../docs/android-overview-regression.md)。
+
 最新 Windows 构建：**0.2.39**；当前公开 Android APK 为 **0.2.36**。Android 异常／挂死回滚的修复后真机验收尚未完成，见 [TODO](../docs/TODO.md)。
 
 - Windows 一键安装 ZIP：`windows/SuperMonoAgent-0.2.39-Setup.zip`（通用无凭据版）。自动注入默认 Token 的专用包通过受限下载链接单独提供，不提交 Git。使用方法见 [一键安装说明](../docs/windows-oneclick-install.md)。

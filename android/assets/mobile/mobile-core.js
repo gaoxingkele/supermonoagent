@@ -93,6 +93,50 @@
     }
     return '其他';
   }
-  const api={highlightSpans,createHighlighter,createWriter,createGesture,controlKey,composerAction,createComposerSubmitter,createComposerEcho,alternateScroll,closeForRecovery,sessionState,agentType};
+  function debugGridPage(rows,page,capacity){
+    capacity=capacity===9?9:16;
+    const unique=[...new Map(rows.map(row=>[row.key,row])).values()];
+    const pages=Math.max(1,Math.ceil(unique.length/capacity));
+    page=Math.max(0,Math.min(pages-1,Math.floor(Number(page)||0)));
+    return {items:unique.slice(page*capacity,(page+1)*capacity),page,pages,total:unique.length,capacity};
+  }
+  function debugPrompt(term){
+    const buffer=term.buffer.active,lines=[];
+    for(let row=buffer.baseY+term.rows-1;row>=buffer.baseY&&lines.length<3;row--){
+      const text=(buffer.getLine(row)?.translateToString(true)||'').replace(/[\x00-\x1f\x7f]/g,'').trim();
+      if(text)lines.unshift(text.slice(0,160));
+    }
+    return lines.join(' · ').slice(0,512);
+  }
+  // Read-only parser: it is never opened/focused and has no onData handler.
+  // Snapshots can precede controls, so do not parse at an invented grid size.
+  function createDebugPreview({createTerminal,onText,onError=()=>{},limit=524288}){
+    let terminal=null,grid=null,waiting=[],waitingBytes=0,dead=false;
+    const fail=()=>{if(!dead)onError();};
+    const writer=createWriter({limit,schedule:cb=>setTimeout(cb,0),cancel:clearTimeout,onOverflow:fail,
+      write:(bytes,reset,done,size)=>{
+        if(dead)return;
+        if(terminal.cols!==size.cols||terminal.rows!==size.rows)terminal.resize(size.cols,size.rows);
+        if(reset)terminal.reset();
+        terminal.write(bytes,()=>{if(dead)return;done();onText(debugPrompt(terminal));});
+      }});
+    return {
+      setGrid(size){
+        if(dead||!Number.isInteger(size?.cols)||!Number.isInteger(size?.rows)||size.cols<2||size.cols>500||size.rows<1||size.rows>200)return;
+        grid={cols:size.cols,rows:size.rows};
+        if(!terminal)terminal=createTerminal({...grid,allowProposedApi:true,disableStdin:true,scrollback:0,convertEol:false,windowsPty:{backend:'conpty'}});
+        const feeds=waiting;waiting=[];waitingBytes=0;
+        for(const feed of feeds)writer.push(feed.bytes,feed.replay,()=>{},grid);
+      },
+      push(bytes,replay=false){
+        if(dead)return false;
+        if(grid)return writer.push(bytes,replay,()=>{},grid);
+        if(waitingBytes+bytes.length>limit){fail();return false;}
+        waiting.push({bytes:bytes.slice(),replay});waitingBytes+=bytes.length;return true;
+      },
+      dispose(){dead=true;writer.dispose();terminal?.dispose();waiting=[];waitingBytes=0;}
+    };
+  }
+  const api={highlightSpans,createHighlighter,createWriter,createGesture,controlKey,composerAction,createComposerSubmitter,createComposerEcho,alternateScroll,closeForRecovery,sessionState,agentType,debugGridPage,debugPrompt,createDebugPreview};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.MobileCore=api;
 })(typeof window==='undefined'?globalThis:window);
