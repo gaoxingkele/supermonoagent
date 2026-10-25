@@ -91,6 +91,7 @@
   $('highlight').checked=localStorage.getItem('sma.mobile.highlight')!=='off';
   $('highlight').onchange=()=>{localStorage.setItem('sma.mobile.highlight',$('highlight').checked?'on':'off');highlighter?.setEnabled($('highlight').checked);};
   let ready=false,replaying=0,fitFrame=null,lastSize='',control=false,ctrl=false,composing=false,pendingKeys=[];
+  let controlAction=null,followIntent=false,followReplay=null;
   const uncertainDrafts=new Map();
   const composerSubmit=M.createComposerSubmitter({onPending:pending=>{updateComposer(pending);$('draft').readOnly=pending;$('composer-close').disabled=pending;}});
   let controls={};
@@ -106,12 +107,12 @@
   const debugMonitors=new Map(),debugCards=new Map();
   const notice=text=>{clearTimeout(replayNoticeTimer);replayNoticeTimer=null;$('notice').textContent=text;$('notice').hidden=!text;};
   function replayNotice(text){notice(text);if(text)replayNoticeTimer=setTimeout(()=>{replayNoticeTimer=null;if($('notice').textContent===text){$('notice').textContent='';$('notice').hidden=true;}},3000);}
-  function cancelRefresh(){clearTimeout(refreshFeedbackTimer);refreshFeedbackTimer=null;if(!pendingRefresh){$('refresh-screen').textContent='\u5237\u65b0';return;}clearTimeout(pendingRefresh.timer);pendingRefresh=null;$('refresh-screen').textContent='\u5237\u65b0';$('refresh-screen').removeAttribute('aria-busy');}
+  function cancelRefresh(){clearTimeout(refreshFeedbackTimer);refreshFeedbackTimer=null;if(!pendingRefresh){$('refresh-screen').textContent='\u5237\u65b0';return;}clearTimeout(pendingRefresh.timer);pendingRefresh=null;$('refresh-screen').textContent='\u5237\u65b0';$('refresh-screen').removeAttribute('aria-busy');updateControlButton();}
   function refreshScreen(){
-    if(pendingRefresh||!term||!active||!connected||paused)return;
+    if(pendingRefresh||controlAction||followReplay||!term||!active||!connected||paused)return;
     const c=selected(),buffer=term.buffer.active,screen=$('screen');
     const request={host:c,generation:c.generation,sid:active,terminal:term,distance:buffer.baseY-buffer.viewportY,left:screen.scrollLeft,top:screen.scrollTop,bottom:localView().bottom};
-    pendingRefresh=request;
+    pendingRefresh=request;updateControlButton();
     let sent=false;
     if(c.capabilities?.snapshot_refresh===true)sent=sendHost(c,16,{sessions:[active],refresh:true});
     else{
@@ -175,7 +176,7 @@
     if(pendingRefresh?.host===c)cancelRefresh();
     c.generation++;clearTimeout(c.retryTimer);clearInterval(c.pingTimer);c.retryTimer=c.pingTimer=null;
     if(c.socket){c.socket.onclose=null;c.socket.close();c.socket=null;}c.connected=false;c.subscription='';
-    if(c===selected()){composerSubmit.cancel();connected=false;ready=false;pendingKeys=[];composing=false;setCtrl(false);if(term)term.options.disableStdin=true;}
+    if(c===selected()){composerSubmit.cancel();connected=false;ready=false;pendingKeys=[];composing=false;setCtrl(false);clearTimeout(controlAction?.timer);controlAction=null;updateControlButton();if(term)term.options.disableStdin=true;}
   }
   function hostState(c,text){c.status=text;if(c===selected())state(text);renderHosts();renderList();}
   function subscribeSessions(c,refresh=''){
@@ -274,7 +275,8 @@
   function consumeFeed(sid,bytes,replay){
     if(sid!==active||!writer||!controls[sid])return;
     const current=term,c=selected(),generation=c.generation;
-    const refresh=replay&&pendingRefresh?.host===c&&pendingRefresh.sid===sid&&pendingRefresh.generation===generation&&pendingRefresh.terminal===current?pendingRefresh:null;
+    const candidate=pendingRefresh||followReplay;
+    const refresh=replay&&candidate?.host===c&&candidate.sid===sid&&candidate.generation===generation&&candidate.terminal===current?candidate:null;
     const previous=replayFeeds.get(current);
     const identical=!!refresh&&previous?.length===bytes.length&&bytes.every((value,index)=>value===previous[index]);
     if(replay)replayFeeds.set(current,bytes.length<=262144?bytes.slice():null);
@@ -287,13 +289,14 @@
       if(sid!==active||term!==current||selected()!==c||c.generation!==generation)return;
       if(replay){
         replaying=Math.max(0,replaying-1);ready=connected;term.options.disableStdin=!ready;
-        if(refresh&&pendingRefresh===refresh){
+        if(refresh&&(pendingRefresh===refresh||followReplay===refresh)){
           const buffer=term.buffer.active;if(buffer.type==='normal')term.scrollToLine(Math.max(0,buffer.baseY-refresh.distance));
           localView().bottom=refresh.bottom;const screen=$('screen');screen.scrollLeft=refresh.left;screen.scrollTop=refresh.bottom?screen.scrollHeight:refresh.top;
-          cancelRefresh();$('refresh-screen').textContent='\u5df2\u5237\u65b0';refreshFeedbackTimer=setTimeout(()=>{if(term===current&&!pendingRefresh)$('refresh-screen').textContent='\u5237\u65b0';},3000);
+          if(followReplay===refresh){clearTimeout(refresh.timer);followReplay=null;}
+          else{cancelRefresh();$('refresh-screen').textContent='\u5df2\u5237\u65b0';refreshFeedbackTimer=setTimeout(()=>{if(term===current&&!pendingRefresh)$('refresh-screen').textContent='\u5237\u65b0';},3000);}
         }else{term.scrollToBottom();localBottom();replayNotice(bytes.length?'\u6709\u9650\u5386\u53f2\u5df2\u6062\u590d\uff1b\u5168\u5c4f\u7a0b\u5e8f\u53ef\u80fd\u9700\u8981\u81ea\u884c\u5237\u65b0':'');}
       }
-      updateTerminalStatus();historyStatus();scheduleFit();
+      updateControlButton();updateTerminalStatus();historyStatus();scheduleFit();
     },controls[sid]);
   }
   function sync(info,c=selected()){
@@ -311,7 +314,7 @@
     if(c.createPending){const created=inventory.find(s=>!c.beforeCreate.has(s.id));if(created){c.createPending=false;createPending=false;activate(created.id);}}
     restoreSelected();
     if(!inventory.some(s=>s.id===active)){if(inventory.length)activate(inventory[0].id);else{disposeTerminal();active='';}}
-    if(controls[active]){const size=controls[active];control=!!size.owner;$('control').textContent=control?'主控':'接管';if(term&&(term.cols!==size.cols||term.rows!==size.rows))writer?.push(new Uint8Array(),false,scheduleFit,size);scheduleFit();}
+    if(controls[active]){const size=controls[active];control=!!size.owner;if(controlAction&&control===(controlAction.mode==='take')){clearTimeout(controlAction.timer);controlAction=null;}updateControlButton();if(term&&(term.cols!==size.cols||term.rows!==size.rows))writer?.push(new Uint8Array(),false,scheduleFit,size);scheduleFit();}
     if(controls[active]&&waitingFeeds.length){const feeds=waitingFeeds;waitingFeeds=[];waitingBytes=0;for(const feed of feeds)consumeFeed(feed.sid,feed.bytes,feed.replay);}
     subscribeSessions(c);refreshAgentMode();
   }
@@ -478,6 +481,7 @@
     composerSubmit.cancel();
     waitingFeeds=[];waitingBytes=0;
     ready=false;pendingKeys=[];composing=false;replaying=0;lastSize='';control=false;
+    clearTimeout(controlAction?.timer);controlAction=null;followIntent=false;clearTimeout(followReplay?.timer);followReplay=null;updateControlButton();
     setCtrl(false);
     if(fitFrame!==null)cancelAnimationFrame(fitFrame);fitFrame=null;
     if(writer)writer.dispose();writer=null;if(highlighter)highlighter.dispose();highlighter=null;if(webgl)webgl.dispose();webgl=null;
@@ -568,11 +572,46 @@
   function requestSize(takeControl=false){
     // Viewing, switching and rotating are local actions. Only an existing owner
     // or an explicit Take Control click may alter the shared PTY dimensions.
-    if(!takeControl&&!control)return;
-    if(sizing==='shared'&&!takeControl)return;
+    if(!takeControl&&(!control||followIntent))return false;
     const desired=desiredSize(),lease=controls[active];if(!desired||!ready||!lease)return;
     const key=desired.cols+'x'+desired.rows;
-    if((takeControl||key!==lastSize)&&send(5,{session:active,...desired,take_control:takeControl}))lastSize=key;
+    if((takeControl||key!==lastSize)&&send(5,{session:active,...desired,take_control:takeControl})){lastSize=key;return true;}return false;
+  }
+  function updateControlButton(){
+    const button=$('control');button.textContent=controlAction?'切换中…':control?'跟随':'接管';
+    button.disabled=!!controlAction||!!followReplay||!!pendingRefresh||!ready||!connected;
+    $('refresh-screen').disabled=!!controlAction||!!followReplay;
+    button.setAttribute('aria-pressed',String(control));
+    button.title=control?'当前手机接管；点击释放尺寸控制并跟随远端':'当前跟随远端；点击按手机屏幕接管尺寸';
+    $('screen').dataset.controlMode=control?'phone':'follow';
+    const waiting='已跟随：等待远端接回尺寸控制，暂时保持当前网格。';
+    if(followIntent&&!control&&ready&&!controlAction&&controls[active]?.busy===false){if($('notice').hidden||replayNoticeTimer!==null)notice(waiting);}
+    else if($('notice').textContent===waiting)notice('');
+  }
+  function toggleControl(){
+    if(controlAction||followReplay||pendingRefresh||!term||!active||!ready||!connected||paused)return;
+    const c=selected(),sid=active,current=term,generation=c.generation;
+    const request={mode:control?'follow':'take'};controlAction=request;
+    if(control){
+      // Legacy daemons release a lease when its subscriber removes this session.
+      // Re-add it on the same ordered connection: never close the shell or guess
+      // a previous desktop size. An online desktop reclaims its current fit.
+      followIntent=true;lastSize='';
+      const screen=$('screen'),buffer=term.buffer.active;
+      followReplay={host:c,generation,sid,terminal:current,distance:buffer.baseY-buffer.viewportY,left:screen.scrollLeft,top:screen.scrollTop,bottom:localView().bottom};
+      const replay=followReplay;replay.timer=setTimeout(()=>{if(followReplay===replay){followReplay=null;updateControlButton();}},6000);
+      sizing='phone';$('sizing').value=sizing;localStorage.setItem('sma.mobile.sizing',sizing);
+      if(!sendHost(c,16,{sessions:[]})||!sendHost(c,16,{sessions:[sid]})){clearTimeout(replay.timer);followReplay=null;controlAction=null;notice('连接不可用，未确认释放尺寸控制。');}
+      else c.subscription=sid;
+    }else{
+      followIntent=false;lastSize='';
+      if(!requestSize(true)){controlAction=null;notice('终端尚未就绪，未接管尺寸。');}
+    }
+    if(controlAction===request)request.timer=setTimeout(()=>{
+      if(controlAction!==request||selected()!==c||c.generation!==generation||active!==sid||term!==current)return;
+      controlAction=null;updateControlButton();notice('模式切换尚未收到确认，请检查连接后重试。');
+    },4000);
+    updateControlButton();scheduleFit();
   }
   function scheduleFit(){if(fitFrame!==null||!term)return;fitFrame=requestAnimationFrame(()=>{fitFrame=null;if(!term||paused||writer?.idle===false)return;
     displayGrid();requestSize();});}
@@ -676,7 +715,7 @@
     hostTokens.set(h.id,$('host-token').value);if(!editingHost)hosts.push(h);saveSessionCredentials();saveHosts();$('host-token').value='';editingHost=null;$('host-dialog').close();connect(connection(h));chooseHost(h.id);refreshWatchers();renderHosts();renderList();
   }catch(error){$('host-error').textContent=error.message;$('host-error').hidden=false;}};
   $('new').onclick=()=>{if(!connected)return;const c=selected();c.beforeCreate=new Set(inventory.map(s=>s.id));c.createPending=createPending=send(6,{shell:$('shell').value});$('session-dialog').close();};
-  $('control').onclick=()=>requestSize(true);
+  $('control').onclick=toggleControl;
   $('sizing').onchange=()=>{sizing=$('sizing').value;localStorage.setItem('sma.mobile.sizing',sizing);lastSize='';scheduleFit();};
   $('options').onclick=()=>$('settings-dialog').showModal();$('settings-close').onclick=()=>$('settings-dialog').close();
   for(const link of document.querySelectorAll('#settings-dialog a'))link.onclick=e=>{e.preventDefault();location.assign(link.getAttribute('href'));};

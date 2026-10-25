@@ -426,7 +426,7 @@
   function acceptResize(pane,info,greeting){
     const request=pane.resizeRequest,ack=info.resize_ack;if(!request){if(ack?.session===pane.raw&&ack?.request===pane.timedOutRequest){pane.resizePaused=false;pane.timedOutRequest=null;}return;}
     if(pane.host.capabilities.resize_ack?ack?.session!==pane.raw||ack?.request!==request.id:!request.barrier)return;
-    clearTimeout(request.timer);pane.resizeRequest=null;
+    clearTimeout(request.timer);pane.resizeRequest=null;pane.lastAttempt='';
     const size=pane.host.controls[pane.raw];if(!size)return;
     pane.lastSize=size.cols+'x'+size.rows;
     if(request.stage==='fit')pane.limitedSize=size.owner&&(size.cols!==request.cols||size.rows!==request.rows)?{wanted:{cols:request.cols,rows:request.rows},actual:{cols:size.cols,rows:size.rows}}:null;

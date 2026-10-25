@@ -2,7 +2,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="color-scheme" content="dark"><title>SuperMonoAgent Mobile</title>
 <link rel="stylesheet" href="vendor/xterm.css"><link rel="stylesheet" href="app.css"></head>
-<body><header><button id="sessions" aria-label="切换终端">☰</button><div class="heading"><strong id="title">终端</strong><small id="status">正在连接</small></div><button id="debug" aria-haspopup="dialog" aria-controls="debug-dialog">调试</button><button id="control">接管</button><button id="options" aria-label="终端设置">⋯</button></header>
+<body><header><button id="sessions" aria-label="切换终端">☰</button><div class="heading"><strong id="title">终端</strong><small id="status">正在连接</small></div><button id="debug" aria-haspopup="dialog" aria-controls="debug-dialog">调试</button><button id="control" aria-pressed="false" disabled>接管</button><button id="options" aria-label="终端设置">⋯</button></header>
 <div id="notice" role="status" hidden></div><main id="screen" aria-label="远端终端"></main>
 <div id="resume" hidden><span>正在查看历史</span><button id="bottom">回到底部 ↓</button></div>
 <dialog id="composer" aria-labelledby="composer-heading"><div class="dialog-heading"><div><h2 id="composer-heading">编辑指令</h2><p id="composer-target" class="hint"></p></div><button id="composer-close">关闭</button></div><textarea id="draft" rows="5" aria-label="输入指令" placeholder="输入指令；Enter 发送，Shift+Enter 换行" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea><p id="composer-status" class="hint" role="status">收到终端回显后自动按一次回车。</p><div class="form-actions"><button id="send">发送</button></div></dialog>
