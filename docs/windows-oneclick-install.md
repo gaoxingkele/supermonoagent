@@ -1,6 +1,6 @@
 # Windows 一键安装与默认配置
 
-当前完整安装包版本：**0.2.38，Windows x64**。压缩后约 17 MB，包含完整 Python/终端运行时和百余个程序文件，不需要先装 Node.js 或 Python。
+当前完整安装包版本：**0.2.39，Windows x64**。压缩后约 17 MB，包含完整 Python/终端运行时和百余个程序文件，不需要先装 Node.js 或 Python。
 
 ## 使用专用包
 
@@ -16,7 +16,7 @@
 
 ## 通用无凭据包
 
-[下载通用完整安装包](https://117.50.48.22/updates/installers/0.2.38/SuperMonoAgent-0.2.38-Setup.zip)。它不包含私有默认 Token；安装时优先保留本机既有凭据，没有凭据才以隐藏输入提示填写。要实现上述免输入配置，应使用会话里的专用链接。
+[下载通用完整安装包](https://117.50.48.22/updates/installers/0.2.39/SuperMonoAgent-0.2.39-Setup.zip)。它不包含私有默认 Token；安装时优先保留本机既有凭据，没有凭据才以隐藏输入提示填写。要实现上述免输入配置，应使用会话里的专用链接。
 
 安装前验证内置固定 RSA 公钥的签名目录、四个安装/启动脚本、每个运行文件及私有配置摘要，再写入版本目录。首次下载安装的信任起点是本机认可的 HTTPS 下载通道；本交付不宣称 Windows Authenticode 代码签名。安装器不修改全局执行策略，不提权，不关闭证书校验或系统防护。
 
@@ -25,6 +25,8 @@
 0.2.37 将新建、排列和最大化移到顶部，标签行提供左右滚动；新增 mylib 本地建议、目标项目账本只读查询和文件粘贴入口。侧栏与文件界面包含在现有签名 UI 资源中，后续页面修改可通过 UI 频道更新。新装客户端不会把低于内置数字版本的 UI 当作更新。
 
 0.2.38 接通 API／本机 Codex 两种助手文本入口、独立窗口对话、显式附带上下文及取消；详情见 [助手配置](assistant-models.md)。密钥仅本次进程保存。自有假模型的真实原生桥接与 CLI 测试通过，未调用用户真实账号或云模型。新建、排列、最大化直接位于顶部页面结构，页签行仅保留页签及左右滚动按钮。
+
+0.2.39 增加项目账本建议、独立发送账本开关和重连后自动恢复；完整包的后台可读取额外两页。0.2.38 桌面外壳可只更新界面，现有三页后台仍可降级使用。实验登记和受保护规则准入尚未接入，文件接收仍需要目标电脑新版后台。
 
 文件功能与验收边界见 [文件粘贴](clipboard-files.md)：真实 WebView 桥接及打包后台已验证，系统剪贴板读取仍未完成实测；当前受限测试环境拒绝打开剪贴板，未覆盖用户内容。目标后台仍需支持文件接收和项目账本能力。
 
@@ -72,8 +74,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Progr
 
 ```powershell
 .venv/Scripts/python.exe scripts/package-windows-installer.py `
-  --runtime dist/windows/0.2.38 `
-  --output dist/windows/SuperMonoAgent-0.2.38-Setup.zip
+  --runtime dist/windows/0.2.39 `
+  --output dist/windows/SuperMonoAgent-0.2.39-Setup.zip
 ```
 
 私包额外传 `--token-file`，输出路径被限制在不受 Git 管理的 `.omx` 下。默认 Token 只在本地私密目录和服务端受限 ZIP 中存在；通用包、源代码和公开下载目录不含该文件。发布者使用现有私有签名密钥，工具不会生成或替换密钥。
@@ -81,7 +83,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Progr
 开发者可用以下命令完成公开完整包与更新发现清单的打包和发布（私有初始配置包另行受限交付，不用于自动更新）：
 
 ```powershell
-python scripts/publish-windows-release.py --runtime dist/windows/0.2.38 --publish --ssh-target publisher@117.50.48.22 --ssh-key C:/private/publisher-key
+python scripts/publish-windows-release.py --runtime dist/windows/0.2.39 --publish --ssh-target publisher@117.50.48.22 --ssh-key C:/private/publisher-key
 ```
 
 上传先验证完整包不可变内容，最后在 OS 锁内原子切换 `/updates/windows/stable/manifest.json`。发布者签名私钥留在开发电脑，不上传服务器。源码实现：`scripts/windows-installer/`、`scripts/package-windows-installer.py`、`scripts/package-windows-update-feed.py`、`scripts/publish-windows-release.py`、`deploy/downloads/`。安装与自动更新使用临时目录、签名 fixture 和模拟提醒验证，不以测试替换真实用户程序或结束现有终端。

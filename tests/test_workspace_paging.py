@@ -30,10 +30,11 @@ async def check_paging(playwright,boundary):
                     await page.wait_for_function('window.smaWorkspace?.connected&&smaWorkspace.activePane?.ready')
                     session.pty.inbox.put(('\r\n'+''.join(f'PAGING_ROW_{i:03d}\r\n' for i in range(200))).encode())
                     await page.wait_for_function('smaWorkspace.terminal.buffer.active.baseY>150&&!smaWorkspace.activePane.writing&&!smaWorkspace.activePane.frames.length&&!smaWorkspace.activePane.resizeRequest&&!smaWorkspace.activePane.redrawAfterReplay')
-                    await page.evaluate('window.originalPagingPane=smaWorkspace.activePane;window.originalPagingGeneration=smaWorkspace.activePane.host.generation')
+                    await page.evaluate('window.originalPagingPane=smaWorkspace.activePane;window.originalPagingGeneration=smaWorkspace.activePane.host.generation;window.originalPagingSnapshots=smaWorkspace.metrics.snapshots')
                     if boundary=='reconnect':
                         for socket in list(server.connections):await socket.close(code=1012,reason='Test-owned reconnect')
-                        await page.wait_for_function('smaWorkspace.connected&&smaWorkspace.activePane===originalPagingPane&&smaWorkspace.activePane.host.generation>originalPagingGeneration&&smaWorkspace.activePane.ready&&!smaWorkspace.activePane.replayPending&&!smaWorkspace.activePane.writing&&!smaWorkspace.activePane.frames.length&&!smaWorkspace.activePane.resizeRequest&&!smaWorkspace.activePane.redrawAfterReplay')
+                        # Empty replay flags also hold before the first new snapshot arrives.
+                        await page.wait_for_function('smaWorkspace.connected&&smaWorkspace.activePane===originalPagingPane&&smaWorkspace.activePane.host.generation>originalPagingGeneration&&smaWorkspace.metrics.snapshots>originalPagingSnapshots&&smaWorkspace.activePane.ready&&!smaWorkspace.activePane.replayPending&&!smaWorkspace.activePane.writing&&!smaWorkspace.activePane.frames.length&&!smaWorkspace.activePane.resizeRequest&&!smaWorkspace.activePane.redrawAfterReplay')
                     else:
                         session.pty.inbox.put(b'\x1b[3J\x1b[H\x1b[2JAFTER_SCREEN_CLEANUP')
                         await page.wait_for_function("smaWorkspace.terminal.buffer.active.getLine(smaWorkspace.terminal.buffer.active.baseY)?.translateToString(true).includes('AFTER_SCREEN_CLEANUP')")

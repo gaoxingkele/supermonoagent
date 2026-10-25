@@ -12,7 +12,7 @@ from .mylib_assistant import SkillIndex
 
 
 PAGE_LIMIT = 8192
-_PAGES = ("README.md", "negatives.md", "trials.md")
+_PAGES = ("README.md", "negatives.md", "trials.md", "nodes.md", "ideas.md")
 _PATH_ERRORS = (OSError, ValueError, TypeError, RuntimeError)
 
 

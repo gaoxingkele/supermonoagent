@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -26,24 +27,64 @@ def library(tmp_path):
     return root
 
 
+def evidence_snapshot(root):
+    """Record durable file bytes and metadata; ordinary read access times vary."""
+    return {path.relative_to(root): (hashlib.sha256(path.read_bytes()).hexdigest(),
+            path.stat().st_size, path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+            for path in root.rglob('*') if path.is_file()}
+
+
 def test_reads_fixed_evidence_pages_and_inventory_without_writing(tmp_path):
     root, wiki = project(tmp_path)
     for name in ("README.md", "negatives.md", "trials.md"):
         (wiki / name).write_bytes(("# " + name + "\n证据\n").encode("utf-8"))
     (wiki / "private.txt").write_text("never returned", encoding="utf-8")
-    before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    (wiki / "nodes.md").write_text("# 影子规则\nS0004：只在新窗口验证\n# 信号\nG0002：待处理\n", encoding="utf-8", newline="\n")
+    (wiki / "ideas.md").write_text("# 想法\nI0003：L2.observability，尚未采纳\n", encoding="utf-8", newline="\n")
+    (root / '.metarsi' / 'metarsi.db').write_bytes(b'opaque ledger: never initialized or opened')
+    before = evidence_snapshot(root)
     result = read_project_context(root, library(tmp_path))
     assert result["project"] == str(root.resolve())
     assert result["project_truncated"] is False
     assert result["project_source"] == "session-startup-directory"
     assert "cd" in result["note"]
     assert result["ledger"]["enabled"] and result["ledger"]["status"] == "ready"
-    assert set(result["ledger"]["pages"]) == {"README.md", "negatives.md", "trials.md"}
+    assert set(result["ledger"]["pages"]) == {"README.md", "negatives.md", "trials.md", "nodes.md", "ideas.md"}
     assert result["ledger"]["pages"]["README.md"]["text"] == "# README.md\n证据\n"
     assert not result["ledger"]["pages"]["README.md"]["truncated"]
     assert result["inventory"]["skill_names"] == ["fixture-review"]
     assert result["inventory"]["indexed"] == 1
-    assert {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
+    assert result['ledger']['pages']['nodes.md']['text'] == '# 影子规则\nS0004：只在新窗口验证\n# 信号\nG0002：待处理\n'
+    assert result['ledger']['pages']['ideas.md']['text'] == '# 想法\nI0003：L2.observability，尚未采纳\n'
+    assert 'never returned' not in str(result)
+    assert evidence_snapshot(root) == before
+
+
+@pytest.mark.parametrize('name', ['nodes.md', 'ideas.md'])
+def test_optional_evolution_pages_are_missing_without_creating_files(tmp_path, name):
+    root, wiki = project(tmp_path)
+    (wiki / 'README.md').write_text('existing ledger', encoding='utf-8')
+    before = evidence_snapshot(root)
+    result = read_project_context(root, tmp_path / 'missing-library')
+    assert result['ledger']['status'] == 'ready'
+    assert result['ledger']['pages'][name] == {'status': 'missing', 'text': '', 'truncated': False}
+    assert evidence_snapshot(root) == before
+
+
+@pytest.mark.parametrize('name', ['nodes.md', 'ideas.md'])
+@pytest.mark.parametrize('length', [8192, 9000], ids=['exact-byte-limit', 'over-byte-limit'])
+def test_evolution_pages_read_only_bounded_prefix(tmp_path, name, length):
+    root, wiki = project(tmp_path)
+    heading = b'project evolution record\n'
+    content = heading + b'x' * (length - len(heading))
+    (wiki / name).write_bytes(content)
+    before = evidence_snapshot(root)
+    result = read_project_context(root, tmp_path / 'missing-library')
+    page = result['ledger']['pages'][name]
+    assert page['status'] == 'ready' and page['truncated'] is (length > 8192)
+    assert page['text'].encode('utf-8') == content[:8192]
+    assert page['mtime'] == (wiki / name).stat().st_mtime
+    assert evidence_snapshot(root) == before
 
 
 def test_missing_directories_and_uninitialized_ledger_are_explicit(tmp_path):
@@ -78,20 +119,21 @@ def test_bounded_bytes_and_invalid_utf8(tmp_path):
     assert pages["trials.md"]["status"] == "missing"
 
 
-def test_permission_error_is_sanitized(tmp_path, monkeypatch):
+@pytest.mark.parametrize('name', ['README.md', 'nodes.md', 'ideas.md'])
+def test_permission_error_is_sanitized(tmp_path, monkeypatch, name):
     root, wiki = project(tmp_path)
-    (wiki / "README.md").write_text("evidence", encoding="utf-8")
+    (wiki / name).write_text("evidence", encoding="utf-8")
     original = Path.open
 
     def denied(path, *args, **kwargs):
-        if path.name == "README.md":
+        if path.name == name:
             raise PermissionError("secret-path-and-token")
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", denied)
     result = read_project_context(root, tmp_path / "missing")
     assert result["ledger"]["status"] == "partial"
-    assert result["ledger"]["pages"]["README.md"]["status"] == "unavailable"
+    assert result["ledger"]["pages"][name]["status"] == "unavailable"
     assert "secret-path-and-token" not in str(result)
 
 
@@ -145,16 +187,17 @@ def test_root_permission_errors_are_unavailable_not_missing(tmp_path, monkeypatc
     assert "do not return this" not in str(result)
 
 
-def test_page_symlink_cannot_escape_project(tmp_path):
+@pytest.mark.parametrize('name', ['README.md', 'nodes.md', 'ideas.md'])
+def test_page_symlink_cannot_escape_project(tmp_path, name):
     root, wiki = project(tmp_path)
     outside = tmp_path / "private.md"
     outside.write_text("outside private data", encoding="utf-8")
     try:
-        (wiki / "README.md").symlink_to(outside)
+        (wiki / name).symlink_to(outside)
     except OSError:
         pytest.skip("Symlink creation unavailable")
     result = read_project_context(root, tmp_path / "missing")
-    assert result["ledger"]["pages"]["README.md"]["status"] == "unavailable"
+    assert result["ledger"]["pages"][name]["status"] == "unavailable"
     assert "outside private data" not in str(result)
 
 
@@ -167,6 +210,8 @@ def test_wiki_junction_cannot_escape_project(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "README.md").write_text("private outside", encoding="utf-8")
+    (outside / "nodes.md").write_text("outside shadow must not leak", encoding="utf-8")
+    (outside / "ideas.md").write_text("outside idea must not leak", encoding="utf-8")
     link = meta / "wiki"
     completed = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], capture_output=True)
     if completed.returncode:
@@ -174,7 +219,10 @@ def test_wiki_junction_cannot_escape_project(tmp_path):
     try:
         result = read_project_context(root, tmp_path / "missing")
         assert result["ledger"]["pages"]["README.md"]["status"] == "unavailable"
+        assert result['ledger']['pages']['nodes.md']['status'] == 'unavailable'
+        assert result['ledger']['pages']['ideas.md']['status'] == 'unavailable'
         assert "private outside" not in str(result)
+        assert 'outside shadow' not in str(result) and 'outside idea' not in str(result)
     finally:
         link.rmdir()
 

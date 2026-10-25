@@ -1,5 +1,7 @@
 """Public bundle signing and transactional publisher tests; no network or CA calls."""
 import importlib.util
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -65,12 +67,29 @@ class KilledFinalizerSSH(LocalSSH):
 class PublisherTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tool=release.openssl_tool();cls.trust=json.loads((ROOT/'src/supermonoagent/static/update-trust.json').read_text())
+        cls.tool=release.openssl_tool()
+        cls.fixture=tempfile.TemporaryDirectory(prefix='sma-owned-publisher-')
+        cls.addClassCleanup(cls.fixture.cleanup)
+        cls.source=Path(cls.fixture.name)/'source'
+        # Exercise the real source rendering and archive whitelists without
+        # copying ignored development credentials or modifying bundled trust.
+        shutil.copytree(ROOT/'src',cls.source/'src',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+        shutil.copytree(ROOT/'android/assets/mobile',cls.source/'android/assets/mobile')
+        cls.private=Path(cls.fixture.name)/'owned-fixture-private.pem'
+        subprocess.run([cls.tool,'genpkey','-algorithm','RSA','-pkeyopt','rsa_keygen_bits:3072',
+            '-out',str(cls.private)],capture_output=True,check=True)
+        der=subprocess.run([cls.tool,'pkey','-in',str(cls.private),'-pubout','-outform','DER'],
+            capture_output=True,check=True).stdout
+        cls.trust={'schema':1,'keys':{hashlib.sha256(der).hexdigest()[:16]:base64.b64encode(der).decode('ascii')}}
+        (cls.source/'src/supermonoagent/static/update-trust.json').write_text(json.dumps(cls.trust),encoding='utf-8')
+
+    def package(self,output,**kwargs):
+        return release.package(output,**{'root':self.source,'private_key':self.private,'openssl':self.tool,**kwargs})
 
     def test_signed_complete_whitelists_and_secret_exclusion(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ,{'SUPERMONO_DEFAULT_RELAY':'https://fixture-secret@example.invalid/?token=fixture-secret'}):
-                folder=release.package(Path(tmp)/'out',revision='publisher-qa',openssl=self.tool)
+                folder=self.package(Path(tmp)/'out',revision='publisher-qa',openssl=self.tool)
             value=release.verify_local(folder,self.trust,self.tool)
             self.assertEqual(release.NATIVE_API,2)
             self.assertEqual(len(release.DESKTOP),17)
@@ -87,8 +106,8 @@ class PublisherTest(unittest.TestCase):
                     if platform=='desktop':
                         self.assertNotIn(b'fixture-secret',archive.read('workspace.html'))
             with self.assertRaisesRegex(ValueError,'immutable'):
-                release.package(Path(tmp)/'out',revision='publisher-qa',openssl=self.tool)
-            second=release.package(Path(tmp)/'out',revision='publisher-qa-2',openssl=self.tool)
+                self.package(Path(tmp)/'out',revision='publisher-qa',openssl=self.tool)
+            second=self.package(Path(tmp)/'out',revision='publisher-qa-2',openssl=self.tool)
             self.assertGreater(release.verify_local(second,self.trust,self.tool)['sequence'],value['sequence'])
             with (folder/'android.zip').open('ab') as stream:stream.write(b'changed')
             with self.assertRaisesRegex(ValueError,'hash/size'):
@@ -96,8 +115,8 @@ class PublisherTest(unittest.TestCase):
 
     def test_build_only_existing_release_never_invokes_ssh(self):
         with tempfile.TemporaryDirectory() as tmp:
-            folder=release.package(Path(tmp)/'out',revision='build-only-qa',openssl=self.tool)
-            with patch.object(sys,'argv',['publish-ui-update.py','--release',str(folder),'--build-only','--ssh-target','qa@localhost']),patch.object(release,'publish',side_effect=AssertionError('build-only must not publish')):
+            folder=self.package(Path(tmp)/'out',revision='build-only-qa',openssl=self.tool)
+            with patch.object(sys,'argv',['publish-ui-update.py','--release',str(folder),'--build-only','--ssh-target','qa@localhost']),patch.object(release,'publish',side_effect=AssertionError('build-only must not publish')),patch.object(release,'ROOT',self.source):
                 release.main(publishing=True)
 
     def test_unsafe_destinations_rejected_before_commands(self):
@@ -139,7 +158,7 @@ class PublisherTest(unittest.TestCase):
                 self.assertEqual(process.stdout.readline().strip(),'LOCKED')
                 process.kill();process.wait(timeout=5)
                 self.assertTrue((output/'.package-lock').is_file())
-                folder=release.package(output,revision='after-killed-builder',openssl=self.tool)
+                folder=self.package(output,revision='after-killed-builder',openssl=self.tool)
                 self.assertTrue((folder/'manifest.json').is_file())
             finally:
                 if process.poll() is None:process.kill();process.wait(timeout=5)
@@ -147,9 +166,9 @@ class PublisherTest(unittest.TestCase):
     @unittest.skipUnless(Path(BASH).exists(),'Local bash is needed for isolated SSH transaction')
     def test_killed_remote_finalizer_releases_os_lock_and_retry_publishes(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tmp=Path(tmp);remote=tmp/'remote';first=release.package(tmp/'local',revision='before-crash',openssl=self.tool)
+            tmp=Path(tmp);remote=tmp/'remote';first=self.package(tmp/'local',revision='before-crash',openssl=self.tool)
             release.publish(first,target='qa@localhost',remote='/fixture-root',trust=self.trust,openssl=self.tool,runner=LocalSSH(remote))
-            previous=(remote/'manifest.json').read_bytes();second=release.package(tmp/'local',revision='after-crash',openssl=self.tool)
+            previous=(remote/'manifest.json').read_bytes();second=self.package(tmp/'local',revision='after-crash',openssl=self.tool)
             with self.assertRaisesRegex(RuntimeError,'Deliberately killed'):
                 release.publish(second,target='qa@localhost',remote='/fixture-root',trust=self.trust,openssl=self.tool,runner=KilledFinalizerSSH(remote))
             self.assertEqual((remote/'manifest.json').read_bytes(),previous)
@@ -161,7 +180,7 @@ class PublisherTest(unittest.TestCase):
     @unittest.skipUnless(Path(BASH).exists(),'Local bash is needed to execute generated Linux publication shell')
     def test_stage_verify_publish_idempotence_and_failed_transfer_keep_old_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tmp=Path(tmp);first=release.package(tmp/'local',revision='first',openssl=self.tool)
+            tmp=Path(tmp);first=self.package(tmp/'local',revision='first',openssl=self.tool)
             remote=tmp/'remote';runner=LocalSSH(remote)
             release.publish(first,target='qa@localhost',remote='/fixture-root',trust=self.trust,openssl=self.tool,runner=runner,stage_only=True)
             self.assertFalse((remote/'manifest.json').exists())
@@ -170,7 +189,7 @@ class PublisherTest(unittest.TestCase):
             previous=(remote/'manifest.json').read_bytes()
             self.assertEqual(previous,(first/'manifest.json').read_bytes())
             release.publish(first,target='qa@localhost',remote='/fixture-root',trust=self.trust,openssl=self.tool,runner=runner)
-            second=release.package(tmp/'local',revision='second',openssl=self.tool)
+            second=self.package(tmp/'local',revision='second',openssl=self.tool)
             with self.assertRaises(RuntimeError):
                 release.publish(second,target='qa@localhost',remote='/fixture-root',trust=self.trust,openssl=self.tool,runner=LocalSSH(remote,corrupt=True))
             self.assertEqual((remote/'manifest.json').read_bytes(),previous)
@@ -178,7 +197,7 @@ class PublisherTest(unittest.TestCase):
             self.assertFalse((remote/'releases/second').exists())
             self.assertFalse(list(remote.glob('.incoming-*')))
             self.assertTrue((remote/'.publish-lock').is_file())
-            conflicting=release.package(tmp/'conflicting',revision='first',openssl=self.tool)
+            conflicting=self.package(tmp/'conflicting',revision='first',openssl=self.tool)
             with self.assertRaises(RuntimeError):
                 release.publish(conflicting,target='qa@localhost',remote='/fixture-root',trust=self.trust,openssl=self.tool,runner=runner)
             self.assertEqual((remote/'manifest.json').read_bytes(),previous)

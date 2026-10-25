@@ -23,17 +23,32 @@ Android API 29+ 可以终止本应用挂死的 renderer 后重建 WebView；API 
 仅本地打包、签名并验证：
 
 ```powershell
-.venv/Scripts/python.exe scripts/package-ui-update.py --revision 0.2.25
+.venv/Scripts/python.exe scripts/package-ui-update.py --revision 0.2.39
 ```
 
 服务器 SSH 与 HTTPS 配好以后，一条命令完成打包和正式发布：
 
 ```powershell
 .venv/Scripts/python.exe scripts/publish-ui-update.py --publish `
+  --revision 0.2.39 `
   --ssh-target publisher@117.50.48.22 --ssh-port 22 --ssh-key C:/secure/id_ed25519
 ```
 
-不提供固定 revision 时自动生成新的不可变编号。也支持 `--build-only`，或 `--stage-only --ssh-target ...` 先上传校验、不切换频道。要激活已经生成的同一版本，增加 `--release .omx/ui-releases/stable/releases/版本号`。同 revision 只有完全相同的三个公共文件才能重用，不能覆盖成另一套内容。
+本项目后续发布显式指定统一三段数字版本号，例如 `0.2.39`；工具保留旧编号的兼容解析，但本项目不再使用自动时间戳编号发布。也支持 `--build-only`，或 `--stage-only --ssh-target ...` 先上传校验、不切换频道。要激活已经生成的同一版本，增加 `--release .omx/ui-releases/stable/releases/版本号`。同 revision 只有完全相同的三个公共文件才能重用，不能覆盖成另一套内容。
+
+### 只改桌面，复用当前 Android 负载
+
+先将当前可信频道的 `manifest.json`、`desktop.zip`、`android.zip` 保存为完整本地基线目录。以下一条命令打包新桌面界面并发布，Android ZIP 和目录逐字节复用：
+
+```powershell
+.venv/Scripts/python.exe scripts/publish-ui-update.py --publish `
+  --revision 0.2.39 --reuse-android-from .omx/ui-baseline `
+  --ssh-target publisher@117.50.48.22 --ssh-key C:/secure/id_ed25519
+```
+
+工具先按现有公钥验证整个基线、有效期和双平台归档，再冻结输入；复用模式不读取本地 Android 源文件。新目录只替换 Android URL，ZIP、API2 和文件目录保持原样。生产发布锁内还会比较当前 Android 描述符：若其他发布者已更新 Android，则拒绝覆盖，需重新取得当前基线。发布已有版本时可显式加 `--preserve-android` 使用同一保护。
+
+两端仍共用频道版本，Android 即使负载相同，也可能因新版本提示或重新下载；这不代表 Android 原生壳升级。固定保留桌面 17／手机 16 个资源。桌面 0.2.38 外壳具备模型桥接，0.2.39 的账本界面可在该外壳上热更新；新增两页读取能力仍需目标后台 0.2.39，旧后台的三页可以继续使用。
 
 输出位于 `.omx/ui-releases/stable/releases/版本号/`：`desktop.zip`、`android.zip`、签名 `manifest.json`。根目录 `manifest.json` 指向最后完成的本地频道版本。发布会先验证远端文件 SHA-256，最后原子替换频道 manifest；旧版本与旧 manifest 保留。构建及发布使用 OS 锁，进程死亡不会留下永久占用的标记锁。
 

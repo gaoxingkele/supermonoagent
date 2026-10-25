@@ -50,6 +50,10 @@ source_path: `src/supermonoagent/assistant_preferences.py`, `src/supermonoagent/
 
 当前建议与项目经验仍分开：`mylib_assistant.py::_evolution` 在至少两条故障行时提供通用待验证卡；这些行不等于两个独立故障。`static/mylib-assistant.js` 并行取建议与账本后分别显示，模型对话目前也只附带终端输出，没有关联已有试验或否决项。只读页面为 README、negatives、trials，未覆盖 nodes、ideas 中更完整的影子规则、信号及想法；已有模式文本只代表生成记录，不能称为重新核验。
 
-下一步在原有独立助理通道内结合只读账本，形成“具体问题、相关旧记录、可检验假设、验收方法、来源、未验证声明”。缺失或过期账本明确降级；模型输出不构成通过验证。自动登记实验与准入仍属第三期，不能为获取只读状态而周期执行会写记录的 tick，也不能自动批准 propose／decide。
+0.2.39 候选已在原有独立助理通道内结合只读账本：本地卡展示具体故障行及匹配记录，模型分析在用户单独勾选后附带有限片段，并要求“具体问题、相关旧记录、可检验假设、验收方法、来源、未验证声明”。缺页、未知来源、超时与旧后台明确降级，来源只能是会话启动目录；模型输出不构成通过验证。固定页增加 nodes、ideas，旧三页仍兼容。
+
+只读入口以完整连接身份约束 15 秒缓存与同身份请求合并，绝对 8 秒期限；重连状态进入去重键，瞬时失败由原 4 秒定时器按退避重试。模型侧恢复软换行的逻辑文本，边缘只保留完整非空白词，避免前端裁剪绕过原生密钥脱敏。无空白长段可能保守舍弃，不能以片段未匹配推出完整账本不存在记录。真实隐藏 WebView2 通过真实 OP22、原生服务和 loopback 假 API 验证，并用握手门控观察离线→同代次自动恢复；没有模型云调用、用户 PTY 输入或项目状态写入。证据：`.omx/artifacts/assistant-native-ledger/final-verdict.json`。
+
+自动登记实验与准入仍属第三期，不能为获取只读状态而周期执行会写记录的 tick，也不能自动批准 propose／decide。
 
 source_path: `src/supermonoagent/mylib_assistant.py`, `src/supermonoagent/assistant_context.py`, `src/supermonoagent/static/mylib-assistant.js`, `src/supermonoagent/static/assistant-chat.js`, `D:/aicoding/mylib/skills/meta-rsi/SKILL.md`, `D:/aicoding/mylib/skills/meta-rsi/references/IDEATION.md`。

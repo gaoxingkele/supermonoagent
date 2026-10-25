@@ -5,6 +5,7 @@ import argparse
 import base64
 from contextlib import contextmanager
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -38,6 +39,7 @@ root,stage=map(Path,sys.argv[1:3])
 revision=sys.argv[3]
 stage_only=sys.argv[4]=='1'
 hashes=json.loads(sys.argv[5])
+preserve_android=len(sys.argv)>6 and sys.argv[6]=='1'
 names={'desktop.zip','android.zip','manifest.json'}
 lock_path=root/'.publish-lock'
 if lock_path.is_symlink():raise SystemExit('Refusing publication lock symlink')
@@ -63,9 +65,20 @@ with lock_path.open('a+b') as lock:
         channel=root/'manifest.json'
         candidate=(stage/'manifest.json').read_bytes()
         if channel.is_symlink():raise SystemExit('Refusing channel manifest symlink')
-        if not stage_only and channel.exists():
+        previous=channel.read_bytes() if channel.exists() else None
+        if preserve_android:
+            if previous is None:raise SystemExit('Cannot preserve Android without current channel manifest')
+            def android_descriptor(raw):
+                try:
+                    item=json.loads(base64.b64decode(json.loads(raw)['payload'],validate=True))['artifacts']['android']
+                    if not isinstance(item,dict) or not {'sha256','size','native_api','files'}<=set(item):raise ValueError()
+                    return json.dumps({key:value for key,value in item.items() if key!='url'},sort_keys=True,separators=(',',':'))
+                except (ValueError,KeyError,TypeError):
+                    raise SystemExit('Invalid Android channel descriptor') from None
+            if android_descriptor(candidate)!=android_descriptor(previous):
+                raise SystemExit('Android changed since baseline; refusing desktop-only publication')
+        if not stage_only and previous is not None:
             def sequence(raw):return json.loads(base64.b64decode(json.loads(raw)['payload'],validate=True))['sequence']
-            previous=channel.read_bytes()
             if sequence(candidate)<=sequence(previous) and candidate!=previous:
                 raise SystemExit('Refusing channel sequence downgrade')
         destination=root/'releases'/revision
@@ -138,12 +151,13 @@ def files_for_platform(root,platform,feed):
         raise ValueError('UI snapshot exceeds size limit')
     return files
 
-def source_fingerprint(root):
+def source_fingerprint(root,*,include_android=True):
     paths=[root/'src/supermonoagent/workspace.py',root/'src/supermonoagent/defaults.py']
     paths += [root/'src/supermonoagent/static'/name for name in DESKTOP if name!='workspace.html']
     paths += [root/'src/supermonoagent/static'/name for name in ('clipboard-files.js','mylib-assistant.js','assistant-chat.js')]
-    paths += [root/'android/assets/mobile'/name for name in MOBILE]
-    paths += [root/'android/assets/mobile/agent-modes'/(name+'.json') for name in AGENT_MODES]
+    if include_android:
+        paths += [root/'android/assets/mobile'/name for name in MOBILE]
+        paths += [root/'android/assets/mobile/agent-modes'/(name+'.json') for name in AGENT_MODES]
     return {str(path.relative_to(root)):digest(path.read_bytes()) for path in paths}
 
 def make_archive(path,files):
@@ -159,7 +173,7 @@ def verify_local(directory,trust,openssl=None,now=None):
     raw=(directory/'manifest.json').read_bytes()
     if len(raw)>128*1024:raise ValueError('Manifest exceeds limit')
     envelope=json.loads(raw)
-    if set(envelope)!={'schema','key_id','payload','signature'} or envelope['schema']!=1:raise ValueError('Invalid envelope')
+    if set(envelope)!={'schema','key_id','payload','signature'} or type(envelope['schema']) is not int or envelope['schema']!=1:raise ValueError('Invalid envelope')
     payload=base64.b64decode(envelope['payload'],validate=True)
     signature=base64.b64decode(envelope['signature'],validate=True)
     der=base64.b64decode(trust['keys'][envelope['key_id']],validate=True)
@@ -168,25 +182,40 @@ def verify_local(directory,trust,openssl=None,now=None):
         run([tool,'pkey','-pubin','-inform','DER','-in',str(tmp/'public.der'),'-out',str(tmp/'public.pem')])
         run([tool,'dgst','-sha256','-verify',str(tmp/'public.pem'),'-signature',str(tmp/'signature'),str(tmp/'payload')])
     value=json.loads(payload);rev=revision_id(value['revision']);clock=int(time.time() if now is None else now)
-    if value['schema']!=1 or value['channel']!='stable' or type(value['sequence']) is not int or not 0<value['sequence']<=SAFE_INTEGER:raise ValueError('Invalid release metadata')
+    if type(value['schema']) is not int or value['schema']!=1 or value['channel']!='stable' or type(value['sequence']) is not int or not 0<value['sequence']<=SAFE_INTEGER:raise ValueError('Invalid release metadata')
     if type(value['created']) is not int or type(value['expires']) is not int or value['created']>clock+300 or value['expires']<=max(clock,value['created']):raise ValueError('Invalid release freshness')
     if set(value['artifacts'])!={'desktop','android'}:raise ValueError('Both platform archives are required')
     for platform,allowed in [('desktop',DESKTOP),('android',ANDROID)]:
         item=value['artifacts'][platform]
         expected='releases/'+rev+'/'+platform+'.zip'
-        if item['url']!=expected or item['native_api']!=NATIVE_API or set(item['files'])!=set(allowed):raise ValueError('Invalid artifact catalog')
+        if item['url']!=expected or type(item['native_api']) is not int or item['native_api']!=NATIVE_API or set(item['files'])!=set(allowed):raise ValueError('Invalid artifact catalog')
         data=(directory/(platform+'.zip')).read_bytes()
-        if len(data)>MAX_ARCHIVE or len(data)!=item['size'] or digest(data)!=item['sha256']:raise ValueError('Archive hash/size mismatch')
-        with zipfile.ZipFile(directory/(platform+'.zip')) as archive:
+        if type(item['size']) is not int or not 0<item['size']<=MAX_ARCHIVE or len(data)!=item['size'] or digest(data)!=item['sha256']:raise ValueError('Archive hash/size mismatch')
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
             entries=archive.infolist()
             if len(entries)!=len(allowed) or {entry.filename for entry in entries}!=set(allowed):raise ValueError('Archive allowlist mismatch')
             if len({entry.filename.casefold() for entry in entries})!=len(entries):raise ValueError('Case-colliding archive entries')
             if sum(entry.file_size for entry in entries)>MAX_SNAPSHOT:raise ValueError('Snapshot too large')
             for entry in entries:
-                if entry.file_size>MAX_FILE or entry.external_attr>>16&0o170000==0o120000:raise ValueError('Invalid archive entry')
+                if entry.file_size>MAX_FILE or entry.external_attr>>16&0o170000 not in {0,0o100000} or entry.flag_bits&1:raise ValueError('Invalid archive entry')
                 content=archive.read(entry);metadata=item['files'][entry.filename]
-                if metadata!={'size':len(content),'sha256':digest(content)}:raise ValueError('File catalog mismatch')
+                if type(metadata.get('size')) is not int or metadata!={'size':len(content),'sha256':digest(content)}:raise ValueError('File catalog mismatch')
     return value
+
+
+def frozen_android_release(directory,trust,openssl):
+    """Verify the complete signed baseline using exactly the frozen input bytes."""
+    directory=Path(directory)
+    frozen={}
+    for name,limit in [('manifest.json',128*1024),('desktop.zip',MAX_ARCHIVE),('android.zip',MAX_ARCHIVE)]:
+        with (directory/name).open('rb') as source:data=source.read(limit+1)
+        if len(data)>limit:raise ValueError('Baseline release exceeds size limit')
+        frozen[name]=data
+    with tempfile.TemporaryDirectory(prefix='sma-ui-baseline-') as tmp:
+        tmp=Path(tmp)
+        for name,data in frozen.items():(tmp/name).write_bytes(data)
+        metadata=verify_local(tmp,trust,openssl)
+    return metadata,frozen['android.zip']
 
 @contextmanager
 def build_lock(output):
@@ -206,8 +235,10 @@ def build_lock(output):
             if os.name=='nt':stream.seek(0);msvcrt.locking(stream.fileno(),msvcrt.LK_UNLCK,1)
             else:fcntl.flock(stream.fileno(),fcntl.LOCK_UN)
 
-def package(output,*,root=ROOT,revision=None,private_key=None,key_id=None,openssl=None,feed='https://117.50.48.22/updates/stable/manifest.json',lifetime_days=30):
+def package(output,*,root=ROOT,revision=None,private_key=None,key_id=None,openssl=None,feed='https://117.50.48.22/updates/stable/manifest.json',lifetime_days=30,reuse_android_from=None):
     output=Path(output).resolve();root=Path(root).resolve();feed_url(feed)
+    if reuse_android_from is not None and (not isinstance(revision,str) or not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)',revision)):
+        raise ValueError('Android reuse requires an explicit numeric version, such as 0.2.39')
     if not 1<=lifetime_days<=90:raise ValueError('Manifest lifetime must be 1–90 days')
     tool=openssl_tool(openssl);key=Path(private_key or root/'.omx/update-signing/development-private.pem').resolve()
     if not key.is_file():raise ValueError('Signing key missing; keys are never generated implicitly')
@@ -216,23 +247,32 @@ def package(output,*,root=ROOT,revision=None,private_key=None,key_id=None,openss
         if len(trust['keys'])!=1:raise ValueError('Select --key-id from bundled trust anchors')
         key_id=next(iter(trust['keys']))
     if key_id not in trust['keys']:raise ValueError('Signing key ID is not bundled')
+    baseline=None;android_bytes=None
+    if reuse_android_from is not None:
+        baseline,android_bytes=frozen_android_release(reuse_android_from,trust,tool)
+        if revision==baseline['revision']:raise ValueError('New revision must differ from immutable baseline revision')
     with build_lock(output):
         created=int(time.time());revision=revision_id(revision or time.strftime('%Y%m%dT%H%M%SZ',time.gmtime())+'-'+uuid.uuid4().hex[:8])
         releases=output/'releases';releases.mkdir(exist_ok=True);destination=releases/revision
         if destination.exists():raise ValueError('Revision already exists; immutable releases cannot be overwritten')
         sequence_file=output/'.highest-sequence'
         previous=int(sequence_file.read_text()) if sequence_file.exists() else 0
+        if baseline is not None:previous=max(previous,baseline['sequence'])
         if (output/'manifest.json').exists():
             current=json.loads(base64.b64decode(json.loads((output/'manifest.json').read_bytes())['payload'],validate=True))
             previous=max(previous,current['sequence'])
         sequence=max(time.time_ns()//1000,previous+1)
         if sequence>SAFE_INTEGER:raise ValueError('Sequence exceeds JavaScript safe integer')
         with tempfile.TemporaryDirectory(prefix='.build-',dir=output) as tmp:
-            tmp=Path(tmp);artifacts={};before=source_fingerprint(root)
+            tmp=Path(tmp);artifacts={};before=source_fingerprint(root,include_android=baseline is None)
             for platform in ['desktop','android']:
+                if platform=='android' and baseline is not None:
+                    (tmp/'android.zip').write_bytes(android_bytes)
+                    artifacts['android']={**baseline['artifacts']['android'],'url':'releases/'+revision+'/android.zip'}
+                    continue
                 files=files_for_platform(root,platform,feed);archive=tmp/(platform+'.zip');make_archive(archive,files);data=archive.read_bytes()
                 artifacts[platform]={'url':'releases/'+revision+'/'+platform+'.zip','sha256':digest(data),'size':len(data),'native_api':NATIVE_API,'files':{name:{'sha256':digest(content),'size':len(content)} for name,content in files.items()}}
-            if before!=source_fingerprint(root):raise ValueError('UI source changed during packaging; retry after edits finish')
+            if before!=source_fingerprint(root,include_android=baseline is None):raise ValueError('UI source changed during packaging; retry after edits finish')
             payload=json_bytes({'schema':1,'channel':'stable','revision':revision,'sequence':sequence,'created':created,'expires':created+lifetime_days*86400,'artifacts':artifacts})
             (tmp/'payload').write_bytes(payload)
             run([tool,'dgst','-sha256','-sign',str(key),'-out',str(tmp/'signature'),str(tmp/'payload')])
@@ -253,9 +293,10 @@ def remote_root(value):
     if not re.fullmatch(r'/[A-Za-z0-9_./-]+',value) or any(part in {'.','..',''} for part in value[1:].split('/')):raise ValueError('Remote root must be a normalized absolute Linux path without shell metacharacters')
     return value
 
-def _publish_public_snapshot(directory,*,target,port=22,key=None,remote='/var/lib/supermono-updates/stable',trust=None,openssl=None,runner=run,stage_only=False):
+def _publish_public_snapshot(directory,*,target,port=22,key=None,remote='/var/lib/supermono-updates/stable',trust=None,openssl=None,runner=run,stage_only=False,preserve_android=False):
     target=ssh_target(target);remote=remote_root(remote)
     if type(port) is not int or not 1<=port<=65535:raise ValueError('Invalid SSH port')
+    if type(preserve_android) is not bool:raise ValueError('preserve_android must be boolean')
     directory=Path(directory).resolve();trust=trust or json.loads((ROOT/'src/supermonoagent/static/update-trust.json').read_text())
     metadata=verify_local(directory,trust,openssl);revision=metadata['revision']
     options=['-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=15','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=2']
@@ -277,20 +318,21 @@ def _publish_public_snapshot(directory,*,target,port=22,key=None,remote='/var/li
     hashes={name:digest((directory/name).read_bytes()) for name in ['desktop.zip','android.zip','manifest.json']}
     # Uploads do not hold a global lock. One short OS-locked transaction verifies
     # hashes, installs/reuses the complete version, then switches manifest last.
-    arguments=[remote,stage,revision,'1' if stage_only else '0',json.dumps(hashes,separators=(',',':'))]
+    arguments=[remote,stage,revision,'1' if stage_only else '0',json.dumps(hashes,separators=(',',':')),'1' if preserve_android else '0']
     finalize='set -eu\npython3 - '+' '.join(shlex.quote(value) for value in arguments)+" <<'PY'\n"+REMOTE_FINALIZER+'\nPY\n'
     runner([*ssh,'sh -s'],input=finalize.encode())
     return {'revision':revision,'sequence':metadata['sequence'],'remote_manifest':remote+'/manifest.json','staged_only':stage_only}
 
-def publish(directory,*,target,port=22,key=None,remote='/var/lib/supermono-updates/stable',trust=None,openssl=None,runner=run,stage_only=False):
+def publish(directory,*,target,port=22,key=None,remote='/var/lib/supermono-updates/stable',trust=None,openssl=None,runner=run,stage_only=False,preserve_android=False):
     # Freeze all public inputs before verification/upload so another build cannot
     # replace an archive between the signature check and transfer-hash calculation.
     ssh_target(target);remote_root(remote)
     if type(port) is not int or not 1<=port<=65535:raise ValueError('Invalid SSH port')
+    if type(preserve_android) is not bool:raise ValueError('preserve_android must be boolean')
     with tempfile.TemporaryDirectory(prefix='sma-ui-public-release-') as tmp:
         snapshot=Path(tmp)
         for name in ['desktop.zip','android.zip','manifest.json']:shutil.copyfile(Path(directory)/name,snapshot/name)
-        return _publish_public_snapshot(snapshot,target=target,port=port,key=key,remote=remote,trust=trust,openssl=openssl,runner=runner,stage_only=stage_only)
+        return _publish_public_snapshot(snapshot,target=target,port=port,key=key,remote=remote,trust=trust,openssl=openssl,runner=runner,stage_only=stage_only,preserve_android=preserve_android)
 
 def parser(publishing=False):
     cli=argparse.ArgumentParser(description='Build both signed UI bundles'+(' and optionally publish public files over SSH' if publishing else ''))
@@ -298,9 +340,11 @@ def parser(publishing=False):
     cli.add_argument('--private-key',type=Path);cli.add_argument('--key-id');cli.add_argument('--openssl')
     cli.add_argument('--feed',type=feed_url,default='https://117.50.48.22/updates/stable/manifest.json')
     cli.add_argument('--lifetime-days',type=int,default=30)
+    cli.add_argument('--reuse-android-from',type=Path,help='Reuse Android bytes from a complete trusted signed local release; requires numeric --revision')
     if publishing:
         mode=cli.add_mutually_exclusive_group();mode.add_argument('--build-only',action='store_true');mode.add_argument('--stage-only',action='store_true');mode.add_argument('--publish',action='store_true')
         cli.add_argument('--release',type=Path,help='Verify/publish an existing immutable local release without signing again')
+        cli.add_argument('--preserve-android',action='store_true',help='Under the publication lock, refuse if the current Android descriptor differs; automatic with --reuse-android-from')
         cli.add_argument('--ssh-target',type=ssh_target);cli.add_argument('--ssh-port',type=int,default=22)
         cli.add_argument('--ssh-key',type=Path);cli.add_argument('--remote-root',type=remote_root,default='/var/lib/supermono-updates/stable')
     return cli
@@ -311,9 +355,10 @@ def main(publishing=False):
     if publishing and args.ssh_target and not(args.build_only or args.stage_only or args.publish):raise ValueError('Select --build-only, --stage-only or --publish explicitly')
     if publishing and args.release:
         if args.revision:raise ValueError('--release and --revision cannot be combined')
+        if args.reuse_android_from:raise ValueError('--release and --reuse-android-from cannot be combined')
         directory=args.release.resolve();verify_local(directory,json.loads((ROOT/'src/supermonoagent/static/update-trust.json').read_text()),args.openssl)
-    else:directory=package(args.output,revision=args.revision,private_key=args.private_key,key_id=args.key_id,openssl=args.openssl,feed=args.feed,lifetime_days=args.lifetime_days)
+    else:directory=package(args.output,revision=args.revision,private_key=args.private_key,key_id=args.key_id,openssl=args.openssl,feed=args.feed,lifetime_days=args.lifetime_days,reuse_android_from=args.reuse_android_from)
     report={'local_release':str(directory),'published':False}
     if publishing and args.ssh_target and not args.build_only:
-        report.update(publish(directory,target=args.ssh_target,port=args.ssh_port,key=args.ssh_key,remote=args.remote_root,openssl=args.openssl,stage_only=args.stage_only));report['published']=not args.stage_only
+        report.update(publish(directory,target=args.ssh_target,port=args.ssh_port,key=args.ssh_key,remote=args.remote_root,openssl=args.openssl,stage_only=args.stage_only,preserve_android=args.preserve_android or args.reuse_android_from is not None));report['published']=not args.stage_only
     print(json.dumps(report,ensure_ascii=False))
