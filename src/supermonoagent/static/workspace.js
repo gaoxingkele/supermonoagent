@@ -1016,7 +1016,7 @@
   const sidebarObserver=new ResizeObserver(()=>{if(!$('app').classList.contains('sidebar-hidden')&&!mobile())$('app').style.gridTemplateColumns=$('sidebar').getBoundingClientRect().width+'px minmax(0,1fr)';});sidebarObserver.observe($('sidebar'));
   $('ctrl-key').onclick=()=>{setCtrl(!ctrl);panes.get(active)?.term.focus();};
   const keys={escape:'\x1b',tab:'\t',up:'\x1b[A',down:'\x1b[B',left:'\x1b[D',right:'\x1b[C'};
-  for(const b of document.querySelectorAll('[data-key]')){b.onpointerdown=e=>e.preventDefault();b.onclick=()=>{input(active,keys[b.dataset.key]);panes.get(active)?.term.focus();};}
+  for(const b of document.querySelectorAll('[data-key]')){b.onpointerdown=e=>e.preventDefault();b.onclick=()=>{const term=panes.get(active)?.term;input(active,C.cursorKey?.(term,b.dataset.key)||keys[b.dataset.key]);term?.focus();};}
   addEventListener('resize',()=>{if(mobile())$('app').style.gridTemplateColumns='';renderLayout();});
   addEventListener('keydown',e=>{if(e.ctrlKey&&e.altKey&&e.key.toLowerCase()==='n'){e.preventDefault();newSession();}if(e.key==='Escape')$('app').classList.remove('mobile-sidebar');});
   function relayURL(value){return C.socketURL(value,location.origin);}

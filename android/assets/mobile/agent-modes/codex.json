@@ -44,6 +44,36 @@
       "pattern": "^\\s*[›>]\\s",
       "flags": "iu",
       "color": "#ffe0a8"
+    },
+    {
+      "pattern": "\"[^\"\\n]+\"|'[^'\\n]+'|“[^”\\n]+”|‘[^’\\n]+’",
+      "flags": "gu",
+      "color": "#b2efbd"
+    },
+    {
+      "pattern": "(?:错误|失败|异常|警告)|\\b(?:Error|Exception|FAIL|FAILED|Warning)\\b",
+      "flags": "giu",
+      "color": "#ef8d98"
+    },
+    {
+      "pattern": "[\\p{L}\\p{N}_./\\\\:-]+\\.(?:py|js|jsx|ts|tsx|css|html|json|md|exe|ps1|sh|yaml|yml|toml|java|go|rs|cpp|h|tex|bib|pdf|docx|xlsx|csv|txt)(?::\\d+)?",
+      "flags": "giu",
+      "color": "#ffe0a8"
+    },
+    {
+      "pattern": "`[^`\\n]+`|\\b[A-Za-z_][\\w]*\\(\\)",
+      "flags": "gu",
+      "color": "#dbc4ff"
+    },
+    {
+      "pattern": "\\b\\d+(?:\\.\\d+)?(?:\\s?(?:KiB|MiB|ms|tokens|字节))?",
+      "flags": "gu",
+      "color": "#dbc4ff"
+    },
+    {
+      "pattern": "^#{1,6}[ \\t]+",
+      "flags": "gu",
+      "color": "#94bcea"
     }
   ]
 }

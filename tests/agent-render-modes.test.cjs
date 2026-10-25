@@ -61,7 +61,7 @@ test('invalid and oversized profiles fail closed before rendering',()=>{
 
 test('highlight work is bounded for oversized grids and combining-cell content',()=>{
   let reads=0;
-  const cell={getWidth:()=>1,getChars:()=> 'a',isFgDefault:()=>true,isBgDefault:()=>true,isInverse:()=>false,isInvisible:()=>false};
+  const cell={getWidth:()=>1,getChars:()=> 'a',isFgDefault:()=>true,isBgDefault:()=>true,isInverse:()=>false,isInvisible:()=>false,isDim:()=>false};
   C.highlightSpans({getCell(){reads++;return cell;}},100000,profile('codex'));
   assert.equal(reads,500);
   assert.deepEqual(C.highlightSpans({getCell(){return {...cell,getChars:()=> 'a'.repeat(4097)};}},80),[]);
@@ -83,6 +83,62 @@ test('plain cells receive profile colors while native ANSI and Unicode stay inta
     assert.equal(buffer.getLine(0).translateToString(true),'中文😀 app.py 42 "text"');
     assert.equal(buffer.getLine(1).getCell(0).getFgColor(),1);
     assert.equal(buffer.getLine(0).getCell(7).isFgDefault(),true);
+  }finally{term.dispose();}
+});
+
+test('CLI faint ghost suggestions retain native styling with the cursor before them',async()=>{
+  const term=new Terminal({cols:80,rows:4,allowProposedApi:true});
+  const suggestion='src/app.py 42 "next"';
+  try{
+    await write(term,'> \x1b[2m'+suggestion+'\x1b[0m\x1b['+suggestion.length+'D');
+    const buffer=term.buffer.active,line=buffer.getLine(0),cell=line.getCell(2);
+    assert.equal(!!cell.isDim(),true);assert.equal(cell.isFgDefault(),true);assert.equal(buffer.cursorX,2);
+    for(const p of [C.commonAgentProfile,...C.agentProfiles.map(p=>profile(p.id))]){
+      assert.deepEqual(C.highlightSpans(line,term.cols,p),[],p.id+' must not recolor native faint text');
+    }
+    assert.equal(line.translateToString(true),'> '+suggestion);assert.equal(buffer.cursorX,2);
+    assert.equal(!!line.getCell(2).isDim(),true);
+  }finally{term.dispose();}
+});
+
+test('explicit ANSI90/RGB gray suggestions remain untouched; ordinary white still highlights',async()=>{
+  const term=new Terminal({cols:80,rows:5,allowProposedApi:true}),suggestion='src/app.py 42 "next"';
+  try{
+    for(const sgr of ['90','38;2;96;96;96','2;38;2;160;160;160'])await write(term,'> \x1b['+sgr+'m'+suggestion+'\x1b[0m\r\n');
+    await write(term,'> '+suggestion+'\x1b['+suggestion.length+'D');
+    const b=term.buffer.active;
+    assert.equal(b.cursorX,2);
+    for(const p of [C.commonAgentProfile,...C.agentProfiles.map(p=>profile(p.id))]){
+      for(let y=0;y<3;y++)assert.deepEqual(C.highlightSpans(b.getLine(y),term.cols,p),[]);
+      assert.ok(C.highlightSpans(b.getLine(3),term.cols,p).length>0,'plain white is not inferred to be a suggestion');
+    }
+    assert.equal(b.getLine(0).getCell(2).getFgColor(),8);
+    assert.equal(b.getLine(1).getCell(2).getFgColor(),0x606060);
+    assert.equal(b.getLine(2).getCell(2).getFgColor(),0xa0a0a0);
+    assert.equal(!!b.getLine(2).getCell(2).isDim(),true);
+  }finally{term.dispose();}
+});
+
+test('cursorKey follows real terminal DECCKM without touching Chinese ghost text or input filtering',async()=>{
+  const term=new Terminal({cols:80,rows:4,allowProposedApi:true}),suggestion='继续完善接口 src/app.py 42';
+  const expected={up:'A',down:'B',left:'D',right:'C'};
+  try{
+    await write(term,'> \x1b[2m'+suggestion+'\x1b[0m');
+    await write(term,'\x1b['+(term.buffer.active.cursorX-2)+'D');
+    assert.equal(term.buffer.active.cursorX,2);
+    for(const [control,prefix,application] of [['','[',false],['\x1b[?1h','O',true],['\x1b[?1l','[',false]]){
+      if(control)await write(term,control);
+      assert.equal(term.modes.applicationCursorKeysMode,application);
+      for(const [direction,letter] of Object.entries(expected)){
+        const key=C.cursorKey(term,direction);assert.equal(key,'\x1b'+prefix+letter);assert.equal(C.terminalInput(key),key);
+      }
+      assert.equal(term.buffer.active.cursorX,2);assert.equal(term.buffer.active.getLine(0).translateToString(true),'> '+suggestion);
+      assert.equal(!!term.buffer.active.getLine(0).getCell(2).isDim(),true);
+    }
+    assert.equal(C.cursorKey(undefined,'right'),'\x1b[C');
+    for(const bad of ['end','ArrowRight','constructor','toString','__proto__','',null,{},3])assert.equal(C.cursorKey(term,bad),'');
+    assert.equal(C.terminalInput('普通文本 plain text'),'普通文本 plain text');
+    assert.deepEqual(C.highlightSpans(term.buffer.active.getLine(0),term.cols,profile('claude-code')),[]);
   }finally{term.dispose();}
 });
 

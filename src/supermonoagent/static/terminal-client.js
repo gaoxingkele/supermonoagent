@@ -87,14 +87,15 @@
       if(text.length+chars.length>4096)return [];
       for(let i=0;i<chars.length;i++)columns[text.length+i]=x;
       text+=chars;columns[text.length]=x+width;
-      const eligible=cell.isFgDefault()&&cell.isBgDefault()&&!cell.isInverse()&&!cell.isInvisible();
+      const eligible=cell.isFgDefault()&&cell.isBgDefault()&&!cell.isInverse()&&!cell.isInvisible()&&!cell.isDim();
       for(let i=0;i<width;i++)plain[x+i]=eligible;
     }
     const spans=[];
     const occupied=[];
     for(const {expression,color} of compiledProfiles.get(profile))for(const match of text.matchAll(expression)){
       const start=columns[match.index],end=columns[match.index+match[0].length];
-      // Split around explicitly styled cells; never replace application colors.
+      // Faint text is application styling too (for example CLI suggestions).
+      // Split around it and explicit colors instead of replacing either.
       let run=start;
       while(run<end){while(run<end&&(!plain[run]||occupied[run]))run++;let stop=run;while(stop<end&&plain[stop]&&!occupied[stop])stop++;
         if(stop>run){spans.push({x:run,width:stop-run,foregroundColor:color});for(let x=run;x<stop;x++)occupied[x]=true;}run=stop;}
@@ -163,6 +164,11 @@
     if(text.startsWith('\x1b[200~'))return text;
     return text.replace(/\x1b\[(?:[?>]?[0-9;]*c|[0-9]+;[0-9]+R|[0-9]+n)/g,'')
       .replace(/\x1b\](?:(?:10|11|12);rgb:[0-9a-f]{1,4}\/[0-9a-f]{1,4}\/[0-9a-f]{1,4}|4;\d+;rgb:[0-9a-f]{1,4}\/[0-9a-f]{1,4}\/[0-9a-f]{1,4})(?:\x07|\x1b\\)/gi,'');
+  }
+  function cursorKey(term,direction){
+    const codes={up:'A',down:'B',left:'D',right:'C'};
+    if(typeof direction!=='string'||!Object.prototype.hasOwnProperty.call(codes,direction))return '';
+    return '\x1b'+(term?.modes?.applicationCursorKeysMode?'O':'[')+codes[direction];
   }
   function snapshotBytes(bytes, session, preservesStyle=false) {
     if(preservesStyle)return bytes;
@@ -235,7 +241,7 @@
     url.search = ''; url.hash = '';
     return url.toString();
   }
-  const api = {agentProfiles,commonAgentProfile,validateAgentProfile,loadAgentProfile,agentModeFromSession,highlightSpans,createHighlighter,pack, unpack, targetFrame, sessionPayload, terminalInput, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,
+  const api = {agentProfiles,commonAgentProfile,validateAgentProfile,loadAgentProfile,agentModeFromSession,highlightSpans,createHighlighter,pack, unpack, targetFrame, sessionPayload, terminalInput, cursorKey, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,
     retryDelay: attempt => Math.min(15000, 500 * 2 ** Math.min(10, attempt)),
     rendererName: name => ['auto', 'dom', 'webgl'].includes(name) ? name : 'auto'};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
