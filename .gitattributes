@@ -2,3 +2,6 @@
 dist/** -text -diff
 # Installer bootstrap hashes are part of the signed catalog.
 scripts/windows-installer/** -text
+# Linux service templates remain deployable from Windows checkouts.
+deploy/mylib/** text eol=lf
+requirements-mylib-mcp.txt text eol=lf

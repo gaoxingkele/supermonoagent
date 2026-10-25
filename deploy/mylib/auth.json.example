@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "tokens": [
+    {
+      "sha256": "REPLACE_WITH_SHA256_OF_PRIVATE_READ_TOKEN",
+      "scopes": ["metadata:read"]
+    },
+    {
+      "sha256": "REPLACE_WITH_SHA256_OF_PRIVATE_HOOK_TOKEN",
+      "scopes": ["metadata:read", "signals:append"]
+    }
+  ]
+}

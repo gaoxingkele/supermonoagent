@@ -1,0 +1,14 @@
+# Insert only inside the existing HTTPS server, after checking no exact route exists.
+# Validate with nginx -t before a graceful reload; never restart the terminal relay.
+location = /mylib/mcp {
+    client_max_body_size 128k;
+    proxy_pass http://127.0.0.1:8821;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header Authorization $http_authorization;
+    proxy_set_header Connection "";
+    proxy_buffering off;
+    proxy_read_timeout 25s;
+    access_log off;
+}

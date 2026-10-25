@@ -1,0 +1,30 @@
+[Unit]
+Description=Synchronize trusted mylib revisions and review candidates
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=supermono-mylib
+Group=supermono-mylib
+WorkingDirectory=/opt/supermono-mylib/app
+Environment=HOME=/var/lib/supermono-mylib
+Environment=GIT_CONFIG_NOSYSTEM=1
+Environment=GIT_CONFIG_GLOBAL=/dev/null
+Environment=GIT_TERMINAL_PROMPT=0
+Environment=LD_LIBRARY_PATH=/opt/supermono-mylib/runtime/lib
+Environment=PYTHONNOUSERSITE=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUTF8=1
+ExecStart=/opt/supermono-mylib/venv/bin/python -m supermonoagent.mylib_sync --config /etc/supermono-mylib/sync.json --once
+TimeoutStartSec=1200
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/supermono-mylib/cache /var/lib/supermono-mylib/store /var/lib/supermono-mylib/review
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+MemoryMax=1G
+CPUQuota=50%

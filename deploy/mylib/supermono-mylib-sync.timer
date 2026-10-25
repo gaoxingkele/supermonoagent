@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically synchronize and review the shared mylib
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+RandomizedDelaySec=20s
+Persistent=true
+Unit=supermono-mylib-sync.service
+
+[Install]
+WantedBy=timers.target

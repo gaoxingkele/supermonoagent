@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "source_url": "https://github.com/gaoxingkele/mylib.git",
+  "ref": "refs/heads/main",
+  "cache_root": "/var/lib/supermono-mylib/cache",
+  "store_root": "/var/lib/supermono-mylib/store",
+  "submodules": {
+    "system-one-adapter-python": "https://github.com/typesafe-ai/system-one-adapter-python.git",
+    "typesafe-sdk-js": "https://github.com/typesafe-ai/typesafe-sdk-js.git",
+    "typesafe-sdk-python": "https://github.com/typesafe-ai/typesafe-sdk-python.git",
+    "typesafe-skills": "https://github.com/typesafe-ai/skills.git"
+  },
+  "command_timeout": 120,
+  "total_timeout": 900,
+  "min_free_bytes": 1073741824,
+  "max_cache_bytes": 4294967296,
+  "review": {
+    "state_root": "/var/lib/supermono-mylib/review",
+    "engine_root": "/opt/supermono-mylib/engine/78c7e3b530dd89a8800f0ede4218df42b2c64b58"
+  }
+}
