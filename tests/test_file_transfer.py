@@ -41,6 +41,29 @@ def test_empty_file_and_duplicate_names_do_not_overwrite(tmp_path):
     assert second.read_bytes() == b'different'
 
 
+@pytest.mark.parametrize('racing', [False, True])
+def test_strict_name_never_writes_alias_or_removes_existing_target(tmp_path, monkeypatch, racing):
+    import os
+    target = tmp_path / 'document.pdf'
+    store = TransferStore(tmp_path)
+    data = b'new staged bytes'
+    transfer = start(store, data)
+    store.append('owner', transfer, 0, data)
+    if racing:
+        original = os.link
+        def create_competing_file(source, destination):
+            Path(destination).write_bytes(b'existing user data')
+            return original(source, destination)
+        monkeypatch.setattr(os, 'link', create_competing_file)
+    else:
+        target.write_bytes(b'existing user data')
+    with pytest.raises(ValueError, match='already exists'):
+        store.finish('owner', transfer, strict_name=True)
+    assert target.read_bytes() == b'existing user data'
+    assert sorted(path.name for path in tmp_path.iterdir()) == ['.supermono-partials', 'document.pdf']
+    assert not list((tmp_path / '.supermono-partials').iterdir())
+
+
 @pytest.mark.parametrize('name', ['../a', 'a/b', 'a\\b', 'C:a', 'a:stream', 'CON',
     'con.txt', 'COM1.pdf', 'LPT9', 'NUL', 'a.', 'a ', '..', '', 'a\x00b', 'a?b',
     'a*b', 'a<b', 'a>b', 'a|b', 'a"b', 'COM¹.txt', 'CONIN$', 'CONOUT$', 'CLOCK$'])

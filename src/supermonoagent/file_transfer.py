@@ -138,7 +138,9 @@ class TransferStore:
             transfer.received += len(data)
             return transfer.received
 
-    def finish(self, owner, transfer_id, can_publish=None):
+    def finish(self, owner, transfer_id, can_publish=None, *, strict_name=False):
+        if type(strict_name) is not bool:
+            raise ValueError('Invalid strict filename policy')
         with self._lock:
             transfer = self._lookup(owner, transfer_id)
             self._check_directories()
@@ -166,6 +168,8 @@ class TransferStore:
                     try:
                         os.link(transfer.path, target)
                     except FileExistsError:
+                        if strict_name:
+                            raise ValueError('Target file already exists') from None
                         continue
                     break
                 else:
