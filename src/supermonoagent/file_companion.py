@@ -373,6 +373,37 @@ class FileCompanion:
         self._db = None
         self._lease = None
         self.progress = {}
+        self.status_id = ''
+        self._status_state = 'connecting'
+        self._self_birth = None
+        self._status_lock = threading.Lock()
+
+    def _write_status(self, state=None):
+        with self._status_lock:
+            self._store_status(state)
+
+    def _store_status(self, state=None):
+        _directory(self.state_dir, required=True)
+        value = state or self._status_state
+        if value == 'online' and not self.inspector.valid.is_set():
+            value = 'parent_unavailable'
+        body = {'schema': 1, 'role': 'file-companion', 'protocol': PROTOCOL,
+                'pid': os.getpid(), 'process_start': self._self_birth,
+                'backend': self.backend, 'broker_url': self.broker_url, 'room': self.room,
+                'status_id': self.status_id, 'state': value, 'updated_at': time.time()}
+        target = self.state_dir/'status.json'
+        if _present(target):
+            info = target.lstat()
+            if not stat.S_ISREG(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                raise CompanionError('invalid_status')
+        temporary = self.state_dir/('.status-'+secrets.token_hex(8)+'.tmp')
+        try:
+            fd = os.open(temporary, os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf8') as stream:
+                json.dump(body, stream, separators=(',', ':'));stream.flush();os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _initialize(self):
         _private_state(self.state_dir)
@@ -687,6 +718,7 @@ class FileCompanion:
 
     async def _deliver(self, job, generation):
         store = transfer = None
+        failure = None
         file_id = job.get('file_id') if isinstance(job, dict) else None
         try:
             job = self._job(job)
@@ -747,12 +779,7 @@ class FileCompanion:
                     'target_changed', 'target_unavailable', 'owner_unverified', 'saved_file_changed',
                     'target_conflict', 'invalid_download_ticket', 'invalid_download_response', 'journal_mismatch'}:
                 code = str(error)
-            self._progress(file_id, {'state': 'failed', 'error': code})
-            if isinstance(job, dict) and isinstance(job.get('session_id'), str) and generation == self._generation:
-                try:
-                    await self._request('delivery.fail', job['session_id'], {'file_id': file_id, 'error': code}, generation)
-                except (OSError, ValueError, TimeoutError, ConnectionClosed):
-                    pass
+            failure = code
         finally:
             self._abort_http(file_id)
             async def cleanup():
@@ -774,8 +801,19 @@ class FileCompanion:
                 except asyncio.CancelledError:
                     cancelled = True
             cleanup_task.result()
-            self._deliveries.discard(file_id)
-            self._pump()
+            try:
+                # Terminal failure is observable remotely. Publish it only after
+                # the owned HTTP stream and receiver partial have been retired.
+                if failure is not None and not cancelled:
+                    self._progress(file_id, {'state': 'failed', 'error': failure})
+                    if isinstance(job, dict) and isinstance(job.get('session_id'), str) and generation == self._generation:
+                        try:
+                            await self._request('delivery.fail', job['session_id'], {'file_id': file_id, 'error': failure}, generation)
+                        except (OSError, ValueError, TimeoutError, ConnectionClosed):
+                            pass
+            finally:
+                self._deliveries.discard(file_id)
+                self._pump()
             if cancelled:
                 raise asyncio.CancelledError
 
@@ -811,6 +849,13 @@ class FileCompanion:
 
     async def _run(self, stop_event=None):
         self.identity = await self.io(self._initialize)
+        self._self_birth = await self.io(_process_birth, os.getpid())
+        async def heartbeat():
+            while not self._closed:
+                try: await self.io(self._write_status)
+                except (OSError, ValueError): pass
+                await asyncio.sleep(1)
+        status_writer = asyncio.create_task(heartbeat())
         watcher = asyncio.create_task(self.inspector.run())
         async def wait_stop():
             while not self._closed:
@@ -822,6 +867,7 @@ class FileCompanion:
         try:
             while not self._closed and not (stop_event and stop_event.is_set()):
                 try:
+                    self._status_state = 'connecting'
                     while not self.inspector.valid.is_set() and not self._closed:
                         await asyncio.sleep(.025)
                     if self._closed:
@@ -841,6 +887,7 @@ class FileCompanion:
                         ready = _json(await asyncio.wait_for(ws.recv(), 2))
                         if not isinstance(ready, dict) or ready.get('type') != 'ready' or ready.get('role') != 'host' or ready.get('room') != self.room:
                             raise CompanionError('broker_rejected')
+                        self._status_state = 'online'
                         async for raw in ws:
                             if not isinstance(raw, str) or len(raw.encode()) > MAX_FRAME:
                                 raise CompanionError('invalid_frame')
@@ -866,8 +913,9 @@ class FileCompanion:
                                         raise CompanionError('delivery_queue_full')
                                     self._queued[job['file_id']] = (job, generation)
                                     self._pump()
-                except (OSError, ValueError, TimeoutError, WebSocketException):
-                    pass
+                except (OSError, ValueError, TimeoutError, WebSocketException) as error:
+                    frame = getattr(error, 'rcvd', None)
+                    self._status_state = 'authentication_failed' if frame is not None and frame.reason == 'authentication_failed' else 'broker_unavailable'
                 finally:
                     self._generation += 1
                     self._abort_http()
@@ -884,6 +932,10 @@ class FileCompanion:
                 if not self._closed:
                     await asyncio.sleep(.25)
         finally:
+            status_writer.cancel()
+            await asyncio.gather(status_writer, return_exceptions=True)
+            try: await self.io(self._write_status, 'stopped')
+            except (OSError, ValueError): pass
             stopper.cancel()
             await asyncio.gather(stopper, return_exceptions=True)
             await self.inspector.close()
@@ -908,6 +960,7 @@ def main():
     parser.add_argument('--broker-token-file', type=Path)
     parser.add_argument('--enrollment-key-file', required=True, type=Path)
     parser.add_argument('--download-mode', choices=('http', 'ws'), default='http')
+    parser.add_argument('--status-id', default='')
     parser.add_argument('--room')
     args = parser.parse_args()
     room = args.room
@@ -919,6 +972,9 @@ def main():
     companion = FileCompanion(args.backend, args.broker, room, args.state_dir,
         args.owner_token_file, args.enrollment_key_file, broker_token_file=args.broker_token_file,
         download_mode=args.download_mode)
+    if args.status_id and not re.fullmatch('[a-f0-9]{32}', args.status_id):
+        parser.error('Invalid status identity')
+    companion.status_id = args.status_id
     try:
         asyncio.run(companion.run())
     except (ValueError, OSError, sqlite3.Error, KeyboardInterrupt):

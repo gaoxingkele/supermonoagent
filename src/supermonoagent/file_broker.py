@@ -45,6 +45,13 @@ _ID = re.compile(r'[A-Za-z0-9_-]{1,64}\Z')
 _HEX = re.compile(r'[a-f0-9]{64}\Z')
 
 
+def _stream_sha256(source):
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: source.read(1024 * 1024), b''):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
 class BrokerError(ValueError):
     """A fixed, public error code, never an OS error or credential."""
 
@@ -297,7 +304,7 @@ class Broker:
     @staticmethod
     def _hash(path):
         with path.open('rb') as source:
-            return hashlib.file_digest(source, 'sha256').hexdigest()
+            return _stream_sha256(source)
 
     def _job_path(self, row):
         _validate_name(row['name'])
@@ -695,7 +702,7 @@ class Broker:
         # Validate immutable stage bytes once before authorizing a new stream.
         with path.open('rb') as source:
             before = os.fstat(source.fileno())
-            digest = hashlib.file_digest(source, 'sha256').hexdigest()
+            digest = _stream_sha256(source)
             info = os.fstat(source.fileno())
         if (digest != row['sha256'] or before.st_size != row['size']
                 or before.st_mtime_ns != info.st_mtime_ns or before.st_size != info.st_size):

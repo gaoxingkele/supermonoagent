@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
 import zipfile
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -39,12 +40,53 @@ def _signed(payload,private_key):
     return _json({'schema':1,'key_id':key_id,'payload':base64.b64encode(raw).decode(),'signature':base64.b64encode(result.stdout).decode()})
 
 
-def build(runtime,output,*,templates=None,token_file=None,private_key=None):
+def _unique(pairs):
+    result={}
+    for key,value in pairs:
+        if key in result:raise ValueError('Invalid file exchange profile')
+        result[key]=value
+    return result
+
+
+def _file_exchange_profile(value):
+    try:
+        if isinstance(value,dict):profile=dict(value)
+        else:
+            with Path(value).open('rb') as source:raw=source.read(32769)
+            if len(raw)>32768:raise ValueError()
+            profile=json.loads(raw.decode('utf-8-sig'),object_pairs_hook=_unique)
+        required={'schema','broker_url','enrollment_key'}
+        if (not isinstance(profile,dict) or not required<=set(profile) or set(profile)-required-{'broker_token'}
+                or type(profile['schema']) is not int or profile['schema']!=1):raise ValueError()
+        url=profile['broker_url']
+        if (not isinstance(url,str) or not 1<=len(url)<=2048 or not url.isascii()
+                or any(ord(c)<33 or ord(c)>126 for c in url) or '%' in url or '\\' in url):raise ValueError()
+        parsed=urlsplit(url)
+        if (parsed.scheme!='wss' or not parsed.hostname or parsed.username or parsed.password
+                or parsed.path!='/file/ws' or parsed.query or parsed.fragment
+                or parsed.port is not None and not 1<=parsed.port<=65535):raise ValueError()
+        key=profile['enrollment_key']
+        if not isinstance(key,str) or not 32<=len(key)<=8192 or any(not 33<=ord(c)<=126 for c in key):raise ValueError()
+        if 'broker_token' in profile:
+            token=profile['broker_token']
+            if not isinstance(token,str) or not 1<=len(token)<=4096 or any(not 33<=ord(c)<=126 for c in token):raise ValueError()
+        return profile
+    except (OSError,TypeError,ValueError,UnicodeError):
+        raise ValueError('Invalid file exchange profile') from None
+
+
+def build(runtime,output,*,templates=None,token_file=None,private_key=None,file_exchange_profile=None):
     runtime=Path(runtime).resolve();output=Path(output).resolve()
     templates=Path(templates or ROOT/'scripts/windows-installer').resolve()
     private_key=Path(private_key or ROOT/'.omx/update-signing/development-private.pem').resolve()
+    if file_exchange_profile is not None and token_file is None:
+        raise ValueError('File exchange configuration requires a private personalized installer')
     if token_file is not None and not output.is_relative_to((ROOT/'.omx').resolve()):
         raise ValueError('Personal installer archives must remain under the private .omx directory')
+    if (file_exchange_profile is not None and not isinstance(file_exchange_profile,dict)
+            and Path(file_exchange_profile).resolve().is_relative_to(runtime)):
+        raise ValueError('Private configuration cannot enter an installer runtime')
+    exchange=_file_exchange_profile(file_exchange_profile) if file_exchange_profile is not None else None
     version=(runtime/'version.txt').read_text(encoding='utf-8-sig').strip()
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',version):raise ValueError('Invalid numeric installer version')
     manifest=json.loads((runtime/'build-manifest.json').read_text(encoding='utf-8-sig'))
@@ -56,7 +98,7 @@ def build(runtime,output,*,templates=None,token_file=None,private_key=None):
         if path.is_symlink() or getattr(path,'is_junction',lambda:False)():raise ValueError('Installer runtime cannot contain links')
         if not path.is_file():continue
         name=path.relative_to(runtime).as_posix()
-        if (path.name.lower() in PRIVATE_NAMES or any(part.lower() in {'.omx','trial-state','logs','__pycache__'} for part in path.relative_to(runtime).parts)
+        if (path.name.lower() in PRIVATE_NAMES or any(part.lower() in {'.omx','trial-state','logs','__pycache__','file-exchange'} for part in path.relative_to(runtime).parts)
                 or path.suffix.lower() in {'.key','.pfx','.keystore','.jks','.log','.lock'} or 'private' in path.name.lower()):
             raise ValueError('Private configuration or runtime state cannot enter an installer')
         if name.casefold() in seen:raise ValueError('Installer contains case-colliding paths')
@@ -70,7 +112,10 @@ def build(runtime,output,*,templates=None,token_file=None,private_key=None):
     if token_file is not None:
         token=read_default_token(token_file)
         if not token:raise ValueError('Private default Token is unavailable')
-        defaults=_json({'relay':'wss://117.50.48.22/ws','token':token,'room_mode':'computer-name'})
+        profile={'relay':'wss://117.50.48.22/ws','token':token,'room_mode':'computer-name'}
+        if exchange is not None:profile['file_exchange']=exchange
+        defaults=_json(profile)
+        if len(defaults)>65536:raise ValueError('Private defaults exceed supported bounds')
         files['defaults.private.json']=defaults;defaults_hash=digest(defaults)
     payload={'schema':1,'format':'supermono-windows-install-v1','version':version,'arch':'x64','entry':entry,
              'relay':'wss://117.50.48.22/ws','files':catalog,'bootstrap_files':bootstrap,'defaults_private_sha256':defaults_hash}
@@ -101,9 +146,11 @@ def main():
     cli.add_argument('--runtime',type=Path,required=True)
     cli.add_argument('--output',type=Path,required=True)
     cli.add_argument('--token-file',type=Path)
+    cli.add_argument('--file-exchange-profile',type=Path,help='Private enrollment profile; requires --token-file and private .omx output')
     cli.add_argument('--private-key',type=Path)
     args=cli.parse_args()
-    print(json.dumps(build(args.runtime,args.output,token_file=args.token_file,private_key=args.private_key)))
+    print(json.dumps(build(args.runtime,args.output,token_file=args.token_file,private_key=args.private_key,
+                           file_exchange_profile=args.file_exchange_profile)))
 
 
 if __name__=='__main__':main()

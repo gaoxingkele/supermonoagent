@@ -1,5 +1,12 @@
 # 修改 TODO
 
+## 2026-10-26：Windows 编辑框与文件交换 0.2.44
+
+- [x] 顶部编辑对话框、多行草稿、标准文本粘贴、多图片／文件队列、进度及回执已实现；独立 broker 已上线，编译版 helper 经真实公网／HTTPS 保存 PNG、PDF 至自有项目 tmp。完整专用安装包注入私有 profile，保留原 daemon／PTY。见 [使用与验证边界](windows-editor-0.2.44.md)。
+- [x] 修复缩放空白区点击未聚焦输入框；5 项 Cursor／焦点隔离测试通过。未放宽全部设备应答过滤。
+- [ ] 实际 `JINLONG3090 / IIA_Benchmark` Cursor caret／Ctrl+V 需更新后现场确认及启动命令／版本；只读快照不能证明该 TUI 根因已解决。接收机需完整专用安装及 GUI 重开，未远程强制安装到用户电脑。
+- 本轮只发布 Windows 完整包；并行 Android WIP 来源未知，保留未覆盖、未提交和未发布。共享 UI 频道保持 0.2.42。
+
 ## 2026-10-26：中央 mylib MCP 第一期已上线
 
 - [x] `https://117.50.48.22/mylib/mcp` 已提供标准 Streamable HTTP／Bearer 接口；实际公网 TLS 1.3、官方 SDK 初始化／8 工具／资源读取及拒绝无效权限均通过。未重启终端中继，未修改用户 CLI 全局配置。

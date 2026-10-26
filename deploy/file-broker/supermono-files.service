@@ -1,0 +1,30 @@
+[Unit]
+Description=SuperMono independent private file exchange broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=supermono-files
+Group=supermono-files
+WorkingDirectory=/opt/supermono-files/app
+Environment=LD_LIBRARY_PATH=/opt/supermono-mylib/runtime/lib
+Environment=PYTHONNOUSERSITE=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUTF8=1
+ExecStart=/opt/supermono-files/venv/bin/python -m supermonoagent.file_broker --root /var/lib/supermono-files/file --auth-file /etc/supermono-files/auth.json --host 127.0.0.1 --port 18819 --http-host 127.0.0.1 --http-port 18820 --http-workers 4
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/supermono-files
+CapabilityBoundingSet=
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

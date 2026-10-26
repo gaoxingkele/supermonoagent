@@ -45,7 +45,7 @@ def run(check, tmp_path):
 
 
 @asynccontextmanager
-async def browser_page(playwright, url='ws://127.0.0.1:8819/file/ws', *, enabled=True, token='owned-viewer-token'):
+async def browser_page(playwright, url='ws://127.0.0.1:8819/file/ws', *, enabled=True, token='owned-viewer-token', document_url=None):
     async with playwright.async_playwright() as runtime:
         browser = await runtime.chromium.launch(executable_path=str(EDGE), headless=True)
         page = await browser.new_page(viewport={'width': 1250, 'height': 850})
@@ -53,6 +53,8 @@ async def browser_page(playwright, url='ws://127.0.0.1:8819/file/ws', *, enabled
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.on('websocket', lambda socket: sockets.append(socket.url))
         try:
+            if document_url:
+                await page.goto(document_url)
             await page.set_content('''<!doctype html><html><head><meta charset="utf-8"></head><body>
               <div id="app"><header class="titlebar">Owned file workspace fixture</header><aside id="sidebar"></aside>
               <main><section id="stage">Fixture terminals</section><footer><span id="status">legacy cwd status</span>

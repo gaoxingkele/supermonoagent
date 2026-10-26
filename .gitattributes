@@ -4,4 +4,5 @@ dist/** -text -diff
 scripts/windows-installer/** -text
 # Linux service templates remain deployable from Windows checkouts.
 deploy/mylib/** text eol=lf
+deploy/file-broker/** text eol=lf
 requirements-mylib-mcp.txt text eol=lf

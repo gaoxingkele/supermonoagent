@@ -7,15 +7,16 @@ from .windows_clipboard import ClipboardFiles, has_clipboard_sources
 
 
 class DesktopFiles:
-    def __init__(self, window, url):
+    def __init__(self, window, url, *, file_config_provider=None):
         self._window, self._origin = window, urlsplit(url)
         self._files = ClipboardFiles()
+        self._file_config_provider = file_config_provider
         self._closed = threading.Event()
         self._thread = None
         self._page_generation = 0
         self._retire_thread = None
         self._script = (Path(__file__).parent / 'static' / 'clipboard-files.js').read_text(encoding='utf-8')
-        window.expose(self.clipboard_files, self.clipboard_chunk, self.clipboard_release, self.clipboard_has_files)
+        window.expose(self.clipboard_files, self.clipboard_chunk, self.clipboard_release, self.clipboard_has_files, self.file_exchange_config)
         window.events.loaded += self._loaded
         window.events.closed += self._close
 
@@ -39,6 +40,18 @@ class DesktopFiles:
         if self._closed.is_set() or generation != self._page_generation:
             self._files.close()
             raise ValueError('Clipboard page changed during snapshot')
+        return result
+
+    def file_exchange_config(self):
+        self._check()
+        generation = self._page_generation
+        from .file_companion_manager import public_config
+        value = self._file_config_provider() if self._file_config_provider is not None else {
+            'enabled': False, 'ready': False, 'reason': 'not_configured'}
+        result = public_config(value)
+        self._check()
+        if generation != self._page_generation:
+            raise ValueError('File exchange page changed during configuration')
         return result
 
     def clipboard_has_files(self):

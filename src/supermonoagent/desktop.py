@@ -268,6 +268,8 @@ def main(argv: list[str] | None = None, *, browser: bool = False) -> None:
     args = parser.parse_args(argv)
     try:
         url = connection_url(args, browser=browser)
+        file_backend = urlunsplit((urlsplit(url).scheme, urlsplit(url).netloc, '', '', ''))
+        file_owner_token = dict(parse_qsl(urlsplit(url).fragment)).get('token', '')
         if not args.url:
             from .frontend import local_page_url
             options = {}
@@ -314,8 +316,20 @@ def main(argv: list[str] | None = None, *, browser: bool = False) -> None:
                 preferences_path=assistant_state / 'assistant-preferences.json')
         except (OSError, ValueError):
             pass
+        file_provider = None
         try:
-            clipboard = DesktopFiles(window, url)
+            from .file_companion_manager import FileCompanionManager
+            file_state = Path(args.state_dir or os.environ.get('SUPERMONO_STATE_DIR') or Path.home() / '.supermonoagent')
+            try:
+                file_room = (file_state / 'relay-code').read_text(encoding='utf-8-sig').strip()
+            except OSError:
+                file_room = ''
+            file_manager = FileCompanionManager(file_state, file_backend, file_owner_token, file_room)
+            file_provider = file_manager.ensure_running
+        except (OSError, ValueError):
+            pass
+        try:
+            clipboard = DesktopFiles(window, url, file_config_provider=file_provider)
         except (OSError, ValueError):
             pass
     recovery = NativeUpdateRecovery(window, url) if not args.url and urlsplit(url).path.rstrip("/") == "/workspace" else None
@@ -328,7 +342,7 @@ def main(argv: list[str] | None = None, *, browser: bool = False) -> None:
                     recovery.start()
                 if not window.events.loaded.wait(25):
                     raise TimeoutError("WebView2 did not load the page")
-                state = window.run_js("({ready:document.readyState,workspace:!!document.querySelector('#app')})")
+                state = window.run_js("({ready:document.readyState,workspace:!!document.querySelector('#app'),composer:!!document.querySelector('#terminal-composer-open')})")
                 if isinstance(state, str):
                     state = json.loads(state)
                 if not isinstance(state, dict):

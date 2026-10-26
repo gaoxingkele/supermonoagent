@@ -1,4 +1,4 @@
-param([string]$Python = "", [string]$OutputDir = "")
+param([string]$Python = "", [string]$OutputDir = "", [string]$Version = "")
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
 New-Item -ItemType Directory -Force (Join-Path $repoRoot '.omx') | Out-Null
@@ -9,6 +9,7 @@ if (!$Python) { $Python = Join-Path $repoRoot '.venv/Scripts/python.exe' }
 if (!(Test-Path $Python)) { throw 'Create .venv and install .[desktop] plus pyinstaller before building.' }
 [xml]$releaseManifest = Get-Content -LiteralPath "$repoRoot/android/AndroidManifest.xml" -Raw
 $releaseVersion = $releaseManifest.manifest.GetAttribute('versionName', 'http://schemas.android.com/apk/res/android')
+if ($Version) { $releaseVersion = $Version }
 if ($releaseVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Android release version must be major.minor.patch.' }
 if (!$OutputDir) { $OutputDir = "dist/windows/$releaseVersion" }
 $dist = [IO.Path]::GetFullPath((Join-Path $repoRoot $OutputDir))
@@ -44,6 +45,8 @@ $buildArgs = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--con
     '--hidden-import', 'supermonoagent.frontend',
     '--hidden-import', 'supermonoagent.notification_bridge',
     '--hidden-import', 'supermonoagent.relay_bridge', '--hidden-import', 'supermonoagent.console_snapshot', '--hidden-import', 'supermonoagent.daemon_logs',
+    '--hidden-import', 'supermonoagent.file_companion_manager', '--hidden-import', 'supermonoagent.file_companion',
+    '--hidden-import', 'supermonoagent.file_broker', '--hidden-import', 'supermonoagent.file_workspaces', '--hidden-import', 'supermonoagent.file_transfer',
     '--hidden-import', 'supermonoagent.desktop', '--hidden-import', 'supermonoagent.microsoft',
     '--hidden-import', 'supermonoagent.native_attach', '--hidden-import', 'webview.platforms.winforms',
     '--hidden-import', 'webview.platforms.edgechromium', '--hidden-import', 'clr',

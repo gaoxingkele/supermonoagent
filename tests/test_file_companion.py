@@ -339,6 +339,52 @@ def test_mid_download_target_change_never_publishes(tmp_path, change):
     asyncio.run(exercise())
 
 
+def test_owner_failure_is_not_terminal_until_partial_cleanup_finishes(tmp_path):
+    async def exercise():
+        async with environment(tmp_path) as (_, url, parents, companions):
+            helper = companions[0]
+            ticket_entered, release_ticket = asyncio.Event(), asyncio.Event()
+            cleanup_entered, release_cleanup = threading.Event(), threading.Event()
+            original_request, original_begin = helper._request, helper._begin
+            async def ticket(action, session, data, generation):
+                result = await original_request(action, session, data, generation)
+                if action == 'download.ticket':
+                    ticket_entered.set(); await release_ticket.wait()
+                return result
+            def begin(*args):
+                store, transfer, saved_path = original_begin(*args)
+                cancel = store.cancel_owner
+                def controlled_cleanup(owner):
+                    cleanup_entered.set()
+                    assert release_cleanup.wait(5)
+                    return cancel(owner)
+                store.cancel_owner = controlled_cleanup
+                return store, transfer, saved_path
+            helper._request, helper._begin = ticket, begin
+            try:
+                async with client(url, 'A') as ws:
+                    queued = await upload(ws, await workspace(ws))
+                    await asyncio.wait_for(ticket_entered.wait(), 5)
+                    parents[0].owner = False; await parents[0].publish()
+                    await eventually(lambda: not helper.inspector.valid.is_set())
+                    release_ticket.set()
+                    await eventually(cleanup_entered.is_set)
+                    # A blocked real receiver cleanup makes the ordering observable.
+                    # No timing sleep and no eventual assertion after terminal failure.
+                    assert list(parents[0].project.rglob('*.part'))
+                    result = await request(ws, 'file.status', {'file_id': queued['file_id']})
+                    assert result['state'] not in {'failed', 'saved'}
+                    assert helper.progress[queued['file_id']]['state'] != 'failed'
+                    release_cleanup.set()
+                    result = await saved(ws, queued['file_id'])
+                    assert result['state'] == 'failed'
+                    assert not list(parents[0].project.rglob('*.part'))
+                    assert not list(parents[0].project.rglob('*.pdf'))
+            finally:
+                release_ticket.set();release_cleanup.set()
+    asyncio.run(exercise())
+
+
 def test_duplicate_delivery_revalidates_and_acks_without_copy(tmp_path):
     async def exercise():
         async with environment(tmp_path) as (broker, url, parents, companions):
@@ -582,7 +628,7 @@ def test_http_rejects_redirect_and_untrusted_path_and_closes_blocked_read(tmp_pa
                         assert (await saved(ws, queued['file_id']))['state'] == 'failed'
                     assert len(contacts) == (0 if fault == 'arbitrary_path' else 1)
                     assert not list(parents[0].project.rglob('*.pdf'))
-                    await eventually(lambda: not list(parents[0].project.rglob('*.part')))
+                    assert not list(parents[0].project.rglob('*.part'))
             finally:
                 release.set();server.shutdown();server.server_close();worker.join(timeout=2)
     asyncio.run(exercise())

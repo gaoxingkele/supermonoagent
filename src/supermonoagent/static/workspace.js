@@ -308,6 +308,7 @@
     pane.bindInput();
     term.textarea.addEventListener('compositionstart',()=>{pane.composing=true;});term.textarea.addEventListener('compositionend',()=>{pane.composing=false;pane.lastInputAt=performance.now();});
     el.addEventListener('pointerdown',()=>{if(livePane(pane))activate(sid,false);});
+    screen.addEventListener('pointerdown',event=>{if(event.target===screen&&livePane(pane)){event.preventDefault();activate(sid,false);term.focus();}});
     pane.bindObserver=()=>{
       pane.observer?.disconnect();const context=owner(pane.host);
       pane.observer=new ResizeObserver(()=>{if(validOwner(context)&&livePane(pane)){keepFollowing(pane);scheduleFit(pane);}});pane.observer.observe(screen);

@@ -18,6 +18,7 @@ MODES = {
     "relay-bridge": "supermonoagent.relay_bridge",
     "logs": "supermonoagent.daemon_logs",
     "console-snapshot": "supermonoagent.console_snapshot",
+    "file-companion": "supermonoagent.file_companion",
 }
 
 

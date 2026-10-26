@@ -32,6 +32,40 @@ function ConvertFrom-SmaJson([byte[]]$Bytes, [string]$Kind) {
     try { return ($script:SmaUtf8.GetString($Bytes) | ConvertFrom-Json -ErrorAction Stop) }
     catch { throw ($Kind + ' JSON is invalid.') }
 }
+function ConvertFrom-SmaStrictJson([byte[]]$Bytes, [string]$Kind) {
+    $value = ConvertFrom-SmaJson $Bytes $Kind
+    if ($value -isnot [pscustomobject]) { throw ($Kind + ' must be an object.') }
+    $text = $script:SmaUtf8.GetString($Bytes)
+    $objects = New-Object 'Collections.Generic.Stack[object]'
+    $count = 0
+    for ($index = 0; $index -lt $text.Length;) {
+        $character = $text[$index]
+        if ($character -eq '{') {
+            $keys = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+            $objects.Push($keys)
+            if ($objects.Count -gt 8) { throw ($Kind + ' is too deeply nested.') }
+        } elseif ($character -eq '}') { [void]$objects.Pop() }
+        elseif ($character -eq '"') {
+            $start = $index; $index++
+            while ($index -lt $text.Length) {
+                if ($text[$index] -eq '\') { $index += 2;continue }
+                if ($text[$index] -eq '"') { break }
+                $index++
+            }
+            $index++; $next = $index
+            while ($next -lt $text.Length -and [char]::IsWhiteSpace($text[$next])) { $next++ }
+            if ($next -lt $text.Length -and $text[$next] -eq ':') {
+                $count++
+                if (!$objects.Count -or $count -gt 128) { throw ($Kind + ' has too many fields.') }
+                $key = ConvertFrom-Json -InputObject $text.Substring($start, $index - $start) -ErrorAction Stop
+                if (!$objects.Peek().Add([string]$key)) { throw ($Kind + ' contains duplicate fields.') }
+            }
+            continue
+        }
+        $index++
+    }
+    return $value
+}
 function Assert-SmaKeys($Value, [string[]]$Keys, [string]$Kind) {
     if ($null -eq $Value -or $Value -isnot [pscustomobject]) { throw ($Kind + ' must be an object.') }
     $actual = @($Value.PSObject.Properties.Name)
@@ -83,6 +117,22 @@ function Test-SmaToken([string]$Value) {
     if (!$Value -or $Value.Length -gt 4096) { return $false }
     foreach ($character in $Value.ToCharArray()) { if ([char]::IsWhiteSpace($character) -or [char]::IsControl($character)) { return $false } }
     return $true
+}
+function Assert-SmaFileExchangeProfile($Value) {
+    $keys = @('schema','broker_url','enrollment_key')
+    if ($null -ne $Value -and $null -ne $Value.PSObject.Properties['broker_token']) { $keys += 'broker_token' }
+    Assert-SmaKeys $Value $keys 'File exchange profile'
+    if (($Value.schema -isnot [int] -and $Value.schema -isnot [long]) -or $Value.schema -ne 1 -or
+        $Value.broker_url -isnot [string] -or $Value.broker_url.Length -gt 2048 -or
+        $Value.broker_url -cmatch '[^\x21-\x7e]' -or $Value.broker_url.Contains('%') -or $Value.broker_url.Contains('\')) { throw 'File exchange profile is invalid.' }
+    Assert-SmaRelay $Value.broker_url
+    $uri = New-Object Uri($Value.broker_url)
+    if ($uri.AbsolutePath -cne '/file/ws') { throw 'File exchange profile is invalid.' }
+    if ($Value.enrollment_key -isnot [string] -or $Value.enrollment_key.Length -lt 32 -or $Value.enrollment_key.Length -gt 8192 -or
+        $Value.enrollment_key -cmatch '[^\x21-\x7e]') { throw 'File exchange profile is invalid.' }
+    if ($null -ne $Value.PSObject.Properties['broker_token']) {
+        if ($Value.broker_token -isnot [string] -or !(Test-SmaToken $Value.broker_token) -or $Value.broker_token -cmatch '[^\x21-\x7e]') { throw 'File exchange profile is invalid.' }
+    }
 }
 function Assert-SmaFile([string]$Path, $Record) {
     Assert-SmaKeys $Record @('size', 'sha256') 'File record'
@@ -150,11 +200,14 @@ function Read-SmaCatalog([string]$PackageRoot) {
     $profilePath = Join-Path $PackageRoot 'defaults.private.json'
     if ($null -ne $catalog.defaults_private_sha256) {
         if ($catalog.defaults_private_sha256 -isnot [string] -or $catalog.defaults_private_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Invalid private defaults digest.' }
-        $profileBytes = Read-SmaBytes $profilePath 32768
+        $profileBytes = Read-SmaBytes $profilePath 65536
         if ((Get-SmaHash $profileBytes) -cne $catalog.defaults_private_sha256) { throw 'Private defaults integrity validation failed.' }
-        $profile = ConvertFrom-SmaJson $profileBytes 'Private defaults'
-        Assert-SmaKeys $profile @('relay', 'token', 'room_mode') 'Private defaults'
+        $profile = ConvertFrom-SmaStrictJson $profileBytes 'Private defaults'
+        $privateKeys = @('relay', 'token', 'room_mode')
+        if ($null -ne $profile.PSObject.Properties['file_exchange']) { $privateKeys += 'file_exchange' }
+        Assert-SmaKeys $profile $privateKeys 'Private defaults'
         if ($profile.relay -cne $catalog.relay -or $profile.room_mode -cne 'computer-name' -or $profile.token -isnot [string] -or !(Test-SmaToken $profile.token)) { throw 'Private defaults are invalid.' }
+        if ($null -ne $profile.PSObject.Properties['file_exchange']) { Assert-SmaFileExchangeProfile $profile.file_exchange }
     } elseif (Test-Path -LiteralPath $profilePath) { throw 'Unsigned private defaults are not allowed.' }
     $allowed = @($bootstrapNames) + @('install-manifest.json', 'payload')
     if ($null -ne $profile) { $allowed += 'defaults.private.json' }
@@ -190,12 +243,62 @@ function New-SmaPrivateState([string]$Path) {
     $security.SetAccessRuleProtection($true, $false)
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
     $security.SetOwner($sid)
+    $security.SetOwner($sid)
     $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
     foreach ($identity in @($sid, (New-Object Security.Principal.SecurityIdentifier('S-1-5-18')))) {
         $rule = New-Object Security.AccessControl.FileSystemAccessRule($identity, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
         $security.AddAccessRule($rule)
     }
     [void][IO.Directory]::CreateDirectory($Path, $security)
+}
+function Assert-SmaPrivateAccess([string]$Path, [switch]$Directory) {
+    Assert-SmaNoLink $Path
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer -ne [bool]$Directory) { throw 'File exchange state has an invalid type.' }
+    $acl = Get-Acl -LiteralPath $Path
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if (!$acl.AreAccessRulesProtected -or $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $sid) { throw 'File exchange state permissions are unsafe; existing data was not replaced.' }
+    $own = $false; $system = $false
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
+        $identity = $rule.IdentityReference.Value
+        if ($identity -ceq $sid) { $own = $true }
+        elseif ($identity -ceq 'S-1-5-18') { $system = $true }
+        else { throw 'File exchange state permissions are unsafe; existing data was not replaced.' }
+    }
+    if (!$own -or !$system) { throw 'File exchange state permissions are unsafe; existing data was not replaced.' }
+}
+function Get-SmaFileExchangePlan([string]$State, $Profile) {
+    if ($null -eq $Profile -or $null -eq $Profile.PSObject.Properties['file_exchange']) { return $null }
+    $parent = Join-Path $State 'file-exchange'
+    $path = Join-Path $parent 'profile.json'
+    Assert-SmaNoLink $parent;Assert-SmaNoLink $path
+    if (Test-Path -LiteralPath $parent) { Assert-SmaPrivateAccess $parent -Directory }
+    if (Test-Path -LiteralPath $path) {
+        Assert-SmaPrivateAccess $path
+        $existing = ConvertFrom-SmaStrictJson (Read-SmaBytes $path 32768) 'Existing file exchange profile'
+        Assert-SmaFileExchangeProfile $existing
+        return @{ Existing = $true; Path = $path; Parent = $parent; Profile = $existing }
+    }
+    return @{ Existing = $false; Path = $path; Parent = $parent; Profile = $Profile.file_exchange }
+}
+function Initialize-SmaFileExchange($Plan) {
+    if ($null -eq $Plan -or $Plan.Existing) { return }
+    Assert-SmaNoLink $Plan.Parent
+    New-SmaPrivateState $Plan.Parent
+    Assert-SmaPrivateAccess $Plan.Parent -Directory
+    $temporary = Join-Path $Plan.Parent ('.profile-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        $json = $Plan.Profile | ConvertTo-Json -Compress -Depth 4
+        Write-SmaPrivateNew $temporary $json
+        Assert-SmaNoLink $Plan.Path
+        try { [IO.File]::Move($temporary, $Plan.Path) }
+        catch [IO.IOException] {
+            if (!(Test-Path -LiteralPath $Plan.Path)) { throw }
+            Assert-SmaPrivateAccess $Plan.Path
+            Assert-SmaFileExchangeProfile (ConvertFrom-SmaStrictJson (Read-SmaBytes $Plan.Path 32768) 'Existing file exchange profile')
+        }
+    } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
 }
 function Read-SmaToken([string]$Path) {
     try { $value = $script:SmaUtf8.GetString((Read-SmaBytes $Path 32768)).Trim([char]0xFEFF).Trim() }
@@ -277,6 +380,7 @@ function Invoke-SmaInstall {
         $oldCurrent = ConvertFrom-SmaJson (Read-SmaBytes $currentPath 16384) 'Existing current pointer'
         if ($oldCurrent.schema -ne 1 -or $oldCurrent.version -cnotmatch '^\d{1,6}\.\d{1,6}\.\d{1,6}$') { throw 'Existing current pointer is invalid; it was not replaced.' }
     }
+    $fileExchangePlan = Get-SmaFileExchangePlan $state $validated.Profile
     [void][IO.Directory]::CreateDirectory($root)
     $stage = Join-Path $root ('.install-stage-' + [Guid]::NewGuid().ToString('N'))
     $versionPath = Join-Path (Join-Path $root 'versions') $catalog.version
@@ -291,6 +395,7 @@ function Invoke-SmaInstall {
         Assert-SmaRuntime $stage $catalog.files
         if ($null -ne $oldConfiguration) { $tokenPath = $oldConfiguration.token_file }
         else { $tokenPath = Initialize-SmaToken $state $validated.Profile }
+        Initialize-SmaFileExchange $fileExchangePlan
         if (Test-Path -LiteralPath $versionPath) { Assert-SmaRuntime $versionPath $catalog.files -Installed }
         else {
             [void][IO.Directory]::CreateDirectory((Join-Path $root 'versions'))

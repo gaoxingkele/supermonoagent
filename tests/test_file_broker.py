@@ -556,7 +556,9 @@ def test_host_routed_errors_are_safe_codes_and_never_exception_text(tmp_path):
     asyncio.run(scenario())
 
 
-def test_http_ticket_stream_range_requires_header_and_is_not_a_public_alias(tmp_path, capsys):
+def test_http_ticket_stream_range_requires_header_and_is_not_a_public_alias(tmp_path, capsys, monkeypatch):
+    # The standalone relay runtime is Python 3.10, without file_digest.
+    monkeypatch.delattr(hashlib, 'file_digest', raising=False)
     async def scenario():
         import urllib.request
         import urllib.error
