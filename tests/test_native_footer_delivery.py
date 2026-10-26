@@ -45,7 +45,8 @@ def test_native_direct_and_relay_full_snapshot_then_footer_before_live(relay):
                         if isinstance(frame, bytes) and unpack(frame)[0] == OP_SNAPSHOT:
                             break
                     assert frame == expected
-                    assert await socket.recv() == pack_feed(OP_OUTPUT, session.id, FOOTER)
+                    # Control/catalog updates remain responsive during optional recovery.
+                    assert await receive_op(socket, OP_OUTPUT) == session.id.encode() + b'\0' + FOOTER
                 # Queue fresh output after replay; the recovery path never
                 # replaces, truncates or injects anything into the PTY input.
                 session.pty.inbox.put(b'fresh native output')

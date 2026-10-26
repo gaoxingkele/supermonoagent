@@ -27,17 +27,23 @@ from .defaults import default_update_feed
 from .security import request_allowed, tls_context, transport_options, FIRST_FRAME_S
 from .desktop import health, port_open
 from .hub import TAB_THEMES
-from .protocol import ProtocolError, OP_HELLO, OP_GROUP, OP_SESSIONS, OP_INPUT_SESSION, pack, pack_json, unpack, unpack_json
+from .protocol import ProtocolError, OP_HELLO, OP_GROUP, OP_SESSIONS, OP_INPUT_SESSION, OP_SUBSCRIBE, OP_PING, OP_PONG, OP_SELECT, OP_FOCUS, pack, pack_json, unpack, unpack_json
 from .pty import ConptyInputFilter
 
 NATIVE_UPDATE_API = 2
 UPDATE_CHECK_SECONDS = 6 * 60 * 60
+REPLAY_DRAIN_TIMEOUT = 5.0
+FOOTER_RECOVERY_TIMEOUT = .35
 UI_FILES = ("workspace.html", "workspace.js", "workspace.css", "terminal-client.js", "tab-themes.js", "tab-themes.css",
             "xterm.js", "xterm.css", "xterm-fit.js", "xterm-unicode11.js", "xterm-webgl.js",
             "agent-modes/codex.json", "agent-modes/claude-code.json", "agent-modes/grok.json",
             "agent-modes/kimi.json", "agent-modes/pi-dev.json", "agent-modes/cursor-cli.json")
 STATIC_ROOT = Path(__file__).parent / "static"
 WORKSPACE_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; base-uri 'none'; frame-src 'none'; frame-ancestors 'none'; object-src 'none'"
+
+
+class _ReplayDrainTimeout(TimeoutError):
+    pass
 
 
 def numeric_version(value):
@@ -121,6 +127,8 @@ class Frontend:
             saved = {}
         self.themes = {key: value for key, value in saved.items() if isinstance(value, str) and value in TAB_THEMES} if isinstance(saved, dict) else {}
         self.views: dict = {}
+        self._footer_slots = asyncio.Semaphore(2)
+        self._footer_reads = set()
         from .ui_updates import UpdateStore
         bundled_files = bundled_ui_files()
         self.bundle_fingerprint = bundled_ui_fingerprint(bundled_files)
@@ -510,6 +518,95 @@ class Frontend:
                 input_filters = {}
                 input_timers = {}
 
+                subscribed = set()
+                replay_barrier = None
+                private_markers = set()
+                virtual_view = None
+                send_lock = asyncio.Lock()
+                frame_generation = {}
+                recovery_waiting = {}
+                recovery_event = asyncio.Event()
+
+                def catalog_sessions():
+                    state = self.views.get(client) or {}
+                    return {item['id']: window for window in state.get('windows', [])
+                            for item in window.get('sessions', []) if isinstance(item.get('id'), str)}
+
+                async def drain_command(message):
+                    nonlocal replay_barrier
+                    marker = ('frontend-replay:' + secrets.token_urlsafe(24)).encode('ascii')
+                    drained = asyncio.get_running_loop().create_future()
+                    replay_barrier = marker, drained
+                    private_markers.add(marker)
+                    try:
+                        async with asyncio.timeout(REPLAY_DRAIN_TIMEOUT):
+                            await upstream.send(message)
+                            await upstream.send(pack(OP_PING, marker))
+                            await drained
+                    except asyncio.TimeoutError:
+                        raise _ReplayDrainTimeout() from None
+                    finally:
+                        if replay_barrier is not None and replay_barrier[1] is drained:
+                            replay_barrier = None
+
+                async def subscribe_in_order(message, body):
+                    nonlocal subscribed, virtual_view
+                    sessions = body.get('sessions')
+                    if (not isinstance(sessions, list) or len(sessions) > 256
+                            or any(not isinstance(sid, str) for sid in sessions)):
+                        await upstream.send(message)
+                        return
+                    visible = catalog_sessions()
+                    selected = set(sessions) & visible.keys()
+                    if (self.views.get(client) or {}).get('capabilities', {}).get('replay_backpressure') is True:
+                        # The updated host schedules replay fairly itself. Its
+                        # PONG may precede snapshots which are still deferred.
+                        await upstream.send(pack_json(OP_SUBSCRIBE, {**body, 'sessions': [sid for sid in dict.fromkeys(sessions) if sid in selected]}))
+                        subscribed = selected
+                        return
+                    added = list(dict.fromkeys(sid for sid in sessions if sid in selected and sid not in subscribed))
+                    # Legacy daemons enqueue an entire replay synchronously.
+                    # Grow the replace-style subscription cumulatively, draining
+                    # each replay before requesting the next. Retained sessions
+                    # stay subscribed and keep their resize leases throughout.
+                    retained = subscribed & selected
+                    cumulative = [sid for sid in dict.fromkeys(sessions) if sid in retained]
+                    clean = {key: value for key, value in body.items() if key != 'refresh'}
+                    if not added:
+                        await drain_command(pack_json(OP_SUBSCRIBE, {**clean, 'sessions': cumulative}))
+                        subscribed = selected
+                    for sid in added:
+                        if sid not in catalog_sessions():
+                            continue
+                        cumulative.append(sid)
+                        await drain_command(pack_json(OP_SUBSCRIBE, {**clean, 'sessions': list(cumulative)}))
+                        subscribed = set(cumulative)
+                    if body.get('refresh') is not True:
+                        return
+                    # SELECT/FOCUS modify only this upstream client's view. They
+                    # don't release subscriptions/resize leases or change the
+                    # window's shared focused session. Hide temporary navigation.
+                    original = self.views.get(client) or {}
+                    virtual_view = {key: original.get(key, '') for key in ('selected', 'session')}
+                    selected_window = None
+                    for sid in dict.fromkeys(sessions):
+                        window = catalog_sessions().get(sid)
+                        if sid not in subscribed or window is None:
+                            continue
+                        if window['id'] != selected_window:
+                            await drain_command(pack_json(OP_SELECT, {'window': window['id']}))
+                            selected_window = window['id']
+                        # SELECT returns the default focused session; FOCUS is
+                        # needed for other sessions in the same authorized window.
+                        focused = window.get('focused') or next((s['id'] for s in window.get('sessions', [])), None)
+                        if sid != focused and sid in catalog_sessions():
+                            await drain_command(pack_json(OP_FOCUS, {'session': sid}))
+                    window = catalog_sessions().get(virtual_view['session'])
+                    if window is not None and window['id'] == virtual_view['selected']:
+                        await drain_command(pack_json(OP_SELECT, {'window': window['id']}))
+                        await drain_command(pack_json(OP_FOCUS, {'session': virtual_view['session']}))
+                        virtual_view = None
+
                 async def forward_input(session, data, flush=False):
                     parser, decoder = input_filters.setdefault(session, (ConptyInputFilter(), codecs.getincrementaldecoder("utf-8")(errors="replace")))
                     previous = input_timers.pop(session, None)
@@ -525,15 +622,21 @@ class Frontend:
                         input_timers[session] = asyncio.create_task(flush_later())
 
                 async def receive():
-                    recovery_waiting = set()
                     owner_checked = False
                     owner_authenticated = False
                     async for message in upstream:
                         op = None
                         if isinstance(message, bytes):
                             op, payload = unpack(message)
+                            if op == OP_PONG and payload in private_markers:
+                                private_markers.discard(payload)
+                                if replay_barrier is not None and payload == replay_barrier[0] and not replay_barrier[1].done():
+                                    replay_barrier[1].set_result(None)
+                                continue
                             if op in {2, 7}:
                                 state = unpack_json(payload)
+                                if virtual_view is not None:
+                                    state = {**state, **virtual_view}
                                 service = state.get("service") if isinstance(state.get("service"), dict) else {}
                                 if "owner_authenticated" in service:
                                     owner_checked = True
@@ -544,24 +647,88 @@ class Frontend:
                                     owner_checked = True
                                 self.views[client] = state
                                 message = pack_json(op, self.default_token_state(self.themed_state(state), token, owner_authenticated=owner_authenticated))
-                            elif op == 8:
+                            elif op in {3, 8}:
                                 sid, separator, _raw = payload.partition(b'\0')
-                                if separator and len(recovery_waiting) < 64:
-                                    recovery_waiting.add(sid)
-                        await client.send(message)
+                                known = sid.decode('utf-8', 'replace') in catalog_sessions()
+                                if separator and known and (sid in frame_generation or len(frame_generation) < 512):
+                                    frame_generation[sid] = frame_generation.get(sid, 0) + 1
+                                    recovery_waiting.pop(sid, None)
+                                    if op == 8 and len(recovery_waiting) < 64:
+                                        recovery_waiting[sid] = frame_generation[sid]
+                        async with send_lock:
+                            await client.send(message)
                         if op in {2, 7, 8}:
+                            recovery_event.set()
+
+                def footer_signature(sid):
+                    current = self.views.get(client) or {}
+                    name = sid.decode('utf-8', 'replace')
+                    window = catalog_sessions().get(name)
+                    grid = current.get('controls', {}).get(name)
+                    if window is None or not isinstance(grid, dict):
+                        return None
+                    return window['id'], name, grid.get('cols'), grid.get('rows'), token
+
+                async def recover_footer():
+                    # Optional native console reads never hold up upstream
+                    # draining. At most two reads across this facade may run;
+                    # a timed-out read retains its slot until the thread ends.
+                    while True:
+                        await recovery_event.wait()
+                        recovery_event.clear()
+                        for sid, generation in tuple(recovery_waiting.items()):
+                            signature = footer_signature(sid)
+                            if signature is None:
+                                if sid.decode('utf-8', 'replace') not in catalog_sessions():
+                                    recovery_waiting.pop(sid, None)
+                                continue
+                            if recovery_waiting.get(sid) != generation:
+                                continue
+                            recovery_waiting.pop(sid, None)
                             current = self.views.get(client) or {}
-                            for sid in tuple(recovery_waiting):
-                                if sid.decode('utf-8', 'replace') not in current.get('controls', {}):
+                            try:
+                                await asyncio.wait_for(self._footer_slots.acquire(), FOOTER_RECOVERY_TIMEOUT)
+                            except asyncio.TimeoutError:
+                                return
+                            job = asyncio.create_task(asyncio.to_thread(
+                                self.footer_recovery.supplement, pack(8, sid+b'\0'), current))
+                            self._footer_reads.add(job)
+                            def finished(done):
+                                self._footer_reads.discard(done)
+                                self._footer_slots.release()
+                                if not done.cancelled():
+                                    done.exception()
+                            job.add_done_callback(finished)
+                            try:
+                                supplement = await asyncio.wait_for(asyncio.shield(job), FOOTER_RECOVERY_TIMEOUT)
+                            except asyncio.TimeoutError:
+                                return  # Don't accumulate threads for a stuck OS reader.
+                            except Exception:
+                                continue
+                            if not isinstance(supplement, bytes):
+                                continue
+                            try:
+                                opcode, data = unpack(supplement)
+                                if opcode != 3 or not data.startswith(sid+b'\0'):
                                     continue
-                                recovery_waiting.discard(sid)
-                                supplement = await asyncio.to_thread(self.footer_recovery.supplement, pack(8, sid+b'\0'), current)
-                                if supplement is not None:
+                            except ProtocolError:
+                                continue
+                            async with send_lock:
+                                if (frame_generation.get(sid) == generation
+                                        and footer_signature(sid) == signature):
                                     await client.send(supplement)
 
                 async def transmit():
+                    nonlocal virtual_view
                     async for message in client:
                         state = self.views.get(client)
+                        if isinstance(message, bytes) and state:
+                            op, payload = unpack(message)
+                            if op == OP_SUBSCRIBE:
+                                await subscribe_in_order(message, unpack_json(payload))
+                                continue
+                            if op in {OP_SELECT, OP_FOCUS}:
+                                virtual_view = None
                         if isinstance(message, bytes) and state and sys.platform == "win32" and not state.get("capabilities", {}).get("conpty_paste"):
                             op, payload = unpack(message)
                             if op == OP_INPUT_SESSION:
@@ -595,7 +762,9 @@ class Frontend:
                                     continue
                         await upstream.send(message)
 
-                tasks = [asyncio.create_task(receive()), asyncio.create_task(transmit())]
+                tasks = [asyncio.create_task(receive()), asyncio.create_task(transmit()),
+                         asyncio.create_task(client.wait_closed())]
+                recovery_task = asyncio.create_task(recover_footer())
                 try:
                     done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                     for task in done:
@@ -606,7 +775,10 @@ class Frontend:
                     await asyncio.gather(*input_timers.values(), return_exceptions=True)
                     for task in tasks:
                         task.cancel()
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                    recovery_task.cancel()
+                    await asyncio.gather(*tasks, recovery_task, return_exceptions=True)
+        except _ReplayDrainTimeout:
+            await client.close(code=1011, reason='Local replay drain timed out; reconnect to resume')
         except (ValueError, ProtocolError, asyncio.TimeoutError):
             await client.close(code=4001, reason='Authenticated first HELLO required')
         except ConnectionClosed as exc:

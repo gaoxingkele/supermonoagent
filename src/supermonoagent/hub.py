@@ -43,6 +43,7 @@ class Session:
     rows: int = 28
     io_lock: threading.Lock = field(default_factory=threading.Lock)
     task_detector: TaskStateDetector = field(default_factory=TaskStateDetector)
+    output_generation: int = 0
 
 
 @dataclass
@@ -79,6 +80,17 @@ class Client:
     delegated: bool = False
     authorize: Callable[[], bool] | None = field(default=None, repr=False)
     task_subscribed: bool = False
+    pending_replays: dict[str, None] = field(default_factory=dict)
+    replay_drain_credit: int = 0
+
+
+class _ReplaySnapshot(bytes):
+    """Wire-compatible bytes carrying the sampled in-process output generation."""
+    def __new__(cls, frame, session):
+        value = super().__new__(cls, frame)
+        value.session = session
+        value.output_generation = session.output_generation
+        return value
 
 
 DEFAULT_PRESETS = (
@@ -164,7 +176,10 @@ class Hub:
     def detach(self, key: str) -> None:
         released = False
         with self._lock:
-            self.clients.pop(key, None)
+            client = self.clients.pop(key, None)
+            if client is not None:
+                client.pending_replays.clear()
+                client.replay_drain_credit = 0
             for session in self.sessions.values():
                 if session.resize_owner == key:
                     session.resize_owner = None
@@ -480,10 +495,14 @@ class Hub:
             if isinstance(sid, str) and sid in self.sessions and self._channel_ok(client, self.sessions[sid])
         }
         added = selected - client.subscriptions
+        if len(selected) > 256:
+            self.fail_client(client, 'Too many replay subscriptions')
+            return
         removed = client.subscriptions - selected
         client.subscriptions = selected
         released = False
         for sid in removed:
+            client.pending_replays.pop(sid, None)
             client.feed_offsets.pop(sid, None)
             session = self.sessions.get(sid)
             if session is not None and session.resize_owner == client.key:
@@ -493,7 +512,8 @@ class Hub:
             session = self.sessions[sid]
             # Keep interactive output batches short without one wakeup per read.
             session.pump.coalesce_s = min(session.pump.coalesce_s, 0.004)
-            self._send(client, self._session_snapshot(client, session))
+            client.pending_replays[sid] = None
+        self.pump_replays(client)
         if released:
             self._catalog()
 
@@ -503,7 +523,38 @@ class Hub:
         for sid in sorted(selected):
             session = self.subscribed_session(client, sid)
             if session is not None:
+                client.pending_replays[sid] = None
+        self.pump_replays(client)
+
+    def pump_replays(self, client: Client, *, draining: bool = False) -> None:
+        """Materialize only the snapshots which fit below the live-frame reserve."""
+        if self.clients.get(client.key) is not client or client.failure or (
+                client.authorize is not None and not client.authorize()):
+            client.pending_replays.clear()
+            client.replay_drain_credit = 0
+            return
+        if not client.pending_replays:
+            client.replay_drain_credit = 0
+            return
+        if draining:
+            client.replay_drain_credit = min(8, client.replay_drain_credit + 1)
+        # Ordinary subscribe/refresh never creates credit. Stable low live
+        # backlog may get one history frame per eight actual sender dequeues,
+        # below half capacity; an empty queue can admit one immediately.
+        capacity = client.queue.maxsize or 32
+        if not client.queue.empty() and (client.replay_drain_credit < 8
+                or client.queue.qsize() >= max(1, capacity // 2)):
+            return
+        while client.pending_replays:
+            sid = next(iter(client.pending_replays))
+            client.pending_replays.pop(sid)
+            session = self.subscribed_session(client, sid)
+            if session is not None:
+                # Sampling before admission would advance offsets past unsent data.
                 self._send(client, self._session_snapshot(client, session))
+                client.replay_drain_credit = 0
+                return
+        client.replay_drain_credit = 0
 
     def subscribed_session(self, client: Client, session_id: str) -> Session | None:
         if (client.failure or self.clients.get(client.key) is not client
@@ -587,6 +638,10 @@ class Hub:
                     window.focused = next(iter(window.sessions), None)
                 for client in self.clients.values():
                     client.subscriptions.discard(session_id)
+                    client.pending_replays.pop(session_id, None)
+                    if not client.pending_replays:
+                        client.replay_drain_credit = 0
+                    client.feed_offsets.pop(session_id, None)
                     if client.session_id == session_id:
                         client.session_id = window.focused
                         watchers.append(client)
@@ -608,6 +663,13 @@ class Hub:
         affected = []
         with self._lock:
             for client in self.clients.values():
+                for session_id in list(client.pending_replays):
+                    if session_id not in self.sessions:
+                        client.pending_replays.pop(session_id, None)
+                        client.subscriptions.discard(session_id)
+                        client.feed_offsets.pop(session_id, None)
+                if not client.pending_replays:
+                    client.replay_drain_credit = 0
                 if client.window_id == window_id:
                     client.window_id = None
                     client.session_id = None
@@ -731,7 +793,7 @@ class Hub:
         data, position = session.pump.snapshot_position()
         if client.multiplex:
             client.feed_offsets[session.id] = position
-        return self._feed_frame(client, OP_SNAPSHOT, session.id, data)
+        return _ReplaySnapshot(self._feed_frame(client, OP_SNAPSHOT, session.id, data), session)
 
     def _channel_ok(self, client: Client, session: Session) -> bool:
         window = self.windows.get(session.window_id)
@@ -762,11 +824,15 @@ class Hub:
         session = self.sessions.get(session_id)
         if session is None:
             return
+        session.output_generation += 1
         targets = self._feed_targets(session)
         if not targets:
             return
         op = OP_SNAPSHOT if overflow else OP_OUTPUT
         for client in targets:
+            if session_id in client.pending_replays:
+                # The eventual snapshot samples all bytes remembered while pending.
+                continue
             if overflow and client.reliable:
                 self.fail_client(client, "PTY output overflow; reconnect for bounded history replay")
                 continue

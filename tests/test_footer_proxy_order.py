@@ -3,6 +3,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 import struct
+import threading
 from unittest.mock import Mock, patch
 
 import pytest
@@ -12,7 +13,7 @@ from websockets.asyncio.server import serve
 from supermonoagent.console_snapshot import FooterRecovery
 from supermonoagent.frontend import Frontend
 from supermonoagent.protocol import (MAX_FRAME, OP_HELLO, OP_HELLO_OK, OP_OUTPUT,
-                                    OP_SNAPSHOT, OP_SUBSCRIBE, pack, pack_json, unpack, unpack_json)
+                                    OP_SNAPSHOT, OP_SUBSCRIBE, OP_PING, OP_PONG, pack, pack_json, unpack, unpack_json)
 from supermonoagent.relay_bridge import Phone, RelayBridge
 
 
@@ -35,7 +36,7 @@ def state(ready=False):
 
 
 @asynccontextmanager
-async def old_backend():
+async def old_backend(*, live=True, before_live=None):
     received = []
     closed = asyncio.Event()
 
@@ -52,8 +53,15 @@ async def old_backend():
             # Existing daemon behavior: subscription replay arrives first,
             # followed by a second HELLO_OK containing its canonical grid.
             await socket.send(pack_json(OP_HELLO_OK, state(True)))
-            await socket.send(LIVE)
+            if live:
+                if before_live is not None:
+                    await before_live()
+                await socket.send(LIVE)
             async for frame in socket:
+                op, payload = unpack(frame)
+                if op == OP_PING and payload.startswith(b'frontend-replay:'):
+                    await socket.send(pack(OP_PONG, payload))
+                    continue
                 received.append(frame)
         finally:
             closed.set()
@@ -102,12 +110,19 @@ async def proxy_client(kind, backend, tmp_path, recovery):
 @pytest.mark.parametrize('enabled', [False, True])
 def test_full_replay_before_controls_recovers_in_order_without_input(kind, enabled, tmp_path):
     async def check():
-        async with old_backend() as (backend, received, closed):
+        entered, release = threading.Event(), threading.Event()
+        async def before_live():
+            assert await asyncio.to_thread(entered.wait, 2)
+        async with old_backend(before_live=before_live if kind=='frontend' and enabled else None) as (backend, received, closed):
             recovery = FooterRecovery(tmp_path, backend)
             if enabled:
                 # Keep the production authorization/dimension validator; only
                 # replace its OS read boundary with a deterministic footer.
-                recovery.patch = Mock(return_value=FOOTER)
+                def delayed(*args):
+                    entered.set()
+                    assert release.wait(2)
+                    return FOOTER
+                recovery.patch = Mock(side_effect=delayed) if kind=='frontend' else Mock(return_value=FOOTER)
             with patch('supermonoagent.console_snapshot.read_console') as read, \
                     patch('supermonoagent.console_snapshot._process_identity') as identity:
                 async with proxy_client(kind, backend, tmp_path, recovery) as (send, receive):
@@ -123,14 +138,41 @@ def test_full_replay_before_controls_recovers_in_order_without_input(kind, enabl
                     metadata = await asyncio.wait_for(receive(), 3)
                     assert unpack(metadata)[0] == OP_HELLO_OK
                     assert unpack_json(unpack(metadata)[1])['controls']['sid'] == {'cols': 100, 'rows': 20}
-                    if enabled:
+                    if enabled and kind != 'frontend':
                         assert await asyncio.wait_for(receive(), 3) == pack(OP_OUTPUT, b'sid\0' + FOOTER)
                         recovery.patch.assert_called_once_with('sid', 100, 20)
                     assert await asyncio.wait_for(receive(), 3) == LIVE
+                    if enabled and kind == 'frontend':
+                        release.set()
+                        # New live bytes invalidate the native read that was
+                        # already in flight. Its footer must not overwrite them.
+                        with pytest.raises(asyncio.TimeoutError):
+                            await asyncio.wait_for(receive(), .08)
+                        recovery.patch.assert_called_once_with('sid', 100, 20)
                 await asyncio.wait_for(closed.wait(), 3)
                 # Recovery performs no open/input/resize or other backend RPC.
                 assert received == [HELLO, SUBSCRIBE]
                 read.assert_not_called()
                 identity.assert_not_called()
 
+    asyncio.run(check())
+
+
+def test_frontend_idle_replay_recovers_footer_after_canonical_grid(tmp_path):
+    async def check():
+        async with old_backend(live=False) as (backend, received, closed):
+            recovery = FooterRecovery(tmp_path, backend)
+            recovery.patch = Mock(return_value=FOOTER)
+            async with proxy_client('frontend', backend, tmp_path, recovery) as (send, receive):
+                await send(HELLO)
+                assert unpack(await asyncio.wait_for(receive(), 3))[0] == OP_HELLO_OK
+                await send(SUBSCRIBE)
+                assert await asyncio.wait_for(receive(), 3) == FULL_SNAPSHOT
+                assert await asyncio.wait_for(receive(), 3) == UNKNOWN_SNAPSHOT
+                metadata = await asyncio.wait_for(receive(), 3)
+                assert unpack_json(unpack(metadata)[1])['controls']['sid'] == {'cols': 100, 'rows': 20}
+                assert await asyncio.wait_for(receive(), 3) == pack(OP_OUTPUT, b'sid\0'+FOOTER)
+                recovery.patch.assert_called_once_with('sid', 100, 20)
+            await asyncio.wait_for(closed.wait(), 3)
+            assert received == [HELLO, SUBSCRIBE]
     asyncio.run(check())

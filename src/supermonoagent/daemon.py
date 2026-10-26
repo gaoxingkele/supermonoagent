@@ -62,6 +62,15 @@ STATE = Path(os.environ.get("SUPERMONO_STATE_DIR") or Path.home() / ".supermonoa
 QUEUE_FRAMES = 32
 
 
+class _FooterSnapshot(bytes):
+    """Tiny replay identity; never retains the history payload."""
+    def __new__(cls, frame, sid, session, generation, mode):
+        value = super().__new__(cls, frame)
+        value.sid, value.session, value.output_generation = sid, session, generation
+        value.pty, value.dimensions, value.mode = session.pty, (session.cols, session.rows), mode
+        return value
+
+
 def log_endpoint(value: str) -> str:
     """Describe a relay without URL credentials, query strings or private paths."""
     try:
@@ -247,6 +256,12 @@ class Daemon:
         self._file_cleanup_tasks = set()
         self._sidecar_workers = {}
         self._sidecar_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='sma-files')
+        self._footer_jobs: set[asyncio.Task] = set()
+        self._footer_tasks: set[asyncio.Task] = set()
+        self._footer_pending: dict = {}
+        self._footer_running: set = set()
+        self._footer_starting: set = set()
+        self._footer_closed = False
         self.accounts = Accounts(STATE / "accounts.json")
         self.hub = Hub()
         self.hub.task_events = TaskEventStore(STATE / "task-events.json")
@@ -299,6 +314,7 @@ class Daemon:
         return client
 
     def forget_relay_client(self, client, reason: str = "Relay authorization ended") -> None:
+        self._cancel_footer_recovery(client)
         self._delegations.pop(id(client), None)
         # Failure and queue pruning precede detach broadcasts or socket shutdown.
         client.failure = reason
@@ -326,6 +342,8 @@ class Daemon:
 
     async def close_sidecars(self):
         """Called after sockets close; leave no optional-feature worker tasks."""
+        self._footer_closed = True
+        self._footer_pending.clear()
         jobs = [worker[1] for worker in self._sidecar_workers.values()]
         for job in jobs:
             job.cancel()
@@ -486,29 +504,106 @@ class Daemon:
             await asyncio.gather(sender, return_exceptions=True)
 
     async def _send(self, ws, queue: asyncio.Queue, client=None) -> None:
+        sending = asyncio.Lock()
+        active = True
+
+        async def supplement(frame, current):
+            async with sending:
+                if active and current():
+                    await ws.send(frame)
         try:
             while True:
                 frame = await queue.get()
                 if frame is None:
                     await ws.close(code=1013, reason=(client.failure if client else "Slow client")[:120])
                     return
-                await ws.send(frame)
-                supplement = await self.snapshot_supplement(client, frame)
-                if supplement is not None:
-                    await ws.send(supplement)
+                if client is not None:
+                    self.hub.pump_replays(client, draining=True)
+                async with sending:
+                    await ws.send(frame)
+                self.schedule_snapshot_supplement(client, frame, supplement)
         except asyncio.CancelledError:
             return
+        finally:
+            active = False
+            self._cancel_footer_recovery(client)
 
-    async def snapshot_supplement(self, client, frame):
-        """Read a session's genuine footer after replay, without losing history."""
+    def schedule_snapshot_supplement(self, client, frame, emit):
+        """Optional recovery never blocks the output pump or queues unbounded jobs."""
+        self._prune_footer_pending()
+        stamp = self._footer_request(client, frame)
+        if self._footer_closed or stamp is None or not self._footer_current(client, stamp):
+            return
+        key = (id(client), stamp.sid)
+        if key not in self._footer_pending and len(self._footer_pending) >= 256:
+            return
+        self._footer_pending[key] = (client, stamp, emit)
+        self._kick_footer_recovery()
+
+    def _cancel_footer_recovery(self, client):
+        if client is not None:
+            client._footer_recovery_closed = True
+        for key in list(self._footer_pending):
+            if key[0] == id(client):
+                self._footer_pending.pop(key)
+
+    def _prune_footer_pending(self):
+        for key, (client, stamp, _) in list(self._footer_pending.items()):
+            if not self._footer_current(client, stamp):
+                self._footer_pending.pop(key)
+
+    def _kick_footer_recovery(self):
+        if self._footer_closed:
+            return
+        self._prune_footer_pending()
+        while len(self._footer_tasks) < 4 and len(self._footer_jobs) + len(self._footer_starting) < 4:
+            key = next((key for key in self._footer_pending if key not in self._footer_running), None)
+            if key is None:
+                return
+            client, stamp, emit = self._footer_pending.pop(key)
+            task = asyncio.create_task(self._recover_footer(client, stamp, emit))
+            self._footer_tasks.add(task)
+            self._footer_running.add(key)
+            self._footer_starting.add(key)
+            def finished(task, key=key):
+                self._footer_tasks.discard(task)
+                self._footer_running.discard(key)
+                self._footer_starting.discard(key)
+                if not task.cancelled():
+                    task.exception()
+                self._kick_footer_recovery()
+            task.add_done_callback(finished)
+
+    async def _recover_footer(self, client, stamp, emit):
+        key = (id(client), stamp.sid)
+        self._footer_starting.discard(key)
+        if self._footer_closed or not self._footer_current(client, stamp):
+            return
+        # A direct caller may have acquired a slot after scheduler admission.
+        if len(self._footer_jobs) >= 4:
+            if key not in self._footer_pending and len(self._footer_pending) < 256:
+                self._footer_pending[key] = (client, stamp, emit)
+            return
+        try:
+            result = await self._snapshot_supplement_result(client, stamp)
+            if result is not None:
+                supplement, current = result
+                if current():
+                    await emit(supplement, current)
+        except Exception:
+            pass
+
+    def _footer_request(self, client, frame):
+        if isinstance(frame, _FooterSnapshot):
+            return frame
         if client is None or not isinstance(frame, bytes) or not self.client_authorized(client):
             return None
         try:
             opcode, payload = unpack(frame)
             if opcode != OP_SNAPSHOT:
                 return None
-            prefixed = client.multiplex or client.key.startswith('relay-')
-            if prefixed:
+            mode = (client.multiplex, client.key.startswith('relay-'))
+            if any(mode):
                 raw_sid, separator, _ = payload.partition(b'\0')
                 if not separator:
                     return None
@@ -517,26 +612,54 @@ class Daemon:
             else:
                 session = self.hub.view(client)
                 sid = session.id if session is not None else ''
-            if session is None:
+            if session is None or getattr(frame, 'session', session) is not session:
                 return None
-            pty, dimensions = session.pty, (session.cols, session.rows)
-            mode = (client.multiplex, client.key.startswith('relay-'))
+            minimal = self.hub._feed_frame(client, OP_SNAPSHOT, sid, b'')
+            return _FooterSnapshot(minimal, sid, session,
+                                   getattr(frame, 'output_generation', session.output_generation), mode)
+        except Exception:
+            return None
 
+    def _footer_current(self, client, stamp):
+        sid, session = stamp.sid, stamp.session
+        return (not self._footer_closed and not getattr(client, '_footer_recovery_closed', False)
+                and self.client_authorized(client) and self.hub.sessions.get(sid) is session
+                and session.output_generation == stamp.output_generation and sid not in client.pending_replays
+                and session.pty is stamp.pty and (session.cols, session.rows) == stamp.dimensions
+                and (client.multiplex, client.key.startswith('relay-')) == stamp.mode
+                and self.hub._channel_ok(client, session)
+                and (sid in client.subscriptions if client.multiplex else
+                     stamp.mode[1] or self.hub.view(client) is session))
+
+    async def snapshot_supplement(self, client, frame):
+        result = await self._snapshot_supplement_result(client, frame)
+        return result[0] if result is not None and result[1]() else None
+
+    async def _snapshot_supplement_result(self, client, frame):
+        """Read a session's genuine footer after replay, without losing history."""
+        try:
+            stamp = self._footer_request(client, frame)
+            if stamp is None:
+                return None
+            sid, pty, dimensions = stamp.sid, stamp.pty, stamp.dimensions
             def current():
-                return (self.client_authorized(client) and self.hub.sessions.get(sid) is session
-                        and session.pty is pty and (session.cols, session.rows) == dimensions
-                        and (client.multiplex, client.key.startswith('relay-')) == mode
-                        and self.hub._channel_ok(client, session)
-                        and (sid in client.subscriptions if client.multiplex else
-                             mode[1] or self.hub.view(client) is session))
-
+                return self._footer_current(client, stamp)
             reader = getattr(pty, 'footer_patch', None)
-            if not callable(reader) or not current():
+            if not callable(reader) or not current() or len(self._footer_jobs) >= 4:
                 return None
-            supplement = await asyncio.to_thread(reader, *dimensions)
+            job = asyncio.create_task(asyncio.to_thread(reader, *dimensions))
+            self._footer_jobs.add(job)
+            # Cancelling an awaiting client cannot release a still-running thread's slot.
+            def finished(task):
+                self._footer_jobs.discard(task)
+                if not task.cancelled():
+                    task.exception()
+                self._kick_footer_recovery()
+            job.add_done_callback(finished)
+            supplement = await asyncio.shield(job)
             if not current() or not isinstance(supplement, bytes) or not supplement or len(supplement) > 65536:
                 return None
-            return self.hub._feed_frame(client, OP_OUTPUT, sid, supplement)
+            return self.hub._feed_frame(client, OP_OUTPUT, sid, supplement), current
         except Exception:
             # Recovery is optional. No terminal cells or credentials enter logs.
             return None
@@ -996,8 +1119,8 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
 
                     async def outbound() -> None:
                         while True:
-                            phone_id, client, frame = await uplink.get()
-                            if route_valid(phone_id, client):
+                            phone_id, client, frame, current = await uplink.get()
+                            if route_valid(phone_id, client) and (current is None or current()):
                                 await ws.send(struct.pack("<I", phone_id) + frame)
 
                     async def bridge(phone_id: int, client) -> None:
@@ -1011,10 +1134,15 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
                                 if not route_valid(phone_id, client):
                                     await disconnect(phone_id, "Relay authorization ended")
                                     return
-                                await uplink.put((phone_id, client, frame))
-                                supplement = await daemon.snapshot_supplement(client, frame)
-                                if supplement is not None and route_valid(phone_id, client):
-                                    await uplink.put((phone_id, client, supplement))
+                                daemon.hub.pump_replays(client, draining=True)
+                                await uplink.put((phone_id, client, frame, None))
+                                async def emit(supplement, current):
+                                    if route_valid(phone_id, client) and current():
+                                        try:
+                                            uplink.put_nowait((phone_id, client, supplement, current))
+                                        except asyncio.QueueFull:
+                                            pass  # Optional recovery must never displace live frames.
+                                daemon.schedule_snapshot_supplement(client, frame, emit)
                         except asyncio.CancelledError:
                             return
 
