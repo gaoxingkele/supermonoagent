@@ -77,7 +77,7 @@ async def call(ws, action, data, session='session', request_id='request'):
 def metadata(data=b'fixture PDF bytes', **changes):
     return {'original_name': '报告.pdf', 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest(),
             'window_id': 'window', 'daemon_epoch': 'daemon-fixture-epoch', 'workspace_revision': 7,
-            'timezone_offset_minutes': 480, **changes}
+            'timezone_offset_minutes': 480, 'project_binding': 'b' * 64, **changes}
 
 
 async def begin(client, host, data=None, session='session', target_changes=None):
@@ -87,7 +87,7 @@ async def begin(client, host, data=None, session='session', target_changes=None)
     assert routed['type'] == 'host_request' and routed['action'] == 'workspace.get'
     assert routed['session'] == session and routed['data'] == {}
     target = {'window_id': data['window_id'], 'session_id': session, 'daemon_epoch': data['daemon_epoch'],
-              'revision': data['workspace_revision'], **(target_changes or {})}
+              'revision': data['workspace_revision'], 'project_binding': data['project_binding'], **(target_changes or {})}
     await host.send(json.dumps({'type': 'host_response', 'id': routed['id'], 'ok': True, 'result': target}))
     return await future
 
@@ -105,6 +105,65 @@ async def stage(client, host, data=b'fixture PDF bytes', **changes):
     delivery = json.loads(await asyncio.wait_for(host.recv(), 3))
     assert delivery['type'] == 'delivery'
     return finished['result'], delivery['job']
+
+
+@pytest.mark.parametrize('bad', [None, '', 'x'*64, '0'*63, '0'*65, 123])
+def test_missing_or_malformed_project_binding_is_rejected_without_host_route(tmp_path, bad):
+    async def scenario():
+        async with running(tmp_path / 'broker', auth_file(tmp_path)) as (broker, url):
+            viewer = await login(url, hello())
+            try:
+                data = metadata()
+                if bad is None: data.pop('project_binding')
+                else: data['project_binding'] = bad
+                response = await call(viewer, 'upload.begin', data)
+                assert response['error'] == 'project_binding_required' and not broker._uploads
+            finally: await viewer.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('target', ['', None, 'a'*64])
+def test_old_host_or_changed_project_binding_fails_preflight(tmp_path, target):
+    async def scenario():
+        async with running(tmp_path / 'broker', auth_file(tmp_path)) as (broker, url):
+            host, viewer = await login(url, hello('host')), await login(url, hello())
+            try:
+                response = await begin(viewer, host, target_changes={'project_binding': target})
+                expected = 'project_binding_changed' if target else 'project_binding_required'
+                assert response['error'] == expected and not broker._uploads
+            finally: await viewer.close(); await host.close()
+    asyncio.run(scenario())
+
+
+def test_legacy_broker_schema_migrates_unbound_unfinished_jobs_fail_closed(tmp_path):
+    import sqlite3
+    root = tmp_path / 'broker'; root.mkdir()
+    with sqlite3.connect(root/'broker.sqlite3') as db:
+        db.execute('CREATE TABLE jobs(file_id TEXT PRIMARY KEY,scope TEXT,room TEXT,session TEXT,window_id TEXT,daemon_epoch TEXT,revision INTEGER,name TEXT,size INTEGER,sha256 TEXT,state TEXT,receipt TEXT,error TEXT)')
+        for label, state in [('a', 'queued'), ('b', 'saved')]:
+            db.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (label*48, 'owned', 'room', 'session', 'window', 'epoch', 0, 'legacy.pdf', 0, '0'*64, state, '{"legacy":true}' if state=='saved' else None, None))
+    async def scenario():
+        async with running(root, auth_file(tmp_path)) as (broker, _):
+            old = dict(broker._db.execute('SELECT * FROM jobs WHERE file_id=?', ('a'*48,)).fetchone())
+            saved = dict(broker._db.execute('SELECT * FROM jobs WHERE file_id=?', ('b'*48,)).fetchone())
+            assert old['state'] == 'failed' and old['error'] == 'project_binding_required' and old['project_binding'] is None
+            assert saved['state'] == 'saved' and saved['receipt'] == '{"legacy":true}'
+    asyncio.run(scenario())
+
+
+def test_selection_required_preflight_rejects_before_staging(tmp_path):
+    async def scenario():
+        async with running(tmp_path / 'broker', auth_file(tmp_path)) as (broker, url):
+            host, viewer = await login(url, hello('host')), await login(url, hello())
+            try:
+                result = await begin(viewer, host, target_changes={'project_status': 'selection_required'})
+                assert not result['ok'] and result['error'] == 'project_required', result
+                assert not broker._uploads
+                assert not list((tmp_path / 'broker').rglob('*.part'))
+            finally:
+                await viewer.close(); await host.close()
+    asyncio.run(scenario())
 
 
 def test_real_loopback_stage_download_ack_duplicate_and_private_storage(tmp_path):
@@ -136,7 +195,7 @@ def test_real_loopback_stage_download_ack_duplicate_and_private_storage(tmp_path
                 assert base64.b64decode(downloaded['result']['data']) == payload
                 status = await call(client, 'file.status', {'file_id': job['file_id']})
                 assert status['result']['state'] == 'downloading' and 'receipt' not in status['result']
-                receipt = {key: job[key] for key in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision')}
+                receipt = {key: job[key] for key in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision', 'project_binding')}
                 receipt['path'] = 'C:/owned/exchange/' + job['name']
                 assert (await call(host, 'delivery.ack', receipt))['result']['state'] == 'saved'
                 assert (await call(host, 'delivery.ack', receipt))['result']['state'] == 'saved'
@@ -353,9 +412,9 @@ def test_receipts_cannot_change_target_revision_epoch_hash_or_name(tmp_path):
         async with running(tmp_path / 'broker', auth_file(tmp_path)) as (_, url):
             host, client = await login(url, hello('host')), await login(url, hello())
             _, job = await stage(client, host)
-            receipt = {key: job[key] for key in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision')}
+            receipt = {key: job[key] for key in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision', 'project_binding')}
             receipt['path'] = 'C:/owned/' + job['name']
-            for key, value in [('workspace_revision', 8), ('daemon_epoch', 'other'), ('sha256', '0' * 64),
+            for key, value in [('workspace_revision', 8), ('daemon_epoch', 'other'), ('sha256', '0' * 64), ('project_binding', '0'*64),
                                ('name', 'different.pdf'), ('path', 'https://example.invalid/' + job['name'])]:
                 response = await call(host, 'delivery.ack', {**receipt, key: value})
                 assert not response['ok'] and response['error'] == 'receipt_mismatch'
@@ -481,7 +540,7 @@ def test_saved_receipt_persists_without_replay_and_ack_stays_idempotent(tmp_path
         async with running(root, auth) as (broker, url):
             host, client = await login(url, hello('host')), await login(url, hello())
             _, job = await stage(client, host)
-            receipt = {key: job[key] for key in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision')}
+            receipt = {key: job[key] for key in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision', 'project_binding')}
             receipt['path'] = 'C:/owned/' + job['name']
             assert (await call(host, 'delivery.ack', receipt))['ok']
             await client.close()
@@ -750,7 +809,8 @@ def test_http_streams_two_megabytes_with_bounded_memory_and_live_websocket_ping(
     assert ticket not in captured.out + captured.err
 
 
-def test_http_ticket_quota_and_binding_cannot_be_changed_after_issue(tmp_path):
+@pytest.mark.parametrize('field', ['revision', 'project_binding'])
+def test_http_ticket_quota_and_binding_cannot_be_changed_after_issue(tmp_path, field):
     async def scenario():
         now = [1700000000]
         async with running(tmp_path / 'broker', auth_file(tmp_path), clock=lambda: now[0],
@@ -766,7 +826,10 @@ def test_http_ticket_quota_and_binding_cannot_be_changed_after_issue(tmp_path):
             ticket = (await call(host, 'download.ticket', {'file_id': job['file_id']}))['result']
             assert ticket['ticket'] != first['ticket'] and len(broker._tickets) == 1
             with broker._lock, broker._db:
-                broker._db.execute('UPDATE jobs SET revision=revision+1 WHERE file_id=?', (job['file_id'],))
+                if field == 'revision':
+                    broker._db.execute('UPDATE jobs SET revision=revision+1 WHERE file_id=?', (job['file_id'],))
+                else:
+                    broker._db.execute('UPDATE jobs SET project_binding=? WHERE file_id=?', ('0'*64, job['file_id']))
             response = await asyncio.to_thread(http_fetch, f'http://127.0.0.1:{address[1]}',
                 ticket['download_path'], ticket['ticket'])
             assert response[0] == 401

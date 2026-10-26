@@ -37,6 +37,26 @@ def test_commonjs_file_client_rejects_insecure_urls_without_creating_sockets():
     assert result.returncode == 0, result.stderr
 
 
+def test_upload_binding_is_strictly_validated_before_any_socket_or_credentials():
+    node = shutil.which('node')
+    if not node: pytest.skip('Node unavailable')
+    code = r'''
+    const assert=require('node:assert/strict'), api=require(process.argv[1]);
+    let opened=0; global.WebSocket=class {constructor(){opened++;throw Error('unexpected socket');}};
+    const client=api.createClient({url:'ws://127.0.0.1:8819/file/ws',room:'room',token:'owned-fixture-secret'});
+    (async()=>{
+      for(const value of [undefined,null,'','a'.repeat(63),'a'.repeat(65),'A'.repeat(64),'a'.repeat(64)+'\n']){
+        await assert.rejects(client.request('upload.begin','session',{project_binding:value}),e=>e.code==='project_binding_required');
+      }
+      assert.equal(opened,0);client.close();
+      assert.match(new api.FileClientError('project_binding_required').message,/文件助手/);
+      assert.match(new api.FileClientError('project_binding_changed').message,/重新确认/);
+    })().catch(error=>{console.error(error.message);process.exitCode=1;});
+    '''
+    result = subprocess.run([node, '-e', code, str(CLIENT)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
 def run(check, tmp_path):
     playwright = pytest.importorskip('playwright.async_api')
     if not EDGE.exists():
@@ -96,6 +116,31 @@ def test_without_native_configuration_preserves_footer_and_opens_no_network(tmp_
             assert await page.locator('#status').inner_text() == 'legacy cwd status'
             assert await page.evaluate('typeof SuperMonoFileWorkspaces') == 'undefined'
             assert not sockets and not errors
+    run(exercise, tmp_path)
+
+
+def test_home_startup_prompts_for_project_and_keeps_directory_settings_usable(tmp_path):
+    async def exercise(playwright, folder):
+        from unittest.mock import patch
+        from test_file_companion import environment
+        async with environment(folder) as (_broker, url, parents, companions):
+            chosen = folder / 'confirmed-project'
+            chosen.mkdir()
+            with patch('supermonoagent.file_workspaces.Path.home', return_value=parents[0].project):
+                async with browser_page(playwright, url) as (page, errors, _sockets):
+                    await page.wait_for_function('document.querySelector("#file-workspace-project")?.textContent.includes("请选择当前项目")')
+                    assert '选择项目后使用 tmp' in await page.locator('#file-workspace-exchange').inner_text()
+                    await page.locator('#file-workspace-project').click()
+                    await page.wait_for_function('!document.querySelector("#file-workspace-save").disabled')
+                    assert '不能使用用户主目录' in await page.locator('#file-workspace-state').inner_text()
+                    await page.locator('#file-project').fill(str(chosen))
+                    await page.locator('#file-workspace-save').click()
+                    await page.wait_for_function('document.querySelector("#file-workspace-state").textContent.includes("已保存")')
+                    assert await page.locator('#file-workspace-project').get_attribute('title') == str(chosen)
+                    assert await page.locator('#file-workspace-exchange').get_attribute('title') == str(chosen / 'tmp')
+                    assert not (parents[0].project / 'tmp').exists()
+                    assert not await page.evaluate('fixtureInputs') and not errors
+            assert companions[0].workspaces.get('window1', parents[0].project)['project_dir'] == str(chosen)
     run(exercise, tmp_path)
 
 
@@ -164,7 +209,7 @@ def test_captured_upload_continues_to_a_after_selecting_b_and_credential_changes
                   window.cfgA=await SuperMonoFileWorkspaces.getWorkspace(capturedA);
                   window.uploadA=await SuperMonoFileWorkspaces.request(capturedA,'upload.begin',{
                     original_name:'clipboard.png',size:data.size,sha256:data.sha,window_id:cfgA.window_id,
-                    daemon_epoch:cfgA.daemon_epoch,workspace_revision:cfgA.revision,timezone_offset_minutes:0});
+                    daemon_epoch:cfgA.daemon_epoch,workspace_revision:cfgA.revision,project_binding:cfgA.project_binding,timezone_offset_minutes:0});
                   fixtureSelect(1);
                 }''', {'size': len(payload), 'sha': hashlib.sha256(payload).hexdigest()})
                 await page.wait_for_function('document.querySelector("#file-workspace-project").title.includes("project-B")')

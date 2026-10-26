@@ -3,7 +3,7 @@ from pathlib import Path
 import threading
 from urllib.parse import urlsplit
 
-from .windows_clipboard import ClipboardFiles, has_clipboard_sources
+from .windows_clipboard import ClipboardFiles, has_clipboard_sources, read_clipboard_text, write_clipboard_text
 
 
 class DesktopFiles:
@@ -16,7 +16,8 @@ class DesktopFiles:
         self._page_generation = 0
         self._retire_thread = None
         self._script = (Path(__file__).parent / 'static' / 'clipboard-files.js').read_text(encoding='utf-8')
-        window.expose(self.clipboard_files, self.clipboard_chunk, self.clipboard_release, self.clipboard_has_files, self.file_exchange_config)
+        window.expose(self.clipboard_files, self.clipboard_chunk, self.clipboard_release, self.clipboard_has_files,
+                      self.file_exchange_config, self.clipboard_read_text, self.clipboard_write_text)
         window.events.loaded += self._loaded
         window.events.closed += self._close
 
@@ -57,6 +58,26 @@ class DesktopFiles:
     def clipboard_has_files(self):
         self._check()
         return has_clipboard_sources()
+
+    def _clipboard_text(self, operation, *args):
+        try:
+            self._check()
+            generation = self._page_generation
+            result = operation(*args)
+            self._check()
+            if generation != self._page_generation:
+                raise ValueError()
+            return result
+        except Exception:
+            raise ValueError('Clipboard text unavailable') from None
+
+    def clipboard_read_text(self):
+        """Read only for an explicit user paste; never poll text contents."""
+        return self._clipboard_text(read_clipboard_text)
+
+    def clipboard_write_text(self, text):
+        """Copy caller-selected user text after verifying the workspace page."""
+        return self._clipboard_text(write_clipboard_text, text)
 
     def clipboard_chunk(self, file_id, offset):
         self._check()

@@ -49,7 +49,9 @@ def fixture(tmp_path, signer, monkeypatch):
     static = root / 'src/supermonoagent/static'
     static.mkdir(parents=True)
     (static / 'update-trust.json').write_text(json.dumps(signer[3]))
-    for name in list(release.DESKTOP) + ['clipboard-files.js', 'mylib-assistant.js', 'assistant-chat.js']:
+    for name in list(release.DESKTOP) + ['file-client.js', 'file-workspace-ui.js',
+            'clipboard-files.js', 'terminal-composer.js', 'terminal-questions.js',
+            'clipboard-context-menu.js', 'mylib-assistant.js', 'assistant-chat.js']:
         path = static / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(('NEW desktop ' + name).encode())
@@ -89,6 +91,15 @@ def build(fixture, **changes):
     args = {'root': fixture['root'], 'revision': '0.2.39', 'private_key': fixture['signer'][1],
             'openssl': fixture['signer'][0], 'reuse_android_from': fixture['baseline'], **changes}
     return release.package(fixture['out'], **args)
+
+
+@pytest.mark.parametrize('name', ['terminal-questions.js', 'clipboard-context-menu.js'])
+def test_missing_bundled_sidecar_cannot_build_or_publish(fixture, name):
+    sidecar = fixture['root'] / 'src/supermonoagent/static' / name
+    sidecar.unlink()
+    with pytest.raises(FileNotFoundError):
+        build(fixture)
+    assert not (fixture['out'] / 'stable/manifest.json').exists()
 
 
 def test_reuse_preserves_exact_android_bytes_catalog_and_api_despite_dirty_sources(fixture):

@@ -38,12 +38,19 @@
     const profile=Object.freeze({id:raw.id,label:raw.label,theme:Object.freeze(theme),tokens:Object.freeze(tokens)});
     compiledProfiles.set(profile,rules);return profile;
   }
-  const commonAgentProfile=validateAgentProfile({id:'common',label:'自动',theme:{background:'#0c1017',foreground:'#e6edf3'},tokens:[
-    {pattern:'"[^"\\n]+"|\'[^\'\\n]+\'',flags:'gu',color:'#c3e88d'},
-    {pattern:'(?:错误|失败|异常|警告)|\\b(?:Error|Exception|ERROR|FAIL|FAILED|Warning)\\b|\\*\\*[^*\\n]+\\*\\*',flags:'gu',color:'#f07178'},
-    {pattern:'[\\p{L}\\p{N}_./\\\\:-]+\\.(?:py|js|jsx|ts|tsx|css|html|json|md|exe|ps1|sh|yaml|yml|toml|java|go|rs|cpp|h)(?::\\d+)?',flags:'gu',color:'#ffcb6b'},
-    {pattern:'`[^`\\n]+`|\\b[A-Za-z_][\\w]*\\(\\)',flags:'gu',color:'#89ddff'},
-    {pattern:'\\b\\d+(?:\\.\\d+)?(?:\\s?(?:KiB|MiB|ms|字节))?',flags:'gu',color:'#c792ea'}
+  const commonAgentProfile=validateAgentProfile({id:'common',label:'自动',theme:{
+    background:'#11151b',foreground:'#d6d9df',cursor:'#d6d9df',cursorAccent:'#11151b',
+    selectionBackground:'#344253',selectionForeground:'#d6d9df',
+    black:'#8b929c',red:'#e06c75',green:'#98c379',yellow:'#e5c07b',blue:'#82cfff',magenta:'#82cfff',cyan:'#82cfff',white:'#d6d9df',
+    brightBlack:'#8b929c',brightRed:'#e06c75',brightGreen:'#98c379',brightYellow:'#e5c07b',brightBlue:'#82cfff',brightMagenta:'#82cfff',brightCyan:'#82cfff',brightWhite:'#d6d9df'
+  },tokens:[
+    {pattern:'"[^"\\n]+"|\'[^\'\\n]+\'',flags:'gu',color:'#e5c07b'},
+    {pattern:'(?:错误|失败|异常|警告)|\\b(?:Error|Exception|ERROR|FAIL|FAILED|Warning)\\b',flags:'gu',color:'#e06c75'},
+    {pattern:'[\\p{L}\\p{N}_./\\\\:-]+\\.(?:py|js|jsx|ts|tsx|css|html|json|md|exe|ps1|sh|yaml|yml|toml|java|go|rs|cpp|h)(?::\\d+)?',flags:'gu',color:'#e5c07b'},
+    {pattern:'`[^`\\n]+`|\\b[A-Za-z_][\\w]*\\(\\)',flags:'gu',color:'#e5c07b'},
+    {pattern:'\\b\\d+(?:\\.\\d+)?(?:\\s?(?:KiB|MiB|ms|tokens|字节))?',flags:'gu',color:'#e5c07b'},
+    {pattern:'\\b(?:Success|SUCCESS|Passed|PASSED)\\b|(?:成功|已完成)',flags:'gu',color:'#98c379'},
+    {pattern:'^#{1,6} [^\\n]+|\\*\\*[^*\\n]+\\*\\*',flags:'gu',color:'#82cfff'}
   ]});
   async function loadAgentProfile(value,id){
     if(!agentProfiles.some(item=>item.id===id))throw new Error('Unknown agent mode');
@@ -113,9 +120,15 @@
       if(!enabled){clear();term.refresh(0,term.rows-1);return;}
       const previous=new Map();for(const entry of entries){if(entry.marker.isDisposed)remove(entry);else previous.set(entry.marker.line,entry);}
       entries=[];let changed=false;
+      // A cursor-addressed CLI does not expose a trustworthy input boundary.
+      // Leave the cursor's whole soft-wrapped paragraph in application styling,
+      // including ordinary input; decorate it only after the cursor leaves it.
+      let inputStart=active.baseY+active.cursorY,inputEnd=inputStart;
+      while(inputStart>0&&active.getLine(inputStart)?.isWrapped)inputStart--;
+      while(inputEnd+1<active.length&&active.getLine(inputEnd+1)?.isWrapped)inputEnd++;
       for(let row=active.viewportY;row<Math.min(active.length,active.viewportY+Math.min(200,term.rows));row++){
         const line=active.getLine(row);if(!line)continue;
-        const spans=highlightSpans(line,term.cols,profile),signature=JSON.stringify(spans),old=previous.get(row);previous.delete(row);
+        const spans=row>=inputStart&&row<=inputEnd?[]:highlightSpans(line,term.cols,profile),signature=JSON.stringify(spans),old=previous.get(row);previous.delete(row);
         if(old&&old.signature===signature){entries.push(old);continue;}
         if(old){remove(old);changed=true;}if(!spans.length)continue;
         const marker=term.registerMarker(row-active.baseY-active.cursorY);if(!marker)continue;
@@ -219,7 +232,7 @@
     // This only releases the local view. It has no socket or process-close operation.
     panes.delete(session);pane.ready=false;if(pane.redrawTimer)clearTimeout(pane.redrawTimer);if(pane.resizeRequest)clearTimeout(pane.resizeRequest.timer);pane.observer.disconnect();
     const addon=pane.webgl;pane.webgl=null;if(addon)addon.dispose();
-    pane.highlighter?.dispose();pane.term.dispose();pane.el.remove();return true;
+    pane.highlighter?.dispose();pane.questions?.dispose();pane.term.dispose();pane.el.remove();return true;
   }
   function secureEndpoint(value) {
     const url=new URL(value),authority=String(value).match(/^[a-z]+:\/\/([^/?#]*)/i)?.[1]||'';

@@ -1,5 +1,6 @@
 """Owned workspace browsers/PTYs only; never read or modify the OS clipboard."""
 from pathlib import Path
+import pytest
 
 from test_workspace_profile_rooms import fixture, run, server_barrier, eventually, add_profile, wait_room
 
@@ -20,6 +21,8 @@ async def check_editor(playwright):
         await page.goto(url)
         await page.wait_for_function('smaWorkspace?.connected&&smaWorkspace.activePane?.ready')
         await page.evaluate(SCRIPT.read_text(encoding='utf-8'))
+        assert await page.locator('main>footer>#terminal-composer-open').count() == 1
+        assert await page.locator('.titlebar #terminal-composer-open').count() == 0
         await page.locator('#terminal-composer-open').click()
         await page.locator('#terminal-composer-text').fill('owned exact draft')
         await page.locator('#terminal-composer-close').click()
@@ -66,6 +69,7 @@ async def prepared(browser, url, endpoint=None, sessions=None):
           if(composerMode!=='late')options.signal.addEventListener('abort',()=>no(Error('fixture cancelled')),{once:true});
         });
         if(composerMode==='failure')throw Error('Target helper unavailable');
+        if(composerMode==='unknown-commit')throw Object.assign(Error('request_timeout'),{unknownCommit:true,pendingUploadId:'d'.repeat(48)});
         if(composerMode==='missing-profile')throw Error('文件交换助手尚未安装，请更新完整客户端。');
         if(composerMode==='queued'||composerMode==='queued-cancel'){
           const file=files[0];options.onProgress?.({phase:'receiving',name:file.name,index:0,total:files.length,loaded:file.size,size:file.size,file_id:'c'.repeat(48)});
@@ -418,3 +422,159 @@ async def check_profile_missing(playwright):
         assert await page.locator('#terminal-composer-receipts li').count() == 0
         assert all(not session.pty.written for owned in sessions for session in owned)
         assert not errors
+
+
+def test_lost_finish_ack_holds_attachment_without_claiming_committed_or_allowing_retry():
+    async def exercise(playwright):
+        async with fixture(playwright) as (browser, url, _endpoint, _trap, _messages, _daemons,
+                                          _ops, _windows, sessions):
+            page, errors = await prepared(browser, url)
+            await page.locator('#terminal-composer-open').click()
+            await page.locator('#terminal-composer-files-input').set_input_files({'name':'unknown.pdf','mimeType':'application/pdf','buffer':b'owned'})
+            await page.evaluate('composerMode="unknown-commit"')
+            await page.locator('#terminal-composer-upload').click()
+            await page.wait_for_function('!SuperMonoTerminalComposer.busy')
+            assert '提交结果待确认' in await page.locator('#terminal-composer-state').inner_text()
+            assert '中继已暂存' not in await page.locator('#terminal-composer-files').inner_text()
+            assert 'd'*48 in await page.locator('#terminal-composer-files').inner_text()
+            assert await page.locator('#terminal-composer-upload').is_disabled()
+            assert await page.locator('#terminal-composer-receipts li').count() == 0
+            assert await page.locator('#terminal-composer-files button').is_disabled()
+            assert await page.evaluate('composerCalls.length') == 1
+            assert not errors
+            assert all(not s.pty.written for owned in sessions for s in owned)
+    run(exercise)
+
+
+def test_public_paste_clipboard_and_add_files_use_captured_editor_draft():
+    async def exercise(playwright):
+        async with fixture(playwright) as (browser, url, _endpoint, _trap, _messages, _daemons,
+                                          _ops, _windows, sessions):
+            page, errors = await prepared(browser, url)
+            await page.locator('#terminal-composer-open').click()
+            await page.locator('#terminal-composer-text').fill('one OLD three')
+            await page.evaluate('''()=>{
+              const field=document.querySelector('#terminal-composer-text');field.setSelectionRange(4,7);
+              window.nativeReads=0;window.nativeUploads=0;
+              window.pywebview={api:{clipboard_has_files:async()=>false,clipboard_read_text:async()=>{nativeReads++;return 'NEW';}}};
+            }''')
+            assert await page.evaluate('SuperMonoTerminalComposer.pasteClipboard()') is True
+            assert await page.locator('#terminal-composer-text').input_value() == 'one NEW three'
+            assert await page.evaluate('nativeReads') == 1
+            assert await page.evaluate('SuperMonoTerminalComposer.addFiles([new File(["pdf"],"queued.pdf")])') is True
+            assert await page.locator('#terminal-composer-files li').count() == 1
+            await page.evaluate('''()=>{
+              pywebview.api.clipboard_has_files=async()=>true;
+              SuperMonoFilePaste.uploadClipboard=async options=>{nativeUploads++;return SuperMonoFilePaste.upload([new File(['image'],'native.png')],options);};
+            }''')
+            assert await page.evaluate('SuperMonoTerminalComposer.pasteClipboard()') is True
+            assert await page.evaluate('nativeUploads') == 1
+            assert await page.locator('#terminal-composer-receipts li').count() == 1
+            assert await page.locator('#terminal-composer-files li').count() == 1
+            assert 'queued.pdf' in await page.locator('#terminal-composer-files').inner_text()
+            assert await page.locator('#terminal-composer-text').input_value() == 'one NEW three'
+            assert all(not s.pty.written for owned in sessions for s in owned)
+            assert not errors
+    run(exercise)
+
+
+@pytest.mark.parametrize('boundary',['caret','draft','readonly','disabled','generation','token','endpoint','close','reopen','switch'])
+def test_late_native_text_never_overwrites_a_changed_editor_target(boundary):
+    async def exercise(playwright):
+        async with fixture(playwright) as (browser, url, endpoint, _trap, _messages, _daemons,
+                                          _ops, _windows, sessions):
+            page, errors = await prepared(browser, url, endpoint, sessions)
+            await page.locator('#terminal-composer-open').click()
+            await page.locator('#terminal-composer-text').fill('original draft')
+            await page.evaluate('''()=>{
+              const field=document.querySelector('#terminal-composer-text');field.setSelectionRange(3,3);
+              window.pywebview={api:{clipboard_has_files:async()=>false,
+                clipboard_read_text:()=>new Promise(yes=>{window.finishNativeText=yes;})}};
+              window.latePaste=SuperMonoTerminalComposer.pasteClipboard();
+            }''')
+            await page.wait_for_function('typeof finishNativeText==="function"')
+            if boundary=='caret':
+                await page.evaluate('document.querySelector("#terminal-composer-text").setSelectionRange(8,8)')
+            elif boundary=='draft':
+                await page.locator('#terminal-composer-text').fill('newer user draft')
+            elif boundary in ('readonly','disabled'):
+                await page.evaluate('property=>document.querySelector("#terminal-composer-text")[property]=true', 'readOnly' if boundary=='readonly' else 'disabled')
+            elif boundary=='generation':
+                await page.evaluate('smaWorkspace.activePane.host.generation++')
+            elif boundary=='token':
+                await page.evaluate('smaWorkspace.activePane.host.config.token="changed-owned-token"')
+            elif boundary=='endpoint':
+                await page.evaluate('smaWorkspace.activePane.host.config.relay="ws://127.0.0.1:1/ws"')
+            elif boundary=='close':
+                await page.evaluate('SuperMonoTerminalComposer.close()')
+            elif boundary=='reopen':
+                await page.evaluate('SuperMonoTerminalComposer.close();SuperMonoTerminalComposer.open()')
+            else:
+                await page.evaluate('sid=>{const host=[...smaWorkspace.connections.values()].find(h=>h.config.code==="profile-room-1");smaWorkspace.openHostSession(host.id,sid,false);}', sessions[1][0].id)
+            assert await page.evaluate('finishNativeText("SHOULD_NOT_APPEAR");latePaste') is False
+            expected='newer user draft' if boundary=='draft' else 'original draft'
+            assert await page.locator('#terminal-composer-text').input_value()==expected
+            assert all(not session.pty.written for owned in sessions for session in owned)
+            assert not errors
+    run(exercise)
+
+
+def test_consecutive_editor_native_pastes_reach_captured_projects_through_real_broker(tmp_path):
+    from supermonoagent.desktop_files import DesktopFiles
+    from supermonoagent.windows_clipboard import ClipboardFiles
+    from test_desktop_files_exchange import Window
+    from test_file_companion import environment
+    from test_file_workspace_ui import browser_page, STATIC
+    import asyncio
+    sources=[]
+    for name,content in [('first.png',b'owned image'),('second.pdf',b'owned pdf')]:
+        path=tmp_path/name;path.write_bytes(content);sources.append(path)
+    snapshots=[]
+    def getter():
+        value=sources[len(snapshots)];snapshots.append(value.name);return [value]
+    clip=ClipboardFiles(getter=getter)
+    window=Window();bridge=DesktopFiles(window,window.url);bridge._files=clip
+    async def exercise(playwright):
+        async with environment(tmp_path) as (_broker,url,parents,_companions):
+            async with browser_page(playwright,url) as (page,errors,_sockets):
+                await page.expose_function('fixtureClipSnapshot',bridge.clipboard_files)
+                await page.expose_function('fixtureClipRead',bridge.clipboard_chunk)
+                await page.expose_function('fixtureClipRelease',bridge.clipboard_release)
+                await page.evaluate('''()=>{
+                  window.pywebview={api:{clipboard_files:fixtureClipSnapshot,clipboard_release:fixtureClipRelease,
+                    clipboard_has_files:async()=>true,clipboard_chunk:async(id,offset)=>{
+                      if(!window.editorReadStarted){window.editorReadStarted=true;await new Promise(yes=>window.releaseEditorRead=yes);}
+                      return fixtureClipRead(id,offset);}}};
+                }''')
+                await page.evaluate((STATIC/'clipboard-files.js').read_text(encoding='utf-8'))
+                await page.evaluate(SCRIPT.read_text(encoding='utf-8'))
+                await page.locator('#terminal-composer-open').click()
+                await page.locator('#terminal-composer-text').fill('A prompt stays A')
+                await page.evaluate('()=>{window.pasteA=SuperMonoTerminalComposer.pasteClipboard();}')
+                await page.wait_for_function('window.editorReadStarted||!SuperMonoTerminalComposer.busy')
+                assert await page.evaluate('!!window.editorReadStarted'), await page.locator('#terminal-composer-state').inner_text()
+                await page.evaluate('fixtureSelect(1);SuperMonoTerminalComposer.close();SuperMonoTerminalComposer.open()')
+                await page.locator('#terminal-composer-text').fill('B prompt stays B')
+                await page.evaluate('()=>{window.pasteB=SuperMonoTerminalComposer.pasteClipboard();}')
+                async with asyncio.timeout(3):
+                    while len(snapshots)<2:await asyncio.sleep(.01)
+                assert snapshots==['first.png','second.pdf']
+                await page.evaluate('releaseEditorRead()')
+                assert await page.evaluate('Promise.all([pasteA,pasteB])')==[True,True]
+                assert await page.locator('#terminal-composer-text').input_value()=='B prompt stays B'
+                assert await page.locator('#terminal-composer-receipts li').count()==1
+                assert 'second.pdf' in await page.locator('#terminal-composer-receipts').inner_text()
+                await page.evaluate('SuperMonoTerminalComposer.close();fixtureSelect(0);SuperMonoTerminalComposer.open()')
+                assert await page.locator('#terminal-composer-text').input_value()=='A prompt stays A'
+                assert await page.locator('#terminal-composer-receipts li').count()==1
+                assert 'first.png' in await page.locator('#terminal-composer-receipts').inner_text()
+                savedA=[p for p in (parents[0].project/'tmp').glob('*') if p.is_file()]
+                savedB=[p for p in (parents[1].project/'tmp').glob('*') if p.is_file()]
+                assert len(savedA)==len(savedB)==1
+                assert savedA[0].read_bytes()==b'owned image' and savedB[0].read_bytes()==b'owned pdf'
+                assert not errors and all(not parent.pty_written for parent in parents)
+                assert clip._items=={}
+    try:run(exercise)
+    finally:
+        bridge._close()
+        if bridge._retire_thread:bridge._retire_thread.join(2)

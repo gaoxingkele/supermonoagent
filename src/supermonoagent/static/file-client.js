@@ -8,7 +8,8 @@
   'use strict';
   const MAX_FRAME=262144,TIMEOUT=15000,MAX_PENDING=64;
   const encoder=new TextEncoder();
-  class FileClientError extends Error{constructor(code){super(code);this.name='FileClientError';this.code=code;}}
+  const bindingErrors={project_binding_required:'项目绑定不可用，请更新接收电脑的文件助手和客户端后重试。',project_binding_changed:'接收项目或目录已变化，请重新确认当前项目后重试。'};
+  class FileClientError extends Error{constructor(code){super(Object.hasOwn(bindingErrors,code)?bindingErrors[code]:code);this.name='FileClientError';this.code=code;}}
   const fail=code=>{throw new FileClientError(code);};
   const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
   function parse(value){
@@ -101,6 +102,7 @@
       // Validate and copy before connecting; invalid requests must not send credentials.
       let copied;try{copied=JSON.parse(JSON.stringify(data));}catch{fail('invalid_request');}
       if(!object(copied))fail('invalid_request');
+      if(action==='upload.begin'&&(typeof copied.project_binding!=='string'||!/^[a-f0-9]{64}$/.test(copied.project_binding)))fail('project_binding_required');
       if(encoder.encode(JSON.stringify({type:'request',id:'x'.repeat(64),action,session,data:copied})).length>MAX_FRAME)fail('request_too_large');
       await connect();
       if(closed||!socket||socket.readyState!==1)fail('disconnected');

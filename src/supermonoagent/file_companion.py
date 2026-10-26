@@ -32,7 +32,7 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from .file_broker import enrollment_proof, PROTOCOL, MAX_FRAME
 from .file_transfer import TransferStore, MAX_CHUNK, _plain_directory, _validate_name
-from .file_workspaces import FileWorkspaces, RevisionConflict, _directory
+from .file_workspaces import FileWorkspaces, ProjectSelectionRequired, RevisionConflict, _directory, directory_binding
 from .protocol import pack, unpack, pack_json
 
 _TRANSPORT_LOG = logging.getLogger('supermonoagent.file_companion.private_transport')
@@ -447,6 +447,8 @@ class FileCompanion:
         self._db = sqlite3.connect(database, check_same_thread=False)
         self._db.execute('PRAGMA synchronous=FULL')
         self._db.execute('CREATE TABLE IF NOT EXISTS deliveries(file_id TEXT PRIMARY KEY, binding TEXT, target TEXT, partial TEXT, receipt TEXT)')
+        if 'target_binding' not in {row[1] for row in self._db.execute('PRAGMA table_info(deliveries)')}:
+            self._db.execute('ALTER TABLE deliveries ADD COLUMN target_binding TEXT')
         self._db.commit()
         self._recover_partials()
         return value
@@ -456,25 +458,25 @@ class FileCompanion:
         if len(rows) > 100000:
             raise CompanionError('invalid_journal')
         for file_id, binding, target, partial_id in rows:
-            job = self._job(_json(binding))
+            # Legacy metadata is accepted ONLY to retire its exact owned part.
+            # Delivery still requires a binding, and NULL target_binding never
+            # authorizes a migrated row to download or publish.
+            job = self._job(_json(binding), _legacy_cleanup=True)
             if file_id != job['file_id'] or not isinstance(partial_id, str) or not re.fullmatch('[a-f0-9]{48}', partial_id):
                 raise CompanionError('invalid_journal')
             path = Path(target)
             if path.name != job['name']:
                 raise CompanionError('invalid_journal')
             _, status = _directory(path.parent)
-            if status == 'missing':
-                continue
             directory = path.parent / '.supermono-partials'
-            if not _present(directory):
-                continue
-            _plain_directory(directory)
-            owned = directory / (partial_id + '.part')
-            if _present(owned):
-                info = owned.lstat()
-                if not stat.S_ISREG(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
-                    raise CompanionError('invalid_partial')
-                owned.unlink()
+            if status != 'missing' and _present(directory):
+                _plain_directory(directory)
+                owned = directory / (partial_id + '.part')
+                if _present(owned):
+                    info = owned.lstat()
+                    if not stat.S_ISREG(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                        raise CompanionError('invalid_partial')
+                    owned.unlink()
             with self._db:
                 self._db.execute('UPDATE deliveries SET partial=NULL WHERE file_id=?', (file_id,))
 
@@ -506,7 +508,12 @@ class FileCompanion:
         binding = await self.inspector.fresh(session)
         cfg = await self.io(self.workspaces.get, binding['window_id'], binding['cwd'])
         library = await self.io(self.workspaces.get_mylib)
+        try:
+            project_binding = await self.io(self._project_binding, binding, cfg)
+        except (OSError, ValueError):
+            project_binding = ''  # Settings remain inspectable/repairable, but uploads fail closed.
         return {**cfg, 'session_id': session, 'daemon_epoch': binding['daemon_epoch'],
+                'project_binding': project_binding,
                 'mylib_root': library['mylib_root'], 'mylib_revision': library['revision'],
                 'mylib_status': library['status'], 'host_id': self.identity['host_id']}
 
@@ -539,17 +546,26 @@ class FileCompanion:
             code = 'directory_unavailable'
             if isinstance(error, RevisionConflict):
                 code = 'revision_conflict'
+            elif isinstance(error, ProjectSelectionRequired):
+                code = 'project_required'
             elif isinstance(error, CompanionError):
                 code = {'target_unavailable': 'session_unavailable', 'owner_unverified': 'unauthorized',
                         'target_changed': 'target_changed', 'invalid_request': 'invalid_request'}.get(str(error), 'unavailable')
             await self._send({'type': 'host_response', 'id': identity, 'ok': False, 'error': code}, generation)
 
     @staticmethod
-    def _job(job):
-        expected = {'file_id', 'name', 'size', 'sha256', 'window_id', 'session_id', 'daemon_epoch', 'workspace_revision'}
+    def _job(job, *, _legacy_cleanup=False):
+        legacy = _legacy_cleanup and isinstance(job, dict) and 'project_binding' not in job
+        if isinstance(job, dict) and 'project_binding' not in job and not legacy:
+            raise CompanionError('project_binding_required')
+        expected = {'file_id', 'name', 'size', 'sha256', 'window_id', 'session_id', 'daemon_epoch', 'workspace_revision', 'project_binding'}
+        if legacy:
+            expected.remove('project_binding')
         if not isinstance(job, dict) or set(job) != expected:
             raise CompanionError('invalid_job')
-        for field, pattern in [('file_id', '[a-f0-9]{48}'), ('sha256', '[a-f0-9]{64}'), ('daemon_epoch', '[a-f0-9]{64}'), ('window_id', '[A-Za-z0-9][A-Za-z0-9_-]{0,63}'), ('session_id', '[A-Za-z0-9_-]{1,64}')]:
+        for field, pattern in [('file_id', '[a-f0-9]{48}'), ('sha256', '[a-f0-9]{64}'), ('project_binding', '[a-f0-9]{64}'), ('daemon_epoch', '[a-f0-9]{64}'), ('window_id', '[A-Za-z0-9][A-Za-z0-9_-]{0,63}'), ('session_id', '[A-Za-z0-9_-]{1,64}')]:
+            if legacy and field == 'project_binding':
+                continue
             if not isinstance(job[field], str) or not re.fullmatch(pattern, job[field]):
                 raise CompanionError('invalid_job')
         _validate_name(job['name'])
@@ -559,10 +575,28 @@ class FileCompanion:
 
     def _row(self, job):
         with self._db_lock:
-            row = self._db.execute('SELECT binding,target,partial,receipt FROM deliveries WHERE file_id=?', (job['file_id'],)).fetchone()
+            row = self._db.execute('SELECT binding,target,partial,receipt,target_binding FROM deliveries WHERE file_id=?', (job['file_id'],)).fetchone()
         if row and row[0] != json.dumps(job, sort_keys=True, separators=(',', ':')):
             raise CompanionError('journal_mismatch')
         return row
+
+    def _project_binding(self, binding, cfg, state=None):
+        state = directory_binding(cfg) if state is None else state
+        document = ['sma-project-binding-1', self.identity['host_id'], binding['window_id'],
+                    binding['session_id'], binding['daemon_epoch'], binding['cwd'],
+                    cfg['source'], cfg['revision'], state]
+        return hmac.new(bytes.fromhex(self.identity['host_secret']),
+                        json.dumps(document, ensure_ascii=False, separators=(',', ':')).encode('utf8'),
+                        hashlib.sha256).hexdigest()
+
+    def _check_project(self, job, binding, cfg=None):
+        cfg = cfg or self.workspaces.guard(binding['window_id'], binding['cwd'], job['workspace_revision'])
+        row = self._row(job)
+        if row is None or not isinstance(row[4], str) or not re.fullmatch('[a-f0-9]{64}', row[4]):
+            raise CompanionError('project_binding_required')
+        if not hmac.compare_digest(self._project_binding(binding, cfg), row[4]):
+            raise CompanionError('project_binding_changed')
+        return cfg
 
     @staticmethod
     def _verify_file(path, job):
@@ -581,6 +615,12 @@ class FileCompanion:
         cfg = self.workspaces.guard(binding['window_id'], binding['cwd'], job['workspace_revision'])
         target = Path(cfg['exchange_dir']) / job['name']
         row = self._row(job)
+        state = directory_binding(cfg)
+        expected_binding = row[4] if row else job['project_binding']
+        if not isinstance(expected_binding, str) or not re.fullmatch('[a-f0-9]{64}', expected_binding):
+            raise CompanionError('project_binding_required')
+        if not hmac.compare_digest(self._project_binding(binding, cfg, state), expected_binding):
+            raise CompanionError('project_binding_changed')
         if row:
             if row[1] != str(target):
                 raise CompanionError('target_changed')
@@ -604,9 +644,13 @@ class FileCompanion:
         store = TransferStore(cfg['exchange_dir'])
         transfer = store.begin(self.identity['host_id'], job['session_id'], job['name'], job['size'], job['sha256'])
         try:
+            created = directory_binding(cfg)
+            if created['directories'][:len(state['directories'])] != state['directories']:
+                raise CompanionError('project_binding_changed')
+            target_binding = self._project_binding(binding, cfg, created)
             with self._db_lock, self._db:
-                self._db.execute('INSERT OR REPLACE INTO deliveries VALUES(?,?,?,?,NULL)',
-                    (job['file_id'], json.dumps(job, sort_keys=True, separators=(',', ':')), str(target), transfer))
+                self._db.execute('INSERT OR REPLACE INTO deliveries(file_id,binding,target,partial,receipt,target_binding) VALUES(?,?,?,?,NULL,?)',
+                    (job['file_id'], json.dumps(job, sort_keys=True, separators=(',', ':')), str(target), transfer, target_binding))
         except BaseException:
             store.cancel_owner(self.identity['host_id'])
             raise
@@ -614,6 +658,7 @@ class FileCompanion:
 
     def _finish(self, store, transfer, job, binding, generation):
         with self.workspaces.publish_guard(binding['window_id'], binding['cwd'], job['workspace_revision']) as cfg:
+            self._check_project(job, binding, cfg)
             expected = Path(cfg['exchange_dir']) / job['name']
             if store.root != Path(cfg['exchange_dir']):
                 raise CompanionError('target_changed')
@@ -621,18 +666,25 @@ class FileCompanion:
                 raise CompanionError('target_changed')
             if _present(expected):
                 raise CompanionError('target_conflict')
+            def can_publish():
+                # finish() may block in flush/fsync. Revalidate after that wait,
+                # at its final publication callback, rather than trusting entry.
+                self._check_project(job, binding, cfg)
+                store._check_directories()
+                return generation == self._generation and self.inspector.current(binding) and not self._closed
             path = store.finish(self.identity['host_id'], transfer,
-                can_publish=lambda: generation == self._generation and self.inspector.current(binding) and not self._closed,
+                can_publish=can_publish,
                 strict_name=True)
             if path != str(expected):
                 raise CompanionError('target_conflict')
-            receipt = {name: job[name] for name in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision')}
+            receipt = {name: job[name] for name in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision', 'project_binding')}
             receipt['path'] = path
             with self._db_lock, self._db:
                 self._db.execute('UPDATE deliveries SET partial=NULL,receipt=? WHERE file_id=?', (json.dumps(receipt), job['file_id']))
             return receipt
 
     def _http_open(self, job, ticket, binding, generation):
+        self._check_project(job, binding)
         path = '/file/download/' + job['file_id']
         if (not isinstance(ticket, dict) or set(ticket) != {'download_path', 'ticket', 'expires_at', 'size', 'sha256', 'name'}
                 or ticket['download_path'] != path or ticket['size'] != job['size']
@@ -734,11 +786,12 @@ class FileCompanion:
             self._progress(file_id, {'state': 'downloading', 'received': 0, 'size': job['size']})
             if saved:
                 await self.inspector.fresh(job['session_id'])
-                await self.io(self.workspaces.guard, binding['window_id'], binding['cwd'], job['workspace_revision'])
-                receipt = {name: job[name] for name in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision')}
+                await self.io(self._check_project, job, binding)
+                receipt = {name: job[name] for name in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision', 'project_binding')}
                 receipt['path'] = saved
             else:
                 offset = 0
+                await self.io(self._check_project, job, binding)
                 if self.download_mode == 'http':
                     ticket = await self._request('download.ticket', job['session_id'], {'file_id': file_id}, generation)
                     response = await self.io(self._http_open, job, ticket, binding, generation)
@@ -775,9 +828,12 @@ class FileCompanion:
             code = 'delivery_failed'
             if isinstance(error, RevisionConflict):
                 code = 'revision_conflict'
+            elif isinstance(error, ProjectSelectionRequired):
+                code = 'project_required'
             elif isinstance(error, CompanionError) and str(error) in {
                     'target_changed', 'target_unavailable', 'owner_unverified', 'saved_file_changed',
-                    'target_conflict', 'invalid_download_ticket', 'invalid_download_response', 'journal_mismatch'}:
+                    'target_conflict', 'invalid_download_ticket', 'invalid_download_response', 'journal_mismatch',
+                    'project_binding_required', 'project_binding_changed'}:
                 code = str(error)
             failure = code
         finally:

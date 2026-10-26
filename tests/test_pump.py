@@ -23,6 +23,26 @@ class Loop:
 
 
 class PumpTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "bundled xterm requires Node")
+    def test_cropped_history_keeps_paste_and_cursor_key_modes(self):
+        vectors = []
+        for mode in (b"\x1b[?2004h", b"\x1b[?1h", b"\x1b[?1;2004h"):
+            for reset in (b"", b"\x1bc", b"\x1b[!p", b"\x1b[?1;2004l"):
+                raw = mode + reset + b"A" * 200 + b"\x1b[4;2H"
+                vectors.append([base64.b64encode(value).decode() for value in (raw, bounded_snapshot(raw, 64))])
+        script = r"""
+const {Terminal}=require('./src/supermonoagent/static/xterm.js');
+(async()=>{for(const pair of JSON.parse(require('fs').readFileSync(0,'utf8'))){const values=[];
+ for(const bytes of pair){const t=new Terminal({cols:32,rows:8});
+ await new Promise(done=>t.write(Buffer.from(bytes,'base64'),done));
+ values.push([t.modes.bracketedPasteMode,t.modes.applicationCursorKeysMode]);t.dispose();}
+ if(JSON.stringify(values[0])!==JSON.stringify(values[1]))throw Error(JSON.stringify(values));
+}})().catch(error=>{console.error(error);process.exit(1)});
+"""
+        result = subprocess.run([shutil.which("node"), "-e", script], input=json.dumps(vectors),
+                                cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_fragmented_cursor_visibility_is_bounded_and_ignores_strings(self):
         state = SgrState()
         for byte in b"\x1b[?1;25l":

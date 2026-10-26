@@ -160,7 +160,7 @@ async def workspace(ws):
 async def upload(ws, cfg, content=b'%PDF-1.7 owned fixture', name='document.pdf'):
     begin = await request(ws, 'upload.begin', {'original_name': name, 'size': len(content),
         'sha256': hashlib.sha256(content).hexdigest(), 'window_id': cfg['window_id'],
-        'daemon_epoch': cfg['daemon_epoch'], 'workspace_revision': cfg['revision'], 'timezone_offset_minutes': 480})
+        'daemon_epoch': cfg['daemon_epoch'], 'workspace_revision': cfg['revision'], 'project_binding': cfg['project_binding'], 'timezone_offset_minutes': 480})
     for offset in range(0, len(content), 98304):
         await request(ws, 'upload.chunk', {'upload_id': begin['upload_id'], 'offset': offset, 'data': base64.b64encode(content[offset:offset+98304]).decode()})
     return await request(ws, 'upload.finish', {'upload_id': begin['upload_id']})
@@ -173,6 +173,236 @@ async def saved(ws, file_id):
             if status['state'] in {'saved', 'failed'}:
                 return status
             await asyncio.sleep(.03)
+
+
+def captured_upload(cfg, content=b'owned binding bytes'):
+    value = {'original_name': 'binding.pdf', 'size': len(content), 'sha256': hashlib.sha256(content).hexdigest(),
+             'window_id': cfg['window_id'], 'daemon_epoch': cfg['daemon_epoch'],
+             'workspace_revision': cfg['revision'], 'timezone_offset_minutes': 0}
+    if 'project_binding' in cfg:
+        value['project_binding'] = cfg['project_binding']
+    return value
+
+
+@pytest.mark.parametrize('change', ['cwd', 'project_identity', 'exchange_identity'])
+def test_preflight_binding_rejects_default_revision_zero_target_changes(tmp_path, change):
+    async def exercise():
+        async with environment(tmp_path) as (broker, url, parents, companions):
+            async with client(url, 'A') as ws:
+                if change == 'exchange_identity': (parents[0].project / 'tmp').mkdir()
+                cfg = await workspace(ws)
+                assert cfg['revision'] == 0
+                if change == 'cwd':
+                    target = tmp_path / 'other-project'; target.mkdir()
+                    parents[0].project = target; await parents[0].publish()
+                    await eventually(lambda: companions[0].inspector.valid.is_set()
+                                     and companions[0].inspector.snapshot('session1')['cwd'] == str(target))
+                elif change == 'project_identity':
+                    original = parents[0].project
+                    original.rename(original.with_name('retired-project')); original.mkdir()
+                else:
+                    original = parents[0].project / 'tmp'
+                    original.rename(original.with_name('retired-tmp')); original.mkdir()
+                await ws.send(json.dumps({'type': 'request', 'id': 'fixture', 'action': 'upload.begin',
+                    'session': 'session1', 'data': captured_upload(cfg)}))
+                result = json.loads(await ws.recv())
+                assert result['ok'] is False and result['error'] == 'project_binding_changed', result
+                assert not broker._uploads and not list(tmp_path.rglob('*.part'))
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('phase', ['download', 'prepublish'])
+def test_original_binding_never_redirects_to_b_during_download_or_publication(tmp_path, phase):
+    async def exercise():
+        async with environment(tmp_path) as (_, url, parents, companions):
+            helper = companions[0]
+            entered, release = threading.Event(), threading.Event()
+            original_request, original_finish = helper._request, helper._finish
+            async def request_gate(action, session, data, generation):
+                result = await original_request(action, session, data, generation)
+                if phase == 'download' and action == 'download.ticket':
+                    entered.set()
+                    while not release.is_set(): await asyncio.sleep(.01)
+                return result
+            def finish_gate(*args):
+                if phase == 'prepublish': entered.set(); assert release.wait(5)
+                return original_finish(*args)
+            helper._request, helper._finish = request_gate, finish_gate
+            try:
+                async with client(url, 'A') as ws:
+                    cfg = await workspace(ws)
+                    queued = await upload(ws, cfg)
+                    await eventually(entered.is_set)
+                    target = tmp_path / 'other-project'; target.mkdir()
+                    parents[0].project = target; await parents[0].publish()
+                    await eventually(lambda: helper.inspector.valid.is_set()
+                                     and helper.inspector.snapshot('session1')['cwd'] == str(target))
+                    release.set()
+                    result = await saved(ws, queued['file_id'])
+                    assert result['state'] == 'failed', result
+                    assert list(target.iterdir()) == [] and not list(tmp_path.rglob('*.part'))
+                    assert not list((tmp_path / 'project-A').rglob('*.pdf'))
+            finally:
+                release.set()
+    asyncio.run(exercise())
+
+
+def test_post_fsync_boundary_rechecks_project_identity_before_hardlink_publish(tmp_path):
+    async def exercise():
+        async with environment(tmp_path) as (_, url, parents, companions):
+            helper = companions[0]
+            entered, release = threading.Event(), threading.Event()
+            original_begin = helper._begin
+            stores = []
+            def capture_begin(*args):
+                result = original_begin(*args)
+                stores.append(result[0])
+                if result[1]:
+                    transfer = result[0]._transfers[result[1]]
+                    real = transfer.stream
+                    class PostFsyncClose:
+                        def __getattr__(self, name): return getattr(real, name)
+                        def close(self):
+                            already_closed = real.closed
+                            real.close()
+                            # Actual finish order is flush -> fsync -> close ->
+                            # can_publish. Gate immediately after real close so
+                            # Windows permits the real directory replacement.
+                            if not already_closed:
+                                entered.set(); assert release.wait(5)
+                    transfer.stream = PostFsyncClose()
+                return result
+            helper._begin = capture_begin
+            try:
+                async with client(url, 'A') as ws:
+                    cfg = await workspace(ws)
+                    queued = await upload(ws, cfg)
+                    await eventually(entered.is_set)
+                    project = parents[0].project
+                    retired = tmp_path/'retired-project'
+                    project.rename(retired); project.mkdir()
+                    (retired/'tmp').rename(project/'tmp')
+                    release.set()
+                    result = await saved(ws, queued['file_id'])
+                    assert result['state'] == 'failed' and result['error'] == 'project_binding_changed', result
+                    assert not list(project.rglob('*.pdf')) and not list(retired.rglob('*.pdf'))
+                    # Existing TransferStore refuses unlink through a changed
+                    # ancestor. It releases the handle/registry, leaving only
+                    # the quarantined partial, rather than deleting via a path
+                    # which no longer has its original identity.
+                    parts = list(tmp_path.rglob('*.part'))
+                    assert len(parts) == 1 and parts[0].read_bytes() == b'%PDF-1.7 owned fixture'
+                    assert not stores[0]._transfers
+            finally:
+                release.set()
+    asyncio.run(exercise())
+
+
+def test_saved_binding_replays_after_helper_restart_without_copying_again(tmp_path):
+    async def exercise():
+        async with environment(tmp_path) as (broker, url, parents, companions):
+            helper = companions[0]
+            async with client(url, 'A') as ws:
+                cfg = await workspace(ws)
+                queued = await upload(ws, cfg)
+                status = await saved(ws, queued['file_id'])
+                path = Path(status['receipt']['path']); before = path.stat()
+                await eventually(lambda: queued['file_id'] not in helper._deliveries)
+                await helper.close(); await helper._fixture_task
+                replacement = FileCompanion(helper.backend, helper.broker_url, helper.room, helper.state_dir,
+                    helper.owner_token_file, helper.enrollment_key_file, broker_token_file=helper.broker_token_file,
+                    default_mylib_root=str(tmp_path/'missing-library'), download_base_url=helper.download_base_url)
+                acknowledgements = []
+                original = replacement._request
+                async def counted(action, *args):
+                    result = await original(action, *args)
+                    if action == 'delivery.ack': acknowledgements.append(result)
+                    return result
+                replacement._request = counted
+                task = asyncio.create_task(replacement.run())
+                helper._fixture_tasks.append(task)
+                replacement._fixture_tasks, replacement._fixture_task = helper._fixture_tasks, task
+                companions[0] = replacement
+                await workspace(ws)
+                row = broker._db.execute('SELECT * FROM jobs WHERE file_id=?', (queued['file_id'],)).fetchone()
+                await broker._delivery(broker._hosts[('owned', 'A')], row)
+                await eventually(lambda: bool(acknowledgements))
+                assert replacement.identity == helper.identity
+                assert path.read_bytes() == b'%PDF-1.7 owned fixture' and path.stat().st_mtime_ns == before.st_mtime_ns
+                assert len(list((parents[0].project/'tmp').glob('*.pdf'))) == 1
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('unfinished', [False, True])
+def test_receiver_legacy_journal_migration_preserves_files_but_cannot_authorize_unbound_job(tmp_path, unfinished):
+    import sqlite3
+    state = tmp_path/'legacy-state'; state.mkdir()
+    target = tmp_path/'legacy.pdf'; target.write_bytes(b'previously saved owned bytes')
+    old_job = {'file_id': 'a'*48, 'name': 'legacy.pdf', 'size': target.stat().st_size,
+        'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'window_id': 'window1',
+        'session_id': 'session1', 'daemon_epoch': 'b'*64, 'workspace_revision': 0}
+    partial_dir = tmp_path/'.supermono-partials'; partial_dir.mkdir()
+    owned_partial = partial_dir/('c'*48+'.part')
+    neighbor = partial_dir/('d'*48+'.part'); neighbor.write_bytes(b'unrelated owned fixture')
+    if unfinished: owned_partial.write_bytes(b'legacy unfinished')
+    with sqlite3.connect(state/'deliveries.sqlite3') as db:
+        db.execute('CREATE TABLE deliveries(file_id TEXT PRIMARY KEY,binding TEXT,target TEXT,partial TEXT,receipt TEXT)')
+        db.execute('INSERT INTO deliveries VALUES(?,?,?,?,?)',
+            (old_job['file_id'], json.dumps(old_job), str(target), 'c'*48 if unfinished else None,
+             None if unfinished else '{"legacy":true}'))
+    db.close()
+    async def exercise():
+        helper = FileCompanion('http://127.0.0.1:1', 'ws://127.0.0.1:2/file/ws', 'owned',
+            state, tmp_path/'unused-owner', tmp_path/'unused-enrollment')
+        try:
+            helper.identity = helper._initialize()
+            row = helper._db.execute('SELECT target_binding,receipt FROM deliveries').fetchone()
+            assert row == (None, None if unfinished else '{"legacy":true}')
+            with pytest.raises(CompanionError, match='project_binding_required'):
+                helper._job(old_job)
+            assert target.read_bytes() == b'previously saved owned bytes'
+            assert not owned_partial.exists() and neighbor.read_bytes() == b'unrelated owned fixture'
+            assert helper._db.execute('SELECT partial FROM deliveries').fetchone()[0] is None
+        finally:
+            if helper._db: helper._db.close()
+            helper._release()
+            await helper.inspector.close(); await helper.io.close()
+        # A real fresh broker/parent/helper flow remains usable after migration.
+        # Reuse the migrated helper directory, including the quarantined row.
+        state.rename(tmp_path/'helper-A')
+        async with environment(tmp_path) as (_, url, parents, _):
+            async with client(url, 'A') as ws:
+                result = await saved(ws, (await upload(ws, await workspace(ws)))['file_id'])
+                assert result['state'] == 'saved'
+                assert Path(result['receipt']['path']).parent == parents[0].project/'tmp'
+                assert target.read_bytes() == b'previously saved owned bytes'
+    asyncio.run(exercise())
+
+
+def test_staged_default_revision_zero_job_cannot_follow_cwd_to_other_project(tmp_path):
+    async def exercise():
+        async with environment(tmp_path) as (_, url, parents, companions):
+            companion = companions[0]; original = companion._deliver
+            entered, release = asyncio.Event(), asyncio.Event()
+            async def gated(job, generation):
+                entered.set(); await release.wait(); return await original(job, generation)
+            companion._deliver = gated
+            try:
+                async with client(url, 'A') as ws:
+                    queued = await upload(ws, await workspace(ws))
+                    await asyncio.wait_for(entered.wait(), 5)
+                    target = tmp_path / 'other-project'; target.mkdir()
+                    parents[0].project = target; await parents[0].publish()
+                    await eventually(lambda: companion.inspector.valid.is_set()
+                                     and companion.inspector.snapshot('session1')['cwd'] == str(target))
+                    release.set()
+                    result = await saved(ws, queued['file_id'])
+                    assert result['state'] == 'failed' and result['error'] == 'project_binding_changed', result
+                    assert list(target.iterdir()) == [] and not list(tmp_path.rglob('*.part'))
+                    assert not list((tmp_path / 'project-A').rglob('*.pdf'))
+            finally:
+                release.set()
+    asyncio.run(exercise())
 
 
 @pytest.mark.parametrize('mode', ['http', 'ws'])
@@ -194,6 +424,75 @@ def test_two_owned_parents_route_and_save_verified_bytes(tmp_path, mode):
                 assert re_name(path.name) and path.read_bytes() == data
                 assert not (parents[1].project / 'tmp').exists()
                 assert not list(path.parent.glob('.supermono-partials/*.part'))
+    asyncio.run(exercise())
+
+
+def test_home_startup_rejects_upload_until_project_selected_then_saves_to_project_tmp(tmp_path, monkeypatch):
+    home = tmp_path / 'synthetic-home'; home.mkdir()
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    async def exercise():
+        async with environment(tmp_path) as (broker, url, parents, companions):
+            parents[0].project = home
+            await parents[0].publish()
+            await eventually(lambda: companions[0].inspector.valid.is_set()
+                             and companions[0].inspector.snapshot('session1')['cwd'] == str(home))
+            async with client(url, 'A') as ws:
+                cfg = await workspace(ws)
+                assert cfg['project_status'] == 'selection_required' and cfg['exchange_dir'] == str(home / 'tmp')
+                content = b'%PDF-1.7 selected owned project'
+                denied = await request(ws, 'upload.begin', {'original_name': 'owned.pdf', 'size': len(content),
+                    'sha256': hashlib.sha256(content).hexdigest(), 'window_id': cfg['window_id'],
+                    'daemon_epoch': cfg['daemon_epoch'], 'workspace_revision': cfg['revision'],
+                    'project_binding': cfg['project_binding'], 'timezone_offset_minutes': 0}, ok=False)
+                assert denied['error'] == 'project_required' and not broker._uploads
+                denied = await request(ws, 'workspace.set', {'project_dir': str(home),
+                    'exchange_dir': None, 'expected_revision': 0}, ok=False)
+                assert denied['error'] == 'project_required'
+                assert list(home.iterdir()) == []
+                project = tmp_path / 'selected-project'; project.mkdir()
+                cfg = await request(ws, 'workspace.set', {'project_dir': str(project),
+                    'exchange_dir': None, 'expected_revision': 0})
+                assert cfg['revision'] == 1 and cfg['exchange_dir'] == str(project / 'tmp')
+                assert not (project / 'tmp').exists()
+                result = await saved(ws, (await upload(ws, cfg, content))['file_id'])
+                assert result['state'] == 'saved', result
+                target = Path(result['receipt']['path'])
+                assert target.parent == project / 'tmp' and target.read_bytes() == content
+                assert result['receipt']['sha256'] == hashlib.sha256(content).hexdigest()
+                assert list(home.iterdir()) == [] and not (parents[1].project / 'tmp').exists()
+    asyncio.run(exercise())
+
+
+def test_staged_delivery_rechecks_home_target_before_creating_receiver(tmp_path, monkeypatch):
+    home = tmp_path / 'synthetic-home'; home.mkdir()
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    async def exercise():
+        async with environment(tmp_path) as (_, url, parents, companions):
+            companion = companions[0]
+            entered, release = asyncio.Event(), asyncio.Event()
+            original = companion._deliver
+            async def gated(job, generation):
+                entered.set()
+                await release.wait()
+                return await original(job, generation)
+            companion._deliver = gated
+            try:
+                async with client(url, 'A') as ws:
+                    queued = await upload(ws, await workspace(ws))
+                    await asyncio.wait_for(entered.wait(), 5)
+                    parents[0].project = home
+                    await parents[0].publish()
+                    await eventually(lambda: companion.inspector.valid.is_set()
+                                     and companion.inspector.snapshot('session1')['cwd'] == str(home))
+                    release.set()
+                    result = await saved(ws, queued['file_id'])
+                    assert result['state'] == 'failed' and result['error'] == 'project_required', result
+                    assert companion.progress[queued['file_id']]['error'] == 'project_required'
+                    assert list(home.iterdir()) == []
+                    assert not list(tmp_path.rglob('*.part'))
+                    assert not list((tmp_path / 'project-A').rglob('*.pdf'))
+            finally:
+                release.set()
     asyncio.run(exercise())
 
 

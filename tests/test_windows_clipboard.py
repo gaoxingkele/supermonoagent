@@ -146,19 +146,334 @@ def test_file_snapshot_hash_chunks_and_handles_release(tmp_path):
         clipboard.read(item['id'], 0)
 
 
-def test_snapshot_replaces_old_ids_and_closes_handles(tmp_path):
+def test_snapshot_preserves_published_ids_until_release_or_close(tmp_path):
     source = tmp_path / 'word.docx'
     source.write_bytes(b'word')
     clipboard = ClipboardFiles(getter=lambda: [source])
     first = clipboard.snapshot()['items'][0]['id']
     stream = clipboard._items[first].stream
     second = clipboard.snapshot()['items'][0]['id']
-    assert first != second and stream.closed
-    with pytest.raises(ValueError):
-        clipboard.read(first, 0)
+    assert first != second and not stream.closed
+    assert base64.b64decode(clipboard.read(first, 0)['data']) == b'word'
+    second_stream = clipboard._items[second].stream
     clipboard.close()
+    assert stream.closed and second_stream.closed
     with pytest.raises(ValueError):
         clipboard.read(second, 0)
+
+
+@pytest.mark.parametrize('budget', ['count', 'bytes', 'invalid_batch', 'cancelled'])
+def test_failed_snapshot_only_rolls_back_new_handles(tmp_path, budget):
+    source = tmp_path/'source.pdf'
+    source.write_bytes(b'owned')
+    clipboard = ClipboardFiles(getter=lambda: [source], max_sources=2, max_total_size=10)
+    first = clipboard.snapshot()['items'][0]['id']
+    original = clipboard._items[first].stream
+    clipboard._getter = lambda: [source, source]
+    if budget == 'bytes':
+        clipboard.max_sources = 10
+        clipboard.max_total_size = 12
+    elif budget == 'invalid_batch':
+        clipboard._getter = lambda: [source, tmp_path]
+    elif budget == 'cancelled':
+        checks = []
+        def cancelled():
+            checks.append(1)
+            return len(checks) >= 7
+    with pytest.raises(ValueError):
+        clipboard.snapshot(**({'cancelled': cancelled} if budget == 'cancelled' else {}))
+    assert set(clipboard._items) == {first}
+    assert not original.closed
+    assert base64.b64decode(clipboard.read(first, 0)['data']) == b'owned'
+    clipboard.release(first)
+    assert original.closed and not clipboard._items
+    clipboard._getter = lambda: [source]
+    assert len(clipboard.snapshot()['items']) == 1
+    clipboard.close()
+
+
+def test_default_source_budget_retains_all_128_and_release_restores_capacity(tmp_path):
+    source = tmp_path/'tiny.pdf'
+    source.write_bytes(b'x')
+    clipboard = ClipboardFiles(getter=lambda: [source]*32)
+    assert clipboard.max_sources == 128 and clipboard.max_total_size == 1024**3
+    published = [clipboard.snapshot() for _ in range(4)]
+    with pytest.raises(ValueError, match='budget'):
+        clipboard.snapshot()
+    assert len(clipboard._items) == 128
+    assert base64.b64decode(clipboard.read(published[0]['items'][0]['id'], 0)['data']) == b'x'
+    for item in published[0]['items']:
+        clipboard.release(item['id'])
+    assert len(clipboard.snapshot()['items']) == 32
+    streams = [item.stream for item in clipboard._items.values()]
+    clipboard.close()
+    assert all(stream.closed for stream in streams) and not clipboard._items
+
+
+def test_next_getter_captures_b_before_a_hash_lock_releases(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import threading
+    import supermonoagent.windows_clipboard as module
+    paths = []
+    for name in ['a', 'b', 'c']:
+        path = tmp_path/name
+        path.write_bytes(name.encode())
+        paths.append(path)
+    current = [paths[0]]
+    hashing_a, release_hash, captured_b = threading.Event(), threading.Event(), threading.Event()
+    real_hash = hashlib.sha256
+    class GateHash:
+        def __init__(self):
+            self.inner = real_hash()
+        def update(self, data):
+            if threading.current_thread().name == 'clipboard-A':
+                hashing_a.set()
+                assert release_hash.wait(3)
+            self.inner.update(data)
+        def hexdigest(self):
+            return self.inner.hexdigest()
+    monkeypatch.setattr(module, 'hashlib', SimpleNamespace(sha256=GateHash))
+    def getter():
+        value = list(current)
+        if threading.current_thread().name == 'clipboard-B':
+            captured_b.set()
+        return value
+    clipboard = ClipboardFiles(getter=getter)
+    results, errors = {}, []
+    def snapshot(key):
+        try:
+            results[key] = clipboard.snapshot()['items'][0]
+        except BaseException as error:
+            errors.append(error)
+    first = threading.Thread(target=snapshot, args=('A',), name='clipboard-A')
+    second = threading.Thread(target=snapshot, args=('B',), name='clipboard-B')
+    try:
+        first.start()
+        assert hashing_a.wait(2)
+        current[:] = [paths[1]]
+        second.start()
+        # No sleeps: B must capture while A is demonstrably still hashing.
+        assert captured_b.wait(1), 'B getter blocked by A long hash lock'
+        current[:] = [paths[2]]
+    finally:
+        release_hash.set()
+        first.join(3)
+        if second.ident is not None:
+            second.join(3)
+    try:
+        assert not first.is_alive() and not second.is_alive() and not errors
+        assert base64.b64decode(clipboard.read(results['A']['id'], 0)['data']) == b'a'
+        assert base64.b64decode(clipboard.read(results['B']['id'], 0)['data']) == b'b'
+        assert results['B']['sha256'] == real_hash(b'b').hexdigest()
+    finally:
+        clipboard.close()
+
+
+def test_pending_image_captures_respect_budget_before_getter(monkeypatch):
+    from types import SimpleNamespace
+    import threading
+    import supermonoagent.windows_clipboard as module
+    entered,release=threading.Event(),threading.Event()
+    captured=[];results=[];errors=[]
+    real_hash=hashlib.sha256
+    class Gated:
+        def __init__(self):self.inner=real_hash()
+        def update(self,data):
+            entered.set();assert release.wait(3);self.inner.update(data)
+        def hexdigest(self):return self.inner.hexdigest()
+    monkeypatch.setattr(module,'hashlib',SimpleNamespace(sha256=Gated))
+    def getter():captured.append(16);return ('fixture.png',b'x'*16)
+    clipboard=ClipboardFiles(getter=getter,max_file_size=16,max_sources=1,max_total_size=32)
+    def snapshot():
+        try:results.append(clipboard.snapshot())
+        except ValueError as error:errors.append(str(error))
+    first=threading.Thread(target=snapshot)
+    followers=[threading.Thread(target=snapshot) for _ in range(3)]
+    first.start()
+    try:
+        assert entered.wait(1)
+        for thread in followers:thread.start()
+        for thread in followers:thread.join(.3)
+        assert captured==[16], 'Unregistered images allocated outside budget'
+        assert all(not thread.is_alive() for thread in followers)
+    finally:
+        release.set();first.join(3)
+        for thread in followers:
+            if thread.ident is not None:thread.join(3)
+        clipboard.close()
+    assert len(results)==1 and len(errors)==3
+
+
+@pytest.mark.parametrize('kind',['png-budget','dib-budget','one-bit','compressed'])
+def test_native_image_admission_rejects_before_full_copy_or_conversion(monkeypatch, kind):
+    from types import SimpleNamespace
+    import supermonoagent.windows_clipboard as module
+    data = b'owned PNG bytes' if kind=='png-budget' else dib(bits=1 if kind=='one-bit' else 24,compression=4 if kind=='compressed' else 0)
+    reads=[];closed=[];unlocked=[];converted=[]
+    fake=SimpleNamespace(string_at=lambda pointer,size:reads.append(size) or data[:size])
+    user=SimpleNamespace(RegisterClipboardFormatW=lambda _:99,OpenClipboard=lambda _:True,
+        CloseClipboard=lambda:closed.append(True) or True,IsClipboardFormatAvailable=lambda n:n==(99 if kind=='png-budget' else 8),GetClipboardData=lambda _:123)
+    kernel=SimpleNamespace(GlobalSize=lambda _:len(data),GlobalLock=lambda _:456,GlobalUnlock=lambda _:unlocked.append(True))
+    monkeypatch.setattr(module,'_native_apis',lambda:(fake,user,kernel,None))
+    monkeypatch.setattr(module,'dib_to_png',lambda data:converted.append(True) or b'unexpected conversion')
+    clipboard=ClipboardFiles(max_total_size=4096)
+    with pytest.raises(ValueError):clipboard.snapshot()
+    assert not converted and closed==[True] and unlocked==[True]
+    assert reads==[] if kind=='png-budget' else reads==[min(len(data),124)]
+    assert clipboard._items=={} and clipboard._reservations=={}
+
+
+def test_close_invalidates_pending_getter_without_freeing_its_live_reservation():
+    import threading
+    entered,release=threading.Event(),threading.Event();errors=[]
+    def getter():entered.set();assert release.wait(2);return ('owned.png',b'x'*16)
+    clipboard=ClipboardFiles(getter=getter,max_file_size=16,max_total_size=32,max_sources=1)
+    def snapshot():
+        try:clipboard.snapshot()
+        except ValueError as error:errors.append(str(error))
+    task=threading.Thread(target=snapshot);task.start()
+    try:
+        assert entered.wait(1)
+        clipboard.close()
+        assert len(clipboard._reservations)==1
+        with pytest.raises(ValueError,match='budget'):clipboard.snapshot()
+    finally:release.set();task.join(3)
+    assert errors==['Clipboard snapshot cancelled'] and not clipboard._reservations and not clipboard._items
+    clipboard._getter=lambda:('new.png',b'n'*16)
+    assert len(clipboard.snapshot()['items'])==1
+    clipboard.close()
+
+
+def test_failed_close_keeps_charge_and_close_attempts_other_handles(tmp_path):
+    path=tmp_path/'file.pdf';path.write_bytes(b'owned')
+    clipboard=ClipboardFiles(getter=lambda:[path,path],max_total_size=10,max_sources=2)
+    items=clipboard.snapshot()['items'];first,second=[clipboard._items[i['id']].stream for i in items]
+    class Flaky:
+        fail=True
+        def close(self):
+            if self.fail:raise OSError('owned close failure')
+            first.close()
+        def __getattr__(self,key):return getattr(first,key)
+    flaky=Flaky();clipboard._items[items[0]['id']].stream=flaky
+    with pytest.raises(OSError):clipboard.close()
+    assert not first.closed and second.closed and len(clipboard._items)==1
+    with clipboard._budget_lock:assert clipboard._used_budget()==(1,5)
+    with pytest.raises(ValueError,match='budget'):clipboard.snapshot()
+    flaky.fail=False;clipboard.close()
+    assert first.closed and not clipboard._items and not clipboard._reservations
+
+
+def test_many_concurrent_images_have_bounded_pending_and_published_bytes(monkeypatch):
+    from types import SimpleNamespace
+    import threading
+    import supermonoagent.windows_clipboard as module
+    entered,release=threading.Event(),threading.Event();errors=[];results=[]
+    real_hash=hashlib.sha256
+    class Gated:
+        def __init__(self):self.inner=real_hash()
+        def update(self,data):entered.set();assert release.wait(3);self.inner.update(data)
+        def hexdigest(self):return self.inner.hexdigest()
+    monkeypatch.setattr(module,'hashlib',SimpleNamespace(sha256=Gated))
+    tracked={'live':0,'peak':0};track_lock=threading.Lock()
+    class Image(bytes):
+        def __new__(cls):
+            value=super().__new__(cls,bytearray([120]*16))
+            with track_lock:
+                tracked['live']+=16
+                with clipboard._budget_lock:
+                    buffers=sum(item.size for item in clipboard._items.values())
+                tracked['peak']=max(tracked['peak'],tracked['live']+buffers)
+            return value
+        def __del__(self):
+            with track_lock:tracked['live']-=16
+    clipboard=ClipboardFiles(getter=lambda:('owned.png',Image()),max_file_size=16,max_total_size=64)
+    def snapshot():
+        try:results.append(clipboard.snapshot())
+        except ValueError as error:errors.append(str(error))
+    first=threading.Thread(target=snapshot);first.start();followers=[]
+    try:
+        assert entered.wait(1)
+        followers=[threading.Thread(target=snapshot) for _ in range(32)]
+        for task in followers:task.start()
+        # All admission paths run independently of the blocked hash; quotas
+        # include the unfinished captured image and registered BytesIO copy.
+        for task in followers:task.join(.01)
+        with clipboard._budget_lock:
+            count,size=clipboard._used_budget()
+            assert count<=128 and size<=64
+    finally:
+        release.set();first.join(3)
+        for task in followers:task.join(3)
+    assert all(not task.is_alive() for task in [first,*followers])
+    assert len(results)<=4 and len(results)+len(errors)==33
+    assert not clipboard._reservations
+    clipboard.close()
+    assert tracked['peak']<=64 and tracked['live']==0
+
+
+def test_cancelled_hash_returns_both_captured_and_registered_image_reservations(monkeypatch):
+    from types import SimpleNamespace
+    import threading
+    import supermonoagent.windows_clipboard as module
+    entered,release,cancelled=threading.Event(),threading.Event(),threading.Event();errors=[]
+    real_hash=hashlib.sha256
+    class Gated:
+        def __init__(self):self.inner=real_hash()
+        def update(self,data):entered.set();assert release.wait(2);self.inner.update(data)
+        def hexdigest(self):return self.inner.hexdigest()
+    monkeypatch.setattr(module,'hashlib',SimpleNamespace(sha256=Gated))
+    clipboard=ClipboardFiles(getter=lambda:('owned.png',b'x'*16),max_file_size=16,max_total_size=32)
+    def snapshot():
+        try:clipboard.snapshot(cancelled=cancelled.is_set)
+        except ValueError as error:errors.append(str(error))
+    task=threading.Thread(target=snapshot);task.start()
+    try:
+        assert entered.wait(1)
+        with clipboard._budget_lock:assert clipboard._used_budget()==(1,32)
+        cancelled.set()
+    finally:release.set();task.join(3)
+    assert errors==['Clipboard snapshot cancelled'] and not clipboard._items and not clipboard._reservations
+
+
+def test_default_native_png_admission_transfers_peak_to_retained_stream(monkeypatch):
+    from types import SimpleNamespace
+    import supermonoagent.windows_clipboard as module
+    data=dib_to_png(dib());reads=[]
+    fake=SimpleNamespace(string_at=lambda pointer,size:reads.append(size) or data[:size])
+    user=SimpleNamespace(RegisterClipboardFormatW=lambda _:99,OpenClipboard=lambda _:True,
+        CloseClipboard=lambda:True,IsClipboardFormatAvailable=lambda n:n==99,GetClipboardData=lambda _:123)
+    kernel=SimpleNamespace(GlobalSize=lambda _:len(data),GlobalLock=lambda _:456,GlobalUnlock=lambda _:True)
+    monkeypatch.setattr(module,'_native_apis',lambda:(fake,user,kernel,None))
+    clipboard=ClipboardFiles(max_total_size=1024*1024)
+    card=clipboard.snapshot()['items'][0]
+    assert card['size']==len(data) and reads==[len(data)]
+    assert base64.b64decode(clipboard.read(card['id'],0)['data'])==data
+    with clipboard._budget_lock:assert clipboard._used_budget()==(1,len(data))
+    assert not clipboard._reservations
+    clipboard.close()
+
+
+@pytest.mark.parametrize('kind',['bad-png','bad-masks'])
+def test_failed_native_capture_does_not_retain_image_bytes_in_exception_frames(monkeypatch,kind):
+    from types import SimpleNamespace
+    import supermonoagent.windows_clipboard as module
+    data=(b'Z'*65536 if kind=='bad-png' else masked_dib(108,masks=(0xFF,0xFF00,0xFF0000)).ljust(65536,b'Z'))
+    fake=SimpleNamespace(string_at=lambda pointer,size:bytes(bytearray(data[:size])))
+    user=SimpleNamespace(RegisterClipboardFormatW=lambda _:99,OpenClipboard=lambda _:True,CloseClipboard=lambda:True,
+        IsClipboardFormatAvailable=lambda n:n==(99 if kind=='bad-png' else 8),GetClipboardData=lambda _:123)
+    kernel=SimpleNamespace(GlobalSize=lambda _:len(data),GlobalLock=lambda _:456,GlobalUnlock=lambda _:True)
+    monkeypatch.setattr(module,'_native_apis',lambda:(fake,user,kernel,None))
+    clipboard=ClipboardFiles(max_total_size=1024*1024)
+    with pytest.raises(ValueError) as caught:clipboard.snapshot()
+    retained=caught.value
+    assert retained.__context__ is None and retained.__cause__ is None
+    tb=retained.__traceback__
+    while tb:
+        if tb.tb_frame.f_code.co_filename==module.__file__:
+            assert not any(isinstance(value,(bytes,bytearray)) and len(value)>=32768
+                           for value in tb.tb_frame.f_locals.values())
+        tb=tb.tb_next
+    with clipboard._budget_lock:assert clipboard._used_budget()==(0,0)
 
 
 def test_image_source_and_empty_clipboard():
@@ -278,7 +593,7 @@ def test_empty_file_reads_eof_and_user_supplied_strings_are_not_paths(tmp_path):
         ClipboardFiles(getter=lambda: [str(source)]).snapshot()
 
 
-def test_cancelled_snapshot_does_not_call_getter_or_keep_previous_handles(tmp_path):
+def test_cancelled_snapshot_does_not_call_getter_and_preserves_previous_handles(tmp_path):
     source = tmp_path / 'fixture.pdf'
     source.write_bytes(b'fixture')
     calls = []
@@ -287,7 +602,10 @@ def test_cancelled_snapshot_does_not_call_getter_or_keep_previous_handles(tmp_pa
     stream = clipboard._items[old].stream
     with pytest.raises(ValueError, match='cancelled'):
         clipboard.snapshot(cancelled=lambda: True)
-    assert calls == [True] and stream.closed and clipboard._items == {}
+    assert calls == [True] and not stream.closed and set(clipboard._items) == {old}
+    assert base64.b64decode(clipboard.read(old, 0)['data']) == b'fixture'
+    clipboard.close()
+    assert stream.closed
 
 
 def test_cancellation_immediately_after_getter_opens_no_sources(tmp_path, monkeypatch):

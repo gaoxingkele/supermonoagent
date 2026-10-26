@@ -40,7 +40,7 @@ PROTOCOL = 'sma-files-1'
 MAX_FRAME = 262144
 _ROUTED = frozenset({'workspace.get', 'workspace.browse', 'workspace.set', 'library.get', 'library.set'})
 _HOST_ERRORS = frozenset({'invalid_request', 'session_unavailable', 'unauthorized', 'revision_conflict',
-                          'target_changed', 'directory_unavailable', 'unavailable', 'permission_denied'})
+                          'target_changed', 'directory_unavailable', 'unavailable', 'permission_denied', 'project_required'})
 _ID = re.compile(r'[A-Za-z0-9_-]{1,64}\Z')
 _HEX = re.compile(r'[a-f0-9]{64}\Z')
 
@@ -222,6 +222,10 @@ class Broker:
                     session TEXT, window_id TEXT, daemon_epoch TEXT, revision INTEGER,
                     name TEXT, size INTEGER, sha256 TEXT, state TEXT, receipt TEXT, error TEXT);
                 CREATE INDEX IF NOT EXISTS room_jobs ON jobs(scope,room,state);''')
+            if 'project_binding' not in {row[1] for row in self._db.execute('PRAGMA table_info(jobs)')}:
+                self._db.execute('ALTER TABLE jobs ADD COLUMN project_binding TEXT')
+            self._db.execute("UPDATE jobs SET state='failed',error='project_binding_required' WHERE project_binding IS NULL AND state IN ('staged','queued','downloading')")
+            self._db.commit()
         except BaseException:
             if self._db is not None:
                 self._db.close()
@@ -519,8 +523,10 @@ class Broker:
             if action in _ROUTED:
                 return await self._route(connection, action, session, data)
             if action == 'upload.begin':
+                if not isinstance(data.get('project_binding'), str) or not _HEX.fullmatch(data['project_binding']):
+                    _fail('project_binding_required')
                 if set(data) != {'original_name', 'size', 'sha256', 'window_id', 'daemon_epoch',
-                                  'workspace_revision', 'timezone_offset_minutes'}:
+                                  'workspace_revision', 'timezone_offset_minutes', 'project_binding'}:
                     _fail()
                 _label(data['window_id'], 64)
                 _label(data['daemon_epoch'], 128)
@@ -534,6 +540,12 @@ class Broker:
                         or target.get('daemon_epoch') != data['daemon_epoch']
                         or type(target.get('revision')) is not int or target['revision'] != data['workspace_revision']):
                     _fail('target_changed')
+                if target.get('project_status') == 'selection_required':
+                    _fail('project_required')
+                if not isinstance(target.get('project_binding'), str) or not _HEX.fullmatch(target['project_binding']):
+                    _fail('project_binding_required')
+                if not hmac.compare_digest(target['project_binding'], data['project_binding']):
+                    _fail('project_binding_changed')
                 return await self._io(self._begin, connection, session, data)
             if action in {'upload.chunk', 'upload.finish', 'upload.cancel'}:
                 result = await self._io(self._upload, connection, action, session, data)
@@ -607,9 +619,9 @@ class Broker:
             file_id = secrets.token_hex(24)
             try:
                 with self._db:
-                    self._db.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    self._db.execute('INSERT INTO jobs(file_id,scope,room,session,window_id,daemon_epoch,revision,name,size,sha256,state,receipt,error,project_binding) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                         (file_id, upload['scope'], upload['room'], session, upload['window_id'], upload['daemon_epoch'],
-                         upload['workspace_revision'], upload['name'], upload['size'], upload['sha256'], 'staged', None, None))
+                         upload['workspace_revision'], upload['name'], upload['size'], upload['sha256'], 'staged', None, None, upload['project_binding']))
                 path = store.finish(connection.identity, upload_id)
                 self._disk_files += 1
                 self._disk_bytes += upload['size']
@@ -638,6 +650,8 @@ class Broker:
     def _host_file(self, connection, action, session, data):
         with self._lock:
             row = self._job(connection, session, data.get('file_id'))
+            if not row['project_binding']:
+                _fail('project_binding_required')
             if action == 'download.ticket':
                 if set(data) != {'file_id'}:
                     _fail()
@@ -665,11 +679,12 @@ class Broker:
                 with self._db:
                     self._db.execute("UPDATE jobs SET state='failed',error=? WHERE file_id=?", (code, row['file_id']))
                 return {'file_id': row['file_id'], 'state': 'failed'}
-            if set(data) != {'file_id', 'name', 'path', 'size', 'sha256', 'daemon_epoch', 'workspace_revision'}:
+            if set(data) != {'file_id', 'name', 'path', 'size', 'sha256', 'daemon_epoch', 'workspace_revision', 'project_binding'}:
                 _fail()
             if (data['name'] != row['name'] or type(data['size']) is not int or data['size'] != row['size']
                     or data['sha256'] != row['sha256'] or data['daemon_epoch'] != row['daemon_epoch']
-                    or type(data['workspace_revision']) is not int or data['workspace_revision'] != row['revision']):
+                    or type(data['workspace_revision']) is not int or data['workspace_revision'] != row['revision']
+                    or data['project_binding'] != row['project_binding']):
                 _fail('receipt_mismatch')
             path = _label(data['path'], 4096)
             if '://' in path or path.replace('\\', '/').rsplit('/', 1)[-1] != row['name']:
@@ -693,7 +708,7 @@ class Broker:
         if pinned is None:
             _fail('unauthorized')
         ticket = {key: row[key] for key in ('file_id', 'scope', 'room', 'session', 'daemon_epoch',
-                                           'revision', 'size', 'sha256', 'name')}
+                                           'revision', 'size', 'sha256', 'name', 'project_binding')}
         ticket.update(host_identity=connection.identity, token_digest=connection.token_digest,
                       host_id=pinned['host_id'], host_secret_hash=pinned['secret'],
                       expires_at=self.clock() + self.ticket_ttl, deadline=time.monotonic() + self.ticket_ttl)
@@ -734,7 +749,7 @@ class Broker:
         if row is None or row['state'] not in {'queued', 'downloading', 'saved'}:
             _fail('unauthorized')
         if any(row[key] != ticket[key] for key in ('scope', 'room', 'session', 'daemon_epoch',
-                                                   'revision', 'size', 'sha256', 'name')):
+                                                   'revision', 'size', 'sha256', 'name', 'project_binding')):
             _fail('unauthorized')
         return row
 
@@ -966,7 +981,7 @@ class Broker:
         if self._hosts.get((host.scope, host.room)) is not host:
             return
         job = {key: row[key] for key in ('file_id', 'name', 'size', 'sha256', 'window_id', 'daemon_epoch')}
-        job.update(session_id=row['session'], workspace_revision=row['revision'])
+        job.update(session_id=row['session'], workspace_revision=row['revision'], project_binding=row['project_binding'])
         try:
             await self._send(host, {'type': 'delivery', 'id': row['file_id'], 'job': job})
         except (ConnectionClosed, TimeoutError):

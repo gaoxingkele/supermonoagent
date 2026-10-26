@@ -200,7 +200,7 @@
       }
     }
     if(host.nextSplit==='new'){const created=host.catalog.flatMap(win=>win.sessions||[]).find(session=>!host.sessionsBeforeOpen.has(session.id));if(created){host.nextSplit='';openView(key(host,created.id));}}
-    for(const pane of panes.values())if(pane.host===host){pane.ready=true;pane.term.options.disableStdin=false;const data=sessionInfo(pane.sid);if(data){pane.title.textContent=data.win.title+'（'+agentType(data.session,data.win.title)+'）';TabThemes.apply(pane.title.parentElement,data.win.tab_theme);updateAgentMode(pane);}drainPane(pane);}
+    for(const pane of panes.values())if(pane.host===host){pane.ready=true;pane.term.options.disableStdin=false;const data=sessionInfo(pane.sid);if(data){pane.title.textContent=data.win.title+'（'+agentType(data.session,data.win.title,data.win.host)+'）';TabThemes.apply(pane.title.parentElement,data.win.tab_theme);updateAgentMode(pane);}drainPane(pane);}
     renderTree();renderTabs();renderHosts();renderDaemonMonitor();if(layoutChanged)renderLayout();subscribe();updateConnection();updateFooter();if(greeting||host.id==='local')refreshDirectories();
     scheduleVisibleFit();
   }
@@ -211,6 +211,7 @@
     const frame=pane.frames.shift(),replay=frame.op===8,size=frame.grid||pane.host.controls[pane.raw];
     applyGrid(pane,size);
     pane.writing=true;
+    pane.questions?.beforeOutput({replay});
     if(replay){resizeGrid(pane,size);pane.term.reset();pane.history.hidden=false;frame.bytes=C.snapshotBytes(frame.bytes,pane.raw,pane.host.capabilities.snapshot_sgr===true);}
     const before=performance.now();
     const writeGeneration=pane.generation;
@@ -226,20 +227,24 @@
   function createPane(sid) {
     const data=sessionInfo(sid);if(!data)return null;
     const el=node('article','pane');el.dataset.session=sid;
-    const header=node('div','pane-header'),title=node('span','pane-title',data.win.title+'（'+agentType(data.session,data.win.title)+'）');
+    const header=node('div','pane-header'),title=node('span','pane-title',data.win.title+'（'+agentType(data.session,data.win.title,data.win.host)+'）');
     const own=node('span','pane-control','');header.append(title,own);
     TabThemes.apply(header,data.win.tab_theme);
     const screen=node('div','terminal-screen');const history=node('div','history-note','已恢复有限输出历史 · 全屏程序画面可能需要刷新');history.hidden=true;
     history.title=history.textContent;el.append(header,screen);$('stage').append(el);
     const term=new Terminal({allowProposedApi:true,convertEol:false,disableStdin:!data.win.host.connected,cursorBlink:true,
-      fontFamily:'"Cascadia Mono", "Cascadia Code", Consolas, monospace',fontSize:mobile()?13:14,scrollback:5000,minimumContrastRatio:4.5,
+      fontFamily:'"Cascadia Mono", "Cascadia Code", Consolas, "Microsoft YaHei UI", "Microsoft YaHei", "DengXian", "Noto Sans CJK SC", monospace',fontSize:mobile()?13:14,scrollback:5000,minimumContrastRatio:4.5,
       theme:{background:'#121212',foreground:'#dedede',cursor:'#ddd',selectionBackground:'#55555588'},rendererType:'dom'});
     const fit=new FitAddon.FitAddon();term.loadAddon(fit);
     if(window.Unicode11Addon?.Unicode11Addon){try{term.loadAddon(new Unicode11Addon.Unicode11Addon());term.unicode.activeVersion='11';}catch{}}
     term.open(screen);
-    // Windows Ctrl+V belongs to the browser/native clipboard accelerator.
-    // Do not turn it into the terminal's literal SYN byte (0x16).
-    term.attachCustomKeyEventHandler(event=>!(event.type==='keydown'&&/Win/i.test(navigator.platform)&&event.ctrlKey&&!event.altKey&&!event.metaKey&&!event.shiftKey&&event.key.toLowerCase()==='v'));
+    // Native clipboard accelerators must not also send SYN/interrupt bytes.
+    // Without a selection, Ctrl+C remains the CLI's ordinary interrupt key.
+    term.attachCustomKeyEventHandler(event=>{
+      if(event.type!=='keydown'||!/Win/i.test(navigator.platform)||!event.ctrlKey||event.altKey||event.metaKey||event.shiftKey)return true;
+      const key=event.key.toLowerCase();
+      return key!=='v'&&!(key==='c'&&term.hasSelection());
+    });
     // Preserve readable history when a full-screen tool clears saved lines.
     term.parser.registerCsiHandler({final:'J'},params=>params[0]===3);
     const pane={sid,host:data.win.host,raw:data.session.raw,generation:data.win.host.generation,el,screen,term,fit,history,title,own,ready:data.win.host.connected,replayPending:0,lastSize:'',renderer:'dom',webgl:null,observer:null,frames:[],writing:false,wantControl:false,redrawAfterReplay:false,redrawTimer:0,resizeRequest:null,lastAttempt:'',lastInputAt:0,repaintAt:0,composing:false};
@@ -251,9 +256,10 @@
       if(!clear&&!/^(codex|claude(?:[-_]code)?|kimi|gemini|opencode|copilot|aider)$/i.test(app||''))return false;
       const next=clear?'':app.toLowerCase().replace('_','-');if((pane.host.agents.get(pane.raw)||'')===next)return false;
       if(next)pane.host.agents.set(pane.raw,next);else pane.host.agents.delete(pane.raw);
-      session.learnedAgent=next;aggregateCatalog();const info=sessionInfo(pane.sid);if(info)pane.title.textContent=info.win.title+'（'+agentType(info.session,info.win.title)+'）';renderTree();return false;
+      session.learnedAgent=next;aggregateCatalog();const info=sessionInfo(pane.sid);if(info)pane.title.textContent=info.win.title+'（'+agentType(info.session,info.win.title,info.win.host)+'）';renderTree();return false;
     });
     pane.highlighter=C.createHighlighter(term,{enabled:highlightEnabled});
+    pane.questions=window.TerminalQuestions?.create(pane,{enabled:highlightEnabled,isCurrent:livePane});
     panes.set(sid,pane);setRenderer(pane);updateAgentMode(pane);
     pane.followOutput=true;pane.followFrame=0;pane.followGeometry=viewportGeometry(pane);pane.userScrollUntil=0;
     const scrollIntent=event=>{
@@ -306,6 +312,7 @@
     pane.bindHeader();
     pane.bindInput=()=>{
       pane.inputSubscription?.dispose();const context=owner(pane.host);
+      pane.questions?.reset();
       pane.inputSubscription=term.onData(text=>{if(!validOwner(context)||!livePane(pane))return;text=C.terminalInput(text,pane.replayPending>0);if(!text)return;if(ctrl&&text.length===1){text=String.fromCharCode(text.toUpperCase().charCodeAt(0)&31);setCtrl(false);}input(sid,text);});
     };
     pane.bindInput();
@@ -330,10 +337,15 @@
     }else if(renderer==='webgl'){metrics.rendererFallbacks++;notice('此浏览器不支持 WebGL 附加组件，已使用 DOM 渲染。');}
   }
   const agentModeKey=pane=>'sma.workspace.agent-mode.'+JSON.stringify([endpoint(pane.host.config),pane.raw]);
+  function savedAgentMode(host,raw){
+    const saved=read(localStorage,agentModeKey({host,raw}));
+    return C.agentProfiles.some(profile=>profile.id===saved)?saved:'auto';
+  }
   function updateAgentMode(pane){
     const info=sessionInfo(pane.sid);if(!info)return;
-    const saved=read(localStorage,agentModeKey(pane)),mode=C.agentProfiles.some(profile=>profile.id===saved)?saved:'auto';
+    const mode=savedAgentMode(pane.host,pane.raw);
     const detected=mode==='auto'?C.agentModeFromSession(info.session,info.win.title):mode;
+    pane.title.textContent=info.win.title+'（'+agentType(info.session,info.win.title,info.win.host)+'）';
     pane.agentMode=mode;if(pane.agentRequested===detected)return;
     pane.agentRequested=detected;const generation=pane.agentGeneration=(pane.agentGeneration||0)+1;
     const apply=profile=>{
@@ -470,7 +482,8 @@
   function input(sid,text) {
     const pane=panes.get(sid);
     if(!livePane(pane)||!pane.ready||!pane.host.connected||!pane.host.supported||!openTabs.includes(sid))return;
-    pane.lastInputAt=performance.now();const frame=C.targetFrame(17,pane.raw,text);socketSend(pane.host,frame);
+    pane.lastInputAt=performance.now();const frame=C.targetFrame(17,pane.raw,text);
+    if(socketSend(pane.host,frame))pane.questions?.observeAcceptedInput(text);
   }
   function takeControl(sid=active){const pane=panes.get(sid);if(pane){pane.wantControl=true;pane.lastAttempt='';pane.redrawAfterReplay=true;pane.resizePaused=false;fitPane(pane,true);}}
   function openView(sid, takeover=false) {
@@ -576,7 +589,9 @@
       dot.title=labels[state];dot.setAttribute('aria-label','状态：'+labels[state]);
     }
   }
-  function agentType(session,windowTitle=''){
+  function agentType(session,windowTitle='',host=null){
+    const manual=host&&C.agentProfiles.find(profile=>profile.id===savedAgentMode(host,session.raw||session.id));
+    if(manual)return manual.label;
     for(const [pattern,label] of [[/\bgemini\b/i,'Gemini'],[/\bopen[ -]?code\b/i,'OpenCode'],[/\bcopilot\b/i,'Copilot'],[/\baider\b/i,'Aider']])if(pattern.test(String(session.agent||'')))return label;
     const profile=C.agentProfiles.find(profile=>profile.id===C.agentModeFromSession(session,windowTitle));if(profile)return profile.label;
     const values=[session.agent,session.learnedAgent,session.command,session.argv,session.title,windowTitle,session.shell];
@@ -595,7 +610,7 @@
       const entries=catalog.filter(win=>win.host===host).flatMap(win=>win.sessions.map(session=>({win,session})));
       const context=owner(host);
       for(const {win,session} of entries){count++;const row=node('div','session-row');row.dataset.current=String(session.id===active);row.dataset.host=host.id;row.dataset.session=session.raw;
-        const type=agentType(session,win.title),open=button('','打开 '+win.title+'（'+type+'）',()=>{if(validOwner(context))openView(session.id);});open.className='session-open';const text=node('span','session-label',win.title),agent=node('span','session-shell','（'+type+'）');agent.title=type;const dot=node('i','session-dot');dot.setAttribute('role','img');open.append(dot,text,agent);
+        const type=agentType(session,win.title,win.host),open=button('','打开 '+win.title+'（'+type+'）',()=>{if(validOwner(context))openView(session.id);});open.className='session-open';const text=node('span','session-label',win.title),agent=node('span','session-shell','（'+type+'）');agent.title=type;const dot=node('i','session-dot');dot.setAttribute('role','img');open.append(dot,text,agent);
         row.append(open,button('···','重命名窗口',()=>rename(win.id,context)));TabThemes.apply(row,win.tab_theme);row.oncontextmenu=event=>tabMenu(event,win,context);windows.append(row);
       }
       tree.append(computer);
@@ -1007,13 +1022,13 @@
   $('split-horizontal').onclick=()=>split('horizontal');$('split-vertical').onclick=()=>split('vertical');
   $('maximize').onclick=()=>{if(!active)return;maximized=!maximized;$('maximize').setAttribute('aria-pressed',String(maximized));renderLayout();};
   $('take-control').onclick=()=>takeControl();$('renderer').value=renderer;
-  $('agent-mode').onchange=()=>{const pane=panes.get(active);if(!pane)return;save(localStorage,agentModeKey(pane),$('agent-mode').value);pane.agentRequested=null;updateAgentMode(pane);};
+  $('agent-mode').onchange=()=>{const pane=panes.get(active);if(!pane)return;save(localStorage,agentModeKey(pane),$('agent-mode').value);pane.agentRequested=null;updateAgentMode(pane);renderTree();};
   $('highlight-toggle').setAttribute('aria-pressed',String(highlightEnabled));
   if(!window.NativeUpdates)$('check-updates').onclick=()=>alert('此窗口未接入本机更新服务。请从 Windows 桌面版的启动入口打开，再检查更新。');
   $('highlight-toggle').onclick=()=>{
     highlightEnabled=!highlightEnabled;save(localStorage,'sma.workspace.highlight',highlightEnabled?'on':'off');
     $('highlight-toggle').setAttribute('aria-pressed',String(highlightEnabled));
-    for(const pane of panes.values())pane.highlighter?.setEnabled(highlightEnabled);
+    for(const pane of panes.values()){pane.highlighter?.setEnabled(highlightEnabled);pane.questions?.setEnabled(highlightEnabled);}
   };
   $('renderer').onchange=()=>{renderer=C.rendererName($('renderer').value);save(localStorage,'sma.workspace.renderer',renderer);for(const pane of panes.values())setRenderer(pane);updateFooter();};
   $('sidebar-toggle').onclick=()=>{if(mobile())$('app').classList.toggle('mobile-sidebar');else {$('app').classList.toggle('sidebar-hidden');$('app').style.gridTemplateColumns=$('app').classList.contains('sidebar-hidden')?'0 minmax(0,1fr)':($('sidebar').style.width||'240px')+' minmax(0,1fr)';}scheduleVisibleFit();};

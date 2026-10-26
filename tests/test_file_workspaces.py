@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from supermonoagent.file_workspaces import FileWorkspaces, InvalidSettings, RevisionConflict, timestamped_name
+from supermonoagent.file_workspaces import FileWorkspaces, InvalidSettings, RevisionConflict, timestamped_name, directory_binding
 
 
 def folders(tmp_path):
@@ -17,6 +17,74 @@ def folders(tmp_path):
     library.mkdir()
     settings = tmp_path / 'state' / 'file-workspaces.json'
     return FileWorkspaces(settings, default_mylib_root=library), project, library, settings
+
+
+def test_directory_binding_is_readonly_and_tracks_existing_anchor_replacement(tmp_path):
+    manager, project, _, settings = folders(tmp_path)
+    cfg = manager.get('window-1', project)
+    initial = directory_binding(cfg)
+    assert len(initial['directories']) == 1 and not settings.exists() and not (project/'tmp').exists()
+    (project/'tmp').mkdir()
+    created = directory_binding(cfg)
+    assert created['directories'][:1] == initial['directories'] and len(created['directories']) == 2
+    (project/'tmp').rename(project/'retired'); (project/'tmp').mkdir()
+    replaced = directory_binding(cfg)
+    assert replaced != created and replaced['directories'][:1] == initial['directories']
+
+
+def test_directory_binding_rejects_missing_identity_instead_of_using_path_only(tmp_path, monkeypatch):
+    manager, project, _, _ = folders(tmp_path)
+    cfg = manager.get('window-1', project)
+    original = Path.lstat
+    def missing_identity(path, *args, **kwargs):
+        info = original(path, *args, **kwargs)
+        if path == project:
+            from types import SimpleNamespace
+            return SimpleNamespace(st_mode=info.st_mode, st_ino=0, st_dev=info.st_dev,
+                                   st_file_attributes=getattr(info, 'st_file_attributes', 0) or 0)
+        return info
+    monkeypatch.setattr(Path, 'lstat', missing_identity)
+    with pytest.raises(ValueError, match='identity'):
+        directory_binding(cfg)
+
+
+def test_home_startup_needs_project_selection_without_creating_directories(tmp_path, monkeypatch):
+    home = tmp_path / 'synthetic-home'; home.mkdir()
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    manager = FileWorkspaces(tmp_path / 'state' / 'settings.json', default_mylib_root=home)
+    cfg = manager.get('window-1', home)
+    assert cfg['project_status'] == 'selection_required'
+    assert cfg['project_dir'] == str(home) and cfg['exchange_dir'] == str(home / 'tmp')
+    assert cfg['source'] == 'startup' and cfg['revision'] == 0
+    for operation in [lambda: manager.guard('window-1', home, 0),
+                      lambda: manager.save('window-1', home, expected_revision=0)]:
+        with pytest.raises(ValueError, match='project_required'):
+            operation()
+    with pytest.raises(ValueError, match='project_required'):
+        with manager.publish_guard('window-1', home, 0):
+            pytest.fail('Home must never be a publication target')
+    assert not (tmp_path / 'state').exists() and list(home.iterdir()) == []
+    project = home / 'real-project'; project.mkdir()
+    selected = manager.save('window-1', project, expected_revision=0)
+    assert selected['project_status'] == 'ready' and selected['exchange_dir'] == str(project / 'tmp')
+    assert manager.guard('window-1', home, 1) == selected
+    assert not (project / 'tmp').exists()
+
+
+def test_legacy_configured_home_requires_reselection_but_can_be_repaired(tmp_path, monkeypatch):
+    home = tmp_path / 'synthetic-home'; home.mkdir()
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    settings = tmp_path / 'settings.json'
+    settings.write_text(json.dumps({'schema': 1, 'windows': {'window-1': {
+        'project_dir': str(home), 'exchange_dir': str(home / 'tmp'), 'revision': 3}}, 'mylib': None}))
+    before = settings.read_bytes()
+    manager = FileWorkspaces(settings, default_mylib_root=home)
+    assert manager.get('window-1', home)['project_status'] == 'selection_required'
+    with pytest.raises(ValueError, match='project_required'):
+        manager.guard('window-1', home, 3)
+    assert settings.read_bytes() == before and list(home.iterdir()) == []
+    project = tmp_path / 'project'; project.mkdir()
+    assert manager.save('window-1', project, expected_revision=3)['revision'] == 4
 
 
 def test_defaults_are_readonly_and_do_not_create_configuration_or_exchange(tmp_path):
