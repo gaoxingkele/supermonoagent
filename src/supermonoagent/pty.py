@@ -73,8 +73,16 @@ class WinPty:
         from winpty import PtyProcess
 
         env = os.environ.copy()
-        env.setdefault("TERM", "xterm-256color")
-        env.setdefault("COLORTERM", "truecolor")
+        # This new PTY is an interactive xterm/ConPTY surface, even when the
+        # daemon inherited headless capture flags. Never change the parent env
+        # or force ANSI in captured tool subprocesses. Preserve is an explicit
+        # opt-out; unknown nonempty policies also preserve rather than failing.
+        if env.get("SUPERMONO_TERMINAL_COLOR", "").strip().lower() in {"", "interactive"}:
+            if env.get("TERM", "").strip().lower() in {"", "dumb"}:
+                env["TERM"] = "xterm-256color"
+            if not env.get("COLORTERM", "").strip():
+                env["COLORTERM"] = "truecolor"
+            env.pop("NO_COLOR", None)
         self._proc = PtyProcess.spawn(command, cwd=cwd, env=env, dimensions=(rows, cols))
         self._lock = threading.Lock()
         self._input = ConptyInputFilter()
