@@ -312,8 +312,11 @@ def main(argv: list[str] | None = None, *, browser: bool = False) -> None:
         from .desktop_files import DesktopFiles
         try:
             assistant_state = Path(args.state_dir or os.environ.get('SUPERMONO_STATE_DIR') or Path.home() / '.supermonoagent')
+            from .mylib_remote_client import MylibRemoteClient
+            from .token_config import read_default_token
             assistant = DesktopAssistant(window, url, os.environ.get("SUPERMONO_MYLIB", "D:/aicoding/mylib"),
-                preferences_path=assistant_state / 'assistant-preferences.json')
+                preferences_path=assistant_state / 'assistant-preferences.json',
+                remote_client=MylibRemoteClient(lambda: read_default_token(state_dir=assistant_state)))
         except (OSError, ValueError):
             pass
         file_provider = None

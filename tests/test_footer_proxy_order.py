@@ -12,7 +12,7 @@ from websockets.asyncio.server import serve
 from supermonoagent.console_snapshot import FooterRecovery
 from supermonoagent.frontend import Frontend
 from supermonoagent.protocol import (MAX_FRAME, OP_HELLO, OP_HELLO_OK, OP_OUTPUT,
-                                    OP_SNAPSHOT, OP_SUBSCRIBE, pack, pack_json, unpack, unpack_json)
+                                    OP_PING, OP_PONG, OP_SNAPSHOT, OP_SUBSCRIBE, pack, pack_json, unpack, unpack_json)
 from supermonoagent.relay_bridge import Phone, RelayBridge
 
 
@@ -54,6 +54,10 @@ async def old_backend():
             await socket.send(pack_json(OP_HELLO_OK, state(True)))
             await socket.send(LIVE)
             async for frame in socket:
+                op, payload = unpack(frame)
+                if op == OP_PING and payload.startswith(b'frontend-replay:'):
+                    await socket.send(pack(OP_PONG, payload))
+                    continue
                 received.append(frame)
         finally:
             closed.set()

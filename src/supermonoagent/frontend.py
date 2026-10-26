@@ -27,7 +27,7 @@ from .defaults import default_update_feed
 from .security import request_allowed, tls_context, transport_options, FIRST_FRAME_S
 from .desktop import health, port_open
 from .hub import TAB_THEMES
-from .protocol import ProtocolError, OP_HELLO, OP_GROUP, OP_SESSIONS, OP_INPUT_SESSION, pack, pack_json, unpack, unpack_json
+from .protocol import ProtocolError, OP_HELLO, OP_GROUP, OP_SESSIONS, OP_INPUT_SESSION, OP_SUBSCRIBE, OP_PING, OP_PONG, pack, pack_json, unpack, unpack_json
 from .pty import ConptyInputFilter
 
 NATIVE_UPDATE_API = 2
@@ -500,15 +500,54 @@ class Frontend:
                 raise ValueError('Binary HELLO required')
             op, payload = unpack(first)
             body = unpack_json(payload)
-            token = body.get('token')
-            if op != OP_HELLO or not isinstance(token, str) or not token or len(token) > 4096:
+            token = body.get('token', '')
+            if op != OP_HELLO or not isinstance(token, str) or len(token) > 4096:
                 raise ValueError('Authenticated HELLO required')
-            headers = {'Authorization': 'Bearer ' + token}
+            if not token:
+                if not self._local_owner_connection(client):
+                    raise ValueError('Authenticated HELLO required')
+                # Keep existing daemons and their PTYs running. The private owner
+                # credential stays inside this loopback facade, never in the UI.
+                from .token_config import read_default_token
+                token = read_default_token(self.owner_token_file)
+                first = pack_json(OP_HELLO, {**body, 'token': token})
+            headers = {'Authorization': 'Bearer ' + token} if token else {}
             async with connect(url, additional_headers=headers, max_size=1024 * 1024, compression=None) as upstream:
                 await upstream.send(first)
                 self.views[client] = None
                 input_filters = {}
                 input_timers = {}
+                subscribed = set()
+                replay_barrier = None
+
+                async def subscribe_in_order(message, body):
+                    nonlocal subscribed, replay_barrier
+                    sessions = body.get('sessions')
+                    if (not isinstance(sessions, list) or len(sessions) > 256
+                            or any(not isinstance(sid, str) for sid in sessions)):
+                        await upstream.send(message)
+                        return
+                    selected = set(sessions)
+                    added = list(dict.fromkeys(sid for sid in sessions if sid not in subscribed))
+                    if body.get('refresh') is True or not added:
+                        await upstream.send(message)
+                        subscribed = selected
+                        return
+                    # Legacy daemons enqueue an entire replay synchronously.
+                    # Grow the replace-style subscription cumulatively, draining
+                    # each replay before requesting the next. Retained sessions
+                    # stay subscribed and keep their resize leases throughout.
+                    retained = subscribed & selected
+                    cumulative = [sid for sid in dict.fromkeys(sessions) if sid in retained]
+                    for sid in added:
+                        cumulative.append(sid)
+                        marker = ('frontend-replay:' + secrets.token_urlsafe(24)).encode('ascii')
+                        drained = asyncio.get_running_loop().create_future()
+                        replay_barrier = marker, drained
+                        await upstream.send(pack_json(OP_SUBSCRIBE, {**body, 'sessions': list(cumulative)}))
+                        await upstream.send(pack(OP_PING, marker))
+                        await drained
+                        subscribed = set(cumulative)
 
                 async def forward_input(session, data, flush=False):
                     parser, decoder = input_filters.setdefault(session, (ConptyInputFilter(), codecs.getincrementaldecoder("utf-8")(errors="replace")))
@@ -532,6 +571,10 @@ class Frontend:
                         op = None
                         if isinstance(message, bytes):
                             op, payload = unpack(message)
+                            if op == OP_PONG and replay_barrier is not None and payload == replay_barrier[0]:
+                                if not replay_barrier[1].done():
+                                    replay_barrier[1].set_result(None)
+                                continue
                             if op in {2, 7}:
                                 state = unpack_json(payload)
                                 service = state.get("service") if isinstance(state.get("service"), dict) else {}
@@ -562,6 +605,11 @@ class Frontend:
                 async def transmit():
                     async for message in client:
                         state = self.views.get(client)
+                        if isinstance(message, bytes) and state:
+                            op, payload = unpack(message)
+                            if op == OP_SUBSCRIBE:
+                                await subscribe_in_order(message, unpack_json(payload))
+                                continue
                         if isinstance(message, bytes) and state and sys.platform == "win32" and not state.get("capabilities", {}).get("conpty_paste"):
                             op, payload = unpack(message)
                             if op == OP_INPUT_SESSION:
@@ -617,6 +665,20 @@ class Frontend:
             await client.close(code=1011, reason="Local daemon connection ended; reconnect to resume")
         finally:
             self.views.pop(client, None)
+
+    @staticmethod
+    def _local_owner_connection(client):
+        """Only an actual IPv4 loopback client may omit its owner credential."""
+        peer = getattr(client, 'remote_address', None)
+        local = getattr(client, 'local_address', None)
+        request = getattr(client, 'request', None)
+        if not peer or peer[0] != '127.0.0.1' or not local or local[0] != '127.0.0.1' or request is None:
+            return False
+        try:
+            authority = request.headers.get('Host', '')
+            return urlsplit('http://' + authority).hostname == '127.0.0.1' and request_allowed(client, request)
+        except (AttributeError, ValueError, TypeError, LookupError):
+            return False
 
 
 def local_page_url(url: str, *, update_feed: str | None = None, update_root: str | None = None) -> str:

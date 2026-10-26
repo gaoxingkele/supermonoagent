@@ -1,4 +1,4 @@
-"""Explicit, read-only clipboard snapshots for desktop file paste.
+"""Explicit clipboard actions and immutable source snapshots for desktop paste.
 
 Native API contract references:
 https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-dragqueryfilew
@@ -26,6 +26,7 @@ import zlib
 CHUNK_SIZE = 96 * 1024
 MAX_IMAGE_BYTES = 128 * 1024 * 1024
 MAX_IMAGE_PIXELS = 32 * 1024 * 1024
+MAX_TEXT_BYTES = 1024 * 1024  # UTF-16LE payload, excluding its NUL terminator.
 _PNG = b'\x89PNG\r\n\x1a\n'
 
 
@@ -104,15 +105,120 @@ def _native_apis():
         (user.CloseClipboard, [], wintypes.BOOL),
         (user.IsClipboardFormatAvailable, [wintypes.UINT], wintypes.BOOL),
         (user.GetClipboardData, [wintypes.UINT], wintypes.HANDLE),
+        (user.EmptyClipboard, [], wintypes.BOOL),
+        (user.SetClipboardData, [wintypes.UINT, wintypes.HANDLE], wintypes.HANDLE),
+        (user.CreateWindowExW, [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND,
+            wintypes.HMENU, wintypes.HINSTANCE, ctypes.c_void_p], wintypes.HWND),
+        (user.DestroyWindow, [wintypes.HWND], wintypes.BOOL),
         (user.RegisterClipboardFormatW, [wintypes.LPCWSTR], wintypes.UINT),
         (kernel.GlobalSize, [wintypes.HANDLE], ctypes.c_size_t),
         (kernel.GlobalLock, [wintypes.HANDLE], ctypes.c_void_p),
         (kernel.GlobalUnlock, [wintypes.HANDLE], wintypes.BOOL),
+        (kernel.GlobalAlloc, [wintypes.UINT, ctypes.c_size_t], wintypes.HANDLE),
+        (kernel.GlobalFree, [wintypes.HANDLE], wintypes.HANDLE),
         (shell.DragQueryFileW, [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT], wintypes.UINT),
     ]
     for function, arguments, result in declarations:
         function.argtypes, function.restype = arguments, result
     return ctypes, user, kernel, shell
+
+
+def read_clipboard_text() -> str:
+    """Explicit CF_UNICODETEXT read; never used by the format beacon.
+
+    Permit zero allocation padding, but reject embedded NUL, missing terminator,
+    malformed UTF-16 and allocations beyond the payload budget plus alignment.
+    """
+    try:
+        ctypes, user, kernel, _shell = _native_apis()
+        if not user.OpenClipboard(None):
+            raise ValueError()
+        try:
+            if not user.IsClipboardFormatAvailable(13):
+                return ''
+            handle = user.GetClipboardData(13)
+            if not handle:
+                raise ValueError()
+            size = kernel.GlobalSize(handle)
+            if not 2 <= size <= MAX_TEXT_BYTES + 16 or size % 2:
+                raise ValueError()
+            pointer = kernel.GlobalLock(handle)
+            if not pointer:
+                raise ValueError()
+            try:
+                raw = ctypes.string_at(pointer, size)
+            finally:
+                kernel.GlobalUnlock(handle)
+        finally:
+            if not user.CloseClipboard():
+                raise ValueError()
+        decoded = raw.decode('utf-16-le', errors='strict')
+        if not decoded.endswith('\0'):
+            raise ValueError()
+        text = decoded.rstrip('\0')
+        if '\0' in text or len(text.encode('utf-16-le')) > MAX_TEXT_BYTES:
+            raise ValueError()
+        return text
+    except Exception:
+        raise ValueError('Clipboard text unavailable') from None
+
+
+def write_clipboard_text(text: str) -> bool:
+    """Copy bounded user text with explicit Win32 memory ownership.
+
+    Validate, allocate and fill before EmptyClipboard. A private message-only
+    HWND is needed: OpenClipboard(NULL) followed by EmptyClipboard leaves no
+    owner and makes SetClipboardData fail. This window is never displayed.
+    https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setclipboarddata
+    """
+    try:
+        if not isinstance(text, str) or '\0' in text or len(text) > MAX_TEXT_BYTES // 2:
+            raise ValueError()
+        raw = text.encode('utf-16-le', errors='strict')
+        if len(raw) > MAX_TEXT_BYTES:
+            raise ValueError()
+        raw += b'\0\0'
+        ctypes, user, kernel, _shell = _native_apis()
+        handle, owner, opened, transferred = None, None, False, False
+        try:
+            handle = kernel.GlobalAlloc(0x42, len(raw))  # MOVEABLE | ZEROINIT.
+            if not handle:
+                raise ValueError()
+            pointer = kernel.GlobalLock(handle)
+            if not pointer:
+                raise ValueError()
+            try:
+                ctypes.memmove(pointer, raw, len(raw))
+            finally:
+                # False normally means the last lock was released, not failure.
+                ctypes.set_last_error(0)
+                unlocked = kernel.GlobalUnlock(handle)
+                if not unlocked and ctypes.get_last_error():
+                    raise ValueError()
+            owner = user.CreateWindowExW(0, 'STATIC', '', 0, 0, 0, 0, 0, -3, None, None, None)
+            if not owner or not user.OpenClipboard(owner):
+                raise ValueError()
+            opened = True
+            if not user.EmptyClipboard() or not user.SetClipboardData(13, handle):
+                raise ValueError()
+            transferred = True  # The system now owns handle; never GlobalFree it.
+            return True
+        finally:
+            try:
+                if opened:
+                    if not user.CloseClipboard():
+                        raise ValueError()
+            finally:
+                try:
+                    if owner:
+                        if not user.DestroyWindow(owner):
+                            raise ValueError()
+                finally:
+                    if handle and not transferred:
+                        kernel.GlobalFree(handle)
+    except Exception:
+        raise ValueError('Clipboard text unavailable') from None
 
 
 def has_clipboard_sources() -> bool:
@@ -189,16 +295,26 @@ def _identity(stream):
 
 
 class ClipboardFiles:
-    def __init__(self, getter=None, max_file_size=512 * 1024 * 1024):
+    def __init__(self, getter=None, max_file_size=512 * 1024 * 1024, *,
+                 max_sources=128, max_total_size=1024 * 1024 * 1024):
         if type(max_file_size) is not int or max_file_size < 0:
             raise ValueError('Invalid clipboard file size limit')
         self._getter = getter or clipboard_sources
         self.max_file_size = max_file_size
+        if type(max_sources) is not int or not 1 <= max_sources <= 128:
+            raise ValueError('Invalid clipboard source count limit')
+        if type(max_total_size) is not int or not 1 <= max_total_size <= 1024 * 1024 * 1024:
+            raise ValueError('Invalid clipboard total size limit')
+        self.max_sources, self.max_total_size = max_sources, max_total_size
         self._items: dict[str, _Source] = {}
         self._lock = threading.RLock()
 
     def snapshot(self, *, cancelled=None):
-        """Explicit paste snapshot; optional cheap predicate aborts bounded work."""
+        """Retain published handles until release/close, within global budgets.
+
+        No idle eviction: an idle handle may belong to a queued upload. Failed
+        snapshots roll back only their own handles, preserving ongoing jobs.
+        """
         if cancelled is not None and not callable(cancelled):
             raise ValueError('Invalid clipboard cancellation predicate')
 
@@ -206,15 +322,23 @@ class ClipboardFiles:
             if cancelled is not None and cancelled():
                 raise ValueError('Clipboard snapshot cancelled')
 
+        # Capture the current OS clipboard before waiting for a previous batch's
+        # long hash operation. Paths/bytes become this invocation's immutable
+        # source selection; accounting, registration and hashing remain locked.
+        check_cancelled()
+        sources = self._getter()
+        check_cancelled()
+        image = isinstance(sources, tuple) and len(sources) == 2 and isinstance(sources[1], bytes)
+        if not image and (not isinstance(sources, list) or len(sources) > 32):
+            raise ValueError('Unsupported clipboard sources or too many files')
+        if not image:
+            sources = list(sources)
         with self._lock:
-            self.close()
             check_cancelled()
-            sources = self._getter()
-            check_cancelled()
-            image = isinstance(sources, tuple) and len(sources) == 2 and isinstance(sources[1], bytes)
-            if not image and (not isinstance(sources, list) or len(sources) > 32):
-                raise ValueError('Unsupported clipboard sources or too many files')
             cards = []
+            created = []
+            declared = sum(item.size for item in self._items.values())
+            unregistered_stream = None
             try:
                 for source in ([sources] if image else sources):
                     check_cancelled()
@@ -223,6 +347,7 @@ class ClipboardFiles:
                         if not isinstance(name, str) or not name or len(content) > self.max_file_size:
                             raise ValueError('Clipboard image exceeds limits')
                         stream, identity, size = io.BytesIO(content), None, len(content)
+                        unregistered_stream = stream
                     else:
                         if not isinstance(source, Path):
                             raise ValueError('Clipboard source must be a native file path')
@@ -230,10 +355,18 @@ class ClipboardFiles:
                         if not stat.S_ISREG(info.st_mode) or info.st_size > self.max_file_size:
                             raise ValueError('Clipboard source is not a file or exceeds limits')
                         stream = source.open('rb')
+                        unregistered_stream = stream
                         identity = _identity(stream)
                         name, size = source.name, identity[2]
+                    if len(self._items) >= self.max_sources or declared + size > self.max_total_size:
+                        stream.close()
+                        unregistered_stream = None
+                        raise ValueError('Clipboard snapshot budget exceeded; release queued sources first')
                     source_id = secrets.token_hex(24)
                     self._items[source_id] = _Source(stream, size, identity)
+                    unregistered_stream = None
+                    created.append(source_id)
+                    declared += size
                     if size > self.max_file_size:
                         raise ValueError('Clipboard source exceeds limits')
                     digest = hashlib.sha256()
@@ -254,8 +387,11 @@ class ClipboardFiles:
                     stream.seek(0)
                     cards.append({'id': source_id, 'name': name, 'size': size, 'sha256': digest.hexdigest()})
                 check_cancelled()
-            except (OSError, ValueError):
-                self.close()
+            except BaseException:
+                for source_id in created:
+                    self.release(source_id)
+                if unregistered_stream is not None:
+                    unregistered_stream.close()
                 raise
             return {'kind': 'image' if image else 'files' if cards else 'empty', 'items': cards}
 

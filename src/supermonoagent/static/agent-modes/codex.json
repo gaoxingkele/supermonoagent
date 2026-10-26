@@ -2,39 +2,39 @@
   "id": "codex",
   "label": "Codex",
   "theme": {
-    "background": "#101820",
-    "foreground": "#e6edf3",
-    "cursor": "#8be9a4",
-    "cursorAccent": "#101820",
+    "background": "#11151b",
+    "foreground": "#d6d9df",
+    "cursor": "#d6d9df",
+    "cursorAccent": "#11151b",
     "selectionBackground": "#344253",
-    "selectionForeground": "#e6edf3",
-    "black": "#77869a",
-    "red": "#ff939f",
-    "green": "#8be9a4",
-    "yellow": "#ffe08a",
+    "selectionForeground": "#d6d9df",
+    "black": "#8b929c",
+    "red": "#e06c75",
+    "green": "#98c379",
+    "yellow": "#e5c07b",
     "blue": "#82cfff",
-    "magenta": "#d7b1ff",
-    "cyan": "#91e2ef",
-    "white": "#e6edf3",
-    "brightBlack": "#a4afc0",
-    "brightRed": "#ffb1b9",
-    "brightGreen": "#b9f3b5",
-    "brightYellow": "#fff0b1",
-    "brightBlue": "#b8dbff",
-    "brightMagenta": "#e6c2ff",
-    "brightCyan": "#bbf3f4",
-    "brightWhite": "#ffffff"
+    "magenta": "#82cfff",
+    "cyan": "#82cfff",
+    "white": "#d6d9df",
+    "brightBlack": "#8b929c",
+    "brightRed": "#e06c75",
+    "brightGreen": "#98c379",
+    "brightYellow": "#e5c07b",
+    "brightBlue": "#82cfff",
+    "brightMagenta": "#82cfff",
+    "brightCyan": "#82cfff",
+    "brightWhite": "#d6d9df"
   },
   "tokens": [
     {
       "pattern": "\"[^\"\\n]+\"|\\x27[^\\x27\\n]+\\x27",
       "flags": "gu",
-      "color": "#8be9a4"
+      "color": "#e5c07b"
     },
     {
       "pattern": "(?:\\u9519\\u8bef|\\u5931\\u8d25|\\u5f02\\u5e38|\\u8b66\\u544a)|\\b(?:Error|Exception|ERROR|FAIL|FAILED|Warning)\\b",
       "flags": "gu",
-      "color": "#ff939f"
+      "color": "#e06c75"
     },
     {
       "pattern": "\\b(?:Thinking|Working|Plan|Ran|Explored|Updated|Codex)\\b",
@@ -44,17 +44,27 @@
     {
       "pattern": "[\\p{L}\\p{N}_./\\\\:-]+\\.(?:py|js|jsx|ts|tsx|css|html|json|md|exe|ps1|sh|yaml|yml|toml|java|go|rs|cpp|h)(?::\\d+)?",
       "flags": "gu",
-      "color": "#ffe08a"
+      "color": "#e5c07b"
     },
     {
       "pattern": "`[^`\\n]+`|\\b[A-Za-z_][\\w]*\\(\\)",
       "flags": "gu",
-      "color": "#d7b1ff"
+      "color": "#e5c07b"
     },
     {
       "pattern": "\\b\\d+(?:\\.\\d+)?(?:\\s?(?:KiB|MiB|ms|tokens|\\u5b57\\u8282))?",
       "flags": "gu",
-      "color": "#d7b1ff"
+      "color": "#e5c07b"
+    },
+    {
+      "pattern": "\\b(?:Success|SUCCESS|Passed|PASSED)\\b|(?:\\u6210\\u529f|\\u5df2\\u5b8c\\u6210)",
+      "flags": "gu",
+      "color": "#98c379"
+    },
+    {
+      "pattern": "^#{1,6} [^\\n]+|\\*\\*[^*\\n]+\\*\\*",
+      "flags": "gu",
+      "color": "#82cfff"
     }
   ]
 }

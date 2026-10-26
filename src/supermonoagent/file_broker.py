@@ -40,7 +40,7 @@ PROTOCOL = 'sma-files-1'
 MAX_FRAME = 262144
 _ROUTED = frozenset({'workspace.get', 'workspace.browse', 'workspace.set', 'library.get', 'library.set'})
 _HOST_ERRORS = frozenset({'invalid_request', 'session_unavailable', 'unauthorized', 'revision_conflict',
-                          'target_changed', 'directory_unavailable', 'unavailable', 'permission_denied'})
+                          'target_changed', 'directory_unavailable', 'unavailable', 'permission_denied', 'project_required'})
 _ID = re.compile(r'[A-Za-z0-9_-]{1,64}\Z')
 _HEX = re.compile(r'[a-f0-9]{64}\Z')
 
@@ -534,6 +534,8 @@ class Broker:
                         or target.get('daemon_epoch') != data['daemon_epoch']
                         or type(target.get('revision')) is not int or target['revision'] != data['workspace_revision']):
                     _fail('target_changed')
+                if target.get('project_status') == 'selection_required':
+                    _fail('project_required')
                 return await self._io(self._begin, connection, session, data)
             if action in {'upload.chunk', 'upload.finish', 'upload.cancel'}:
                 result = await self._io(self._upload, connection, action, session, data)

@@ -13,6 +13,7 @@
     route_timeout:'目标文件助手未响应。',unauthorized:'目标电脑未确认窗口所有者权限。',
     session_unavailable:'目标窗口已关闭或尚未就绪。',target_changed:'窗口或连接已变化，请重新打开设置。',
     revision_conflict:'目录配置已被修改，请重新加载后再保存。',directory_unavailable:'目标目录不可用；交换目录必须在项目目录内。',
+    project_required:'请先在底部选择当前项目目录；附件将保存到该项目的 tmp，不能使用用户主目录。',
     missing_token:'当前连接缺少文件服务 Token。',insecure_endpoint:'文件服务需要 WSS 加密连接。',
     invalid_endpoint:'文件服务地址无效。',unsupported:'当前客户端不支持文件工作区。'};
   const message=error=>Object.hasOwn(messages,error?.code)?messages[error.code]:'文件工作区暂不可用，请检查目标电脑的文件助手。';
@@ -127,9 +128,11 @@
     form.append(heading,targetLabel,note,projectLabel,projectRow,exchangeLabel,exchangeRow,browser,state,actions);dialog.append(form);document.body.append(dialog);
     function display(value,error){
       for(const button of [projectButton,exchangeButton])button.disabled=!active;
-      projectButton.textContent='项目: '+(value?.project_dir||error||'未选择窗口');
-      exchangeButton.textContent='交换: '+(value?.exchange_dir||(error?'不可用':'未选择窗口'));
-      projectButton.title=value?.project_dir||error||'';exchangeButton.title=value?.exchange_dir||error||'';
+      const required=value?.project_status==='selection_required';
+      projectButton.textContent='项目: '+(required?'请选择当前项目目录':value?.project_dir||error||'未选择窗口');
+      exchangeButton.textContent='交换: '+(required?'选择项目后使用 tmp':value?.exchange_dir||(error?'不可用':'未选择窗口'));
+      projectButton.title=exchangeButton.title=required?messages.project_required:'';
+      if(!required){projectButton.title=value?.project_dir||error||'';exchangeButton.title=value?.exchange_dir||error||'';}
     }
     async function refresh(){
       let target;try{target=captureTarget();}catch(error){active=null;display(null,message(error));return;}
@@ -149,7 +152,7 @@
         if(!dialog.open||modalTarget!==target||!isActive(target))return;
         modalRevision=value.revision;project.value=value.project_dir;exchange.value=value.exchange_dir;
         autoExchange=normal(value.exchange_dir)===normal(joinTmp(value.project_dir));
-        state.textContent='';save.disabled=browseProject.disabled=browseExchange.disabled=false;
+        state.textContent=value.project_status==='selection_required'?messages.project_required:'';save.disabled=browseProject.disabled=browseExchange.disabled=false;
       }catch(error){if(dialog.open&&modalTarget===target)state.textContent=message(error);}
     }
     function open(){

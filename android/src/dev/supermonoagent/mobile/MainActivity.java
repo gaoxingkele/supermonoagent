@@ -4,16 +4,24 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.SharedPreferences;
 import android.content.Intent;
+import android.content.ClipData;
+import android.content.ClipDescription;
+import android.content.ClipboardManager;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ActionMode;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -64,6 +72,13 @@ public final class MainActivity extends Activity {
     private final Runnable foregroundUpdateCheck=new Runnable(){public void run(){if(foreground){checkUpdates(false);updateHandler.postDelayed(this,6*60*60*1000L);}}};
     private java.util.Map<String,byte[]> currentSnapshot;
     private java.nio.file.Path navigationState;
+    private static final int ATTACHMENT_PICKER=731;
+    private ValueCallback<Uri[]> attachmentCallback;
+    private WebView attachmentView;
+    private long attachmentGeneration;
+    private static final int CLIPBOARD_PASTE_ITEM=0x534d4101,CLIPBOARD_TEXT_LIMIT=64*1024;
+    private long clipboardInteractionEpoch;
+    private ActionMode clipboardMenuMode;
     private final java.net.URI updateFeed=java.net.URI.create(RemoteUpdates.DEFAULT_FEED);
 
     private final String[] renderers = {"auto", "dom", "webgl"};
@@ -137,6 +152,7 @@ public final class MainActivity extends Activity {
     }
 
     private void destroyTerminal() {
+        if(attachmentView==terminal)cancelAttachmentPicker();
         if(terminal==null)return;WebView previous=terminal;terminal=null;root.removeView(previous);
         // Keep a terminating view alive until its renderer-gone callback confirms retirement.
         if(!rendererRecovery.isRetiring(previous))destroyRendererView(previous);
@@ -483,8 +499,22 @@ public final class MainActivity extends Activity {
             final WebView view=terminal;
             rendererRecovery.attach(view,generation,boot!=null&&!boot.ticket.isEmpty());
             terminal.setBackgroundColor(Color.rgb(12,16,23));WebSettings settings=terminal.getSettings();
-            settings.setJavaScriptEnabled(true);settings.setDomStorageEnabled(true);settings.setTextZoom(100);settings.setSupportZoom(false);settings.setBuiltInZoomControls(false);settings.setDisplayZoomControls(false);settings.setCacheMode(WebSettings.LOAD_NO_CACHE);settings.setAllowFileAccess(false);settings.setAllowContentAccess(false);settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);settings.setSupportMultipleWindows(false);settings.setMediaPlaybackRequiresUserGesture(true);CookieManager.getInstance().setAcceptThirdPartyCookies(terminal,false);
+            settings.setJavaScriptEnabled(true);settings.setDomStorageEnabled(true);settings.setTextZoom(100);settings.setSupportZoom(false);settings.setBuiltInZoomControls(false);settings.setDisplayZoomControls(false);settings.setCacheMode(WebSettings.LOAD_NO_CACHE);settings.setAllowFileAccess(false);settings.setAllowContentAccess(true);settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);settings.setSupportMultipleWindows(false);settings.setMediaPlaybackRequiresUserGesture(true);CookieManager.getInstance().setAcceptThirdPartyCookies(terminal,false);
             final String base=localBase;
+            terminal.setWebChromeClient(new WebChromeClient(){
+                @Override public boolean onShowFileChooser(WebView web,ValueCallback<Uri[]> callback,FileChooserParams params){
+                    if(web!=terminal||generation!=documentGeneration||!trustedDocument()||(params.getMode()!=FileChooserParams.MODE_OPEN&&params.getMode()!=FileChooserParams.MODE_OPEN_MULTIPLE)){callback.onReceiveValue(null);return true;}
+                    cancelAttachmentPicker();attachmentCallback=callback;attachmentView=web;attachmentGeneration=generation;
+                    Intent picker=new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
+                    java.util.ArrayList<String> types=new java.util.ArrayList<>();
+                    for(String type:params.getAcceptTypes())if(type!=null&&type.matches("[a-zA-Z0-9.+_-]+/[a-zA-Z0-9.+_*-]+"))types.add(type);
+                    if(types.size()==1)picker.setType(types.get(0));else if(!types.isEmpty())picker.putExtra(Intent.EXTRA_MIME_TYPES,types.toArray(new String[0]));
+                    picker.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,params.getMode()==FileChooserParams.MODE_OPEN_MULTIPLE);
+                    picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    try{startActivityForResult(picker,ATTACHMENT_PICKER);}catch(Exception error){cancelAttachmentPicker();updateMessage("无法打开系统文件选择器，请稍后重试。");}
+                    return true;
+                }
+            });
             terminal.setWebViewClient(new WebViewClient(){
                 @Override public WebResourceResponse shouldInterceptRequest(WebView web,WebResourceRequest request){
                     String asset=UpdateDocument.asset(base,request.getUrl().toString(),revision);
@@ -661,9 +691,28 @@ public final class MainActivity extends Activity {
             .setPositiveButton("Restore",(dialog,which)->{if(!updatesBusy){updatesBusy=true;prepareNavigation(()->updateStore.rollback(),documentGeneration);}}).setNegativeButton("Cancel",null).show();
     }
     private void invalidateDocument(){
+        clipboardInteractionEpoch++;clipboardMenuMode=null;
+        cancelAttachmentPicker();
         documentGeneration++;rendererRecovery.cancel();documentReady=false;documentInitializing=false;
         try{if(updateStore!=null&&updateBoot!=null&&!updateBoot.ticket.isEmpty())updateStore.fail(updateBoot.ticket);}catch(Exception ignored){}
         updateBoot=null;
+    }
+    private void cancelAttachmentPicker(){
+        ValueCallback<Uri[]> callback=attachmentCallback;attachmentCallback=null;attachmentView=null;
+        if(callback!=null)callback.onReceiveValue(null);
+    }
+    @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){
+        super.onActivityResult(requestCode,resultCode,data);
+        if(requestCode!=ATTACHMENT_PICKER)return;
+        ValueCallback<Uri[]> callback=attachmentCallback;WebView view=attachmentView;long generation=attachmentGeneration;
+        attachmentCallback=null;attachmentView=null;if(callback==null)return;
+        if(resultCode!=RESULT_OK||data==null||view!=terminal||generation!=documentGeneration||!trustedDocument()){callback.onReceiveValue(null);return;}
+        java.util.LinkedHashSet<Uri> chosen=new java.util.LinkedHashSet<>();
+        if(data.getClipData()!=null){for(int i=0;i<data.getClipData().getItemCount()&&i<9;i++)chosen.add(data.getClipData().getItemAt(i).getUri());}
+        else if(data.getData()!=null)chosen.add(data.getData());
+        if(chosen.isEmpty()||chosen.size()>8){callback.onReceiveValue(null);updateMessage("一次最多选择 8 个文件或图片。");return;}
+        for(Uri uri:chosen)if(uri==null||!"content".equals(uri.getScheme())){callback.onReceiveValue(null);updateMessage("请选择系统文件提供方中的文件。");return;}
+        callback.onReceiveValue(chosen.toArray(new Uri[0]));
     }
     private void updateMessage(String message){if(!isFinishing()&&!isDestroyed())new AlertDialog.Builder(this).setMessage(message).setPositiveButton("OK",null).show();}
 
@@ -706,7 +755,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onPause() {
         if(saveConnectionDraft!=null)saveConnectionDraft.run();
-        foreground=false;
+        foreground=false;clipboardInteractionEpoch++;clipboardMenuMode=null;
         updateHandler.removeCallbacks(foregroundUpdateCheck);
         lifecycle("pause");
         if (terminal != null) terminal.onPause();
@@ -720,6 +769,66 @@ public final class MainActivity extends Activity {
         if (terminal != null) terminal.onResume();
         lifecycle("resume");
         deliverTaskNotification();
+    }
+    private boolean clipboardContextCurrent(WebView view,long generation,long epoch){
+        return foreground&&documentReady&&!isFinishing()&&!isDestroyed()&&terminal==view
+                &&documentGeneration==generation&&clipboardInteractionEpoch==epoch&&trustedDocument();
+    }
+    @Override public void onActionModeStarted(ActionMode mode){
+        super.onActionModeStarted(mode);
+        final WebView view=terminal;final long generation=documentGeneration,epoch=clipboardInteractionEpoch;
+        if(mode==null||!clipboardContextCurrent(view,generation,epoch))return;
+        Menu menu=mode.getMenu();
+        // Editable draft fields already have the system's own Paste command.
+        MenuItem nativePaste=menu.findItem(android.R.id.paste);
+        if(nativePaste!=null&&nativePaste.isVisible()||menu.findItem(CLIPBOARD_PASTE_ITEM)!=null)return;
+        clipboardMenuMode=mode;
+        final String[] target={null};
+        final MenuItem paste=menu.add(Menu.NONE,CLIPBOARD_PASTE_ITEM,Menu.NONE,"粘贴").setEnabled(false);
+        paste.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+        paste.setOnMenuItemClickListener(item->{
+            final String expected=target[0];
+            if(expected==null||!clipboardContextCurrent(view,generation,epoch))return true;
+            pasteClipboardIntoDraft(view,generation,epoch,expected);
+            // Finishing selection must not cancel the async target confirmation.
+            mode.finish();return true;
+        });
+        try{view.evaluateJavascript("window.MobileTerminal?.clipboardTarget?.()||null",value->{
+            if(!clipboardContextCurrent(view,generation,epoch)||clipboardMenuMode!=mode)return;
+            try{Object result=new JSONArray("["+value+"]").get(0);
+                if(result instanceof String&&!((String)result).isEmpty()&&((String)result).length()<=4096){target[0]=(String)result;paste.setEnabled(true);}
+            }catch(Exception ignored){}
+        });}catch(Exception ignored){}
+    }
+    @Override public void onActionModeFinished(ActionMode mode){
+        super.onActionModeFinished(mode);
+        if(clipboardMenuMode==mode)clipboardMenuMode=null;
+    }
+    private void clipboardMessage(String message){
+        if(foreground&&!isFinishing()&&!isDestroyed())android.widget.Toast.makeText(this,message,android.widget.Toast.LENGTH_SHORT).show();
+    }
+    private void pasteClipboardIntoDraft(WebView view,long generation,long epoch,String expected){
+        if(!clipboardContextCurrent(view,generation,epoch))return;
+        String check="(()=>{try{return window.MobileTerminal?.clipboardTarget?.()==="+JSONObject.quote(expected)+";}catch{return false;}})()";
+        try{view.evaluateJavascript(check,confirmed->{
+            if(!"true".equals(confirmed)||!clipboardContextCurrent(view,generation,epoch))return;
+            try{
+                ClipboardManager clipboard=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
+                ClipDescription description=clipboard==null?null:clipboard.getPrimaryClipDescription();
+                if(description==null||!description.hasMimeType("text/*")){clipboardMessage("剪贴板没有可粘贴文本。");return;}
+                // Never resolve clipboard URIs or HTML; only the explicit text payload.
+                ClipData data=clipboard.getPrimaryClip();
+                CharSequence raw=data==null||data.getItemCount()==0?null:data.getItemAt(0).getText();
+                if(raw==null||raw.length()==0){clipboardMessage("剪贴板没有可粘贴文本。");return;}
+                if(raw.length()>CLIPBOARD_TEXT_LIMIT){clipboardMessage("剪贴板文本超过 64 KiB，请缩短后重试。");return;}
+                String text=raw.toString();
+                if(text.length()>CLIPBOARD_TEXT_LIMIT||!clipboardContextCurrent(view,generation,epoch))return;
+                String insert="(()=>{try{return window.MobileTerminal?.pasteClipboardText?.("+JSONObject.quote(expected)+","+JSONObject.quote(text)+")===true;}catch{return false;}})()";
+                view.evaluateJavascript(insert,applied->{
+                    if(clipboardContextCurrent(view,generation,epoch)&&!"true".equals(applied))clipboardMessage("目标窗口已变化，未粘贴。");
+                });
+            }catch(Exception error){if(clipboardContextCurrent(view,generation,epoch))clipboardMessage("暂时无法读取剪贴板。");}
+        });}catch(Exception ignored){}
     }
     @Override public void onBackPressed() { handleBack(); }
     private void handleBack() {

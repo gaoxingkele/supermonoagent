@@ -69,11 +69,12 @@ def test_native_bridge_rejects_navigation_before_library_access(tmp_path):
     preferences_path = tmp_path / 'assistant-preferences.json'
     assistant = DesktopAssistant(window, current[0], tmp_path, preferences_path=preferences_path)
     assert exposed == [assistant.recommend_skills, assistant.get_assistant_preferences, assistant.save_assistant_preferences,
-        assistant.set_assistant_api_key, assistant.assistant_chat, assistant.cancel_assistant_chat]
+        assistant.set_assistant_api_key, assistant.assistant_chat, assistant.cancel_assistant_chat, assistant.read_assistant_skill]
     assert assistant.get_assistant_preferences()['status'] == 'default'
     assert not preferences_path.exists()
     assistant._loaded()
     assert len(scripts) == 1
+
     assert assistant.recommend_skills("patent")["indexed"] == 1
     for unsafe in ["https://example.com/workspace", "http://127.0.0.1:6772/workspace", "http://127.0.0.1:6771/"]:
         current[0] = unsafe
@@ -88,3 +89,34 @@ def test_native_bridge_rejects_navigation_before_library_access(tmp_path):
                 action()
         assistant._loaded()
     assert len(scripts) == 1
+
+
+def test_native_skill_preview_rechecks_navigation_and_close(tmp_path):
+    from types import SimpleNamespace
+    from supermonoagent.desktop_assistant import DesktopAssistant
+
+    class Event:
+        def __iadd__(self, callback):
+            return self
+
+    current = ['http://127.0.0.1:6771/workspace']
+    window = SimpleNamespace(expose=lambda *_: None, run_js=lambda _: None,
+        get_current_url=lambda: current[0], events=SimpleNamespace(loaded=Event(), closed=Event()))
+    assistant = DesktopAssistant(window, current[0], tmp_path, preferences_path=tmp_path / 'prefs.json')
+    calls = []
+    def read(request):
+        calls.append(request)
+        current[0] = 'https://other.invalid/workspace'
+        return {'text': 'PRIVATE_LATE_RESPONSE'}
+    assistant._index = SimpleNamespace(read_skill=read, close=lambda: calls.append('closed'))
+    request = {'skill_id': 'a' * 64, 'revision': 'b' * 40}
+    with pytest.raises(ValueError, match='page changed'):
+        assistant.read_assistant_skill(request)
+    with pytest.raises(ValueError, match='unavailable'):
+        assistant.read_assistant_skill(request)
+    assert calls == [request]
+    current[0] = 'http://127.0.0.1:6771/workspace'
+    assistant._close()
+    assert calls == [request, 'closed']
+    with pytest.raises(ValueError, match='unavailable'):
+        assistant.read_assistant_skill(request)

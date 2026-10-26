@@ -197,6 +197,75 @@ def test_two_owned_parents_route_and_save_verified_bytes(tmp_path, mode):
     asyncio.run(exercise())
 
 
+def test_home_startup_rejects_upload_until_project_selected_then_saves_to_project_tmp(tmp_path, monkeypatch):
+    home = tmp_path / 'synthetic-home'; home.mkdir()
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    async def exercise():
+        async with environment(tmp_path) as (broker, url, parents, companions):
+            parents[0].project = home
+            await parents[0].publish()
+            await eventually(lambda: companions[0].inspector.valid.is_set()
+                             and companions[0].inspector.snapshot('session1')['cwd'] == str(home))
+            async with client(url, 'A') as ws:
+                cfg = await workspace(ws)
+                assert cfg['project_status'] == 'selection_required' and cfg['exchange_dir'] == str(home / 'tmp')
+                content = b'%PDF-1.7 selected owned project'
+                denied = await request(ws, 'upload.begin', {'original_name': 'owned.pdf', 'size': len(content),
+                    'sha256': hashlib.sha256(content).hexdigest(), 'window_id': cfg['window_id'],
+                    'daemon_epoch': cfg['daemon_epoch'], 'workspace_revision': cfg['revision'],
+                    'timezone_offset_minutes': 0}, ok=False)
+                assert denied['error'] == 'project_required' and not broker._uploads
+                denied = await request(ws, 'workspace.set', {'project_dir': str(home),
+                    'exchange_dir': None, 'expected_revision': 0}, ok=False)
+                assert denied['error'] == 'project_required'
+                assert list(home.iterdir()) == []
+                project = tmp_path / 'selected-project'; project.mkdir()
+                cfg = await request(ws, 'workspace.set', {'project_dir': str(project),
+                    'exchange_dir': None, 'expected_revision': 0})
+                assert cfg['revision'] == 1 and cfg['exchange_dir'] == str(project / 'tmp')
+                assert not (project / 'tmp').exists()
+                result = await saved(ws, (await upload(ws, cfg, content))['file_id'])
+                assert result['state'] == 'saved', result
+                target = Path(result['receipt']['path'])
+                assert target.parent == project / 'tmp' and target.read_bytes() == content
+                assert result['receipt']['sha256'] == hashlib.sha256(content).hexdigest()
+                assert list(home.iterdir()) == [] and not (parents[1].project / 'tmp').exists()
+    asyncio.run(exercise())
+
+
+def test_staged_delivery_rechecks_home_target_before_creating_receiver(tmp_path, monkeypatch):
+    home = tmp_path / 'synthetic-home'; home.mkdir()
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    async def exercise():
+        async with environment(tmp_path) as (_, url, parents, companions):
+            companion = companions[0]
+            entered, release = asyncio.Event(), asyncio.Event()
+            original = companion._deliver
+            async def gated(job, generation):
+                entered.set()
+                await release.wait()
+                return await original(job, generation)
+            companion._deliver = gated
+            try:
+                async with client(url, 'A') as ws:
+                    queued = await upload(ws, await workspace(ws))
+                    await asyncio.wait_for(entered.wait(), 5)
+                    parents[0].project = home
+                    await parents[0].publish()
+                    await eventually(lambda: companion.inspector.valid.is_set()
+                                     and companion.inspector.snapshot('session1')['cwd'] == str(home))
+                    release.set()
+                    result = await saved(ws, queued['file_id'])
+                    assert result['state'] == 'failed' and result['error'] == 'project_required', result
+                    assert companion.progress[queued['file_id']]['error'] == 'project_required'
+                    assert list(home.iterdir()) == []
+                    assert not list(tmp_path.rglob('*.part'))
+                    assert not list((tmp_path / 'project-A').rglob('*.pdf'))
+            finally:
+                release.set()
+    asyncio.run(exercise())
+
+
 def re_name(name):
     import re
     return bool(re.fullmatch(r'\d{8}-\d{6}-document\.pdf', name))

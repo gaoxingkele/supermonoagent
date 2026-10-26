@@ -170,6 +170,7 @@ async def main(android_zip=None):
                 if client['pc']:
                     await client['ws'].send(frame(7, state(client)))
             await wait(page, 'document.getElementById("debug-count").textContent==="共 17 个终端"&&document.querySelectorAll(".debug-tile").length===8')
+            await wait(page, '[...document.querySelectorAll(".debug-marquee")].every(e=>e.textContent.includes("等待确认"))')
             # A fresh output marks active; old replay does not imply active work.
             for client in list(clients):
                 if client['pc']:
@@ -177,6 +178,10 @@ async def main(android_zip=None):
                         await client['ws'].send(feed(3, sid, '\x1b[4;1H\x1b[2K实时提示已更新'))
             await wait(page, '[...document.querySelectorAll(".debug-tile")].every(e=>e.dataset.state==="refreshing")')
             await wait(page, '[...document.querySelectorAll(".debug-tile")].every(e=>e.dataset.state==="waiting")')
+            # Activity sorting may move those computers between pages. Show all
+            # eighteen before checking disconnection, rather than pinning page 2.
+            await page.select_option('#debug-density', '25')
+            await wait(page, 'document.querySelectorAll(".debug-tile").length===17')
             online['pc2'] = False
             for client in list(clients):
                 if client['pc'] == 'pc2':

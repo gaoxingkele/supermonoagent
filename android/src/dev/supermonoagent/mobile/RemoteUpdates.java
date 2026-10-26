@@ -19,7 +19,7 @@ import javax.net.ssl.SSLParameters;
 public final class RemoteUpdates {
     public static final int NATIVE_API=2, MANIFEST_LIMIT=128*1024, FILE_LIMIT=4*1024*1024,
             TOTAL_LIMIT=5*1024*1024, ARCHIVE_LIMIT=8*1024*1024;
-    public static final String DEFAULT_FEED="https://117.50.48.22/updates/stable/manifest.json";
+    public static final String DEFAULT_FEED="https://117.50.48.22/updates/stable/android/manifest.json";
     public static final List<String> FILES=Collections.unmodifiableList(Arrays.asList(
         "mobile/index.html","mobile/app.js","mobile/app.css","mobile/mobile-core.js",
         "mobile/vendor/xterm.js","mobile/vendor/xterm.css","mobile/vendor/xterm-fit.js",

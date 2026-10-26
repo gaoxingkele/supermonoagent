@@ -112,8 +112,21 @@ class MultiplexTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(client.queue.get_nowait())
         self.assertFalse(self.left.stop.is_set())
 
-    async def test_pump_overflow_is_explicit_for_reliable_client(self):
+    async def test_pump_overflow_resyncs_local_reliable_client(self):
         client = self.client()
+        self.hub.set_subscriptions(client, [self.left.id])
+        self.drain(client)
+        self.hub._flushed(self.left.id, b"partial-history", True)
+        # The ring retained every byte, so a local reliable client gets a
+        # lossless snapshot instead of a disconnect-resubscribe storm.
+        self.assertIn(client.key, self.hub.clients)
+        self.assertFalse(client.failure)
+        frames = [unpack(f) for f in self.drain(client)]
+        self.assertEqual(frames, [(OP_SNAPSHOT, self.left.id.encode() + b"\0partial-history")])
+
+    async def test_pump_overflow_is_explicit_for_delegated_reliable_client(self):
+        client = self.client()
+        client.delegated = True
         self.hub.set_subscriptions(client, [self.left.id])
         self.drain(client)
         self.hub._flushed(self.left.id, b"partial-history", True)

@@ -26,6 +26,7 @@ from .security import request_allowed, tls_context, transport_options, loopback,
 from .accounts import Accounts
 from .defaults import migrate_legacy_relay
 from .hub import Hub
+from .history_context import unpack_history_context, valid_stream_id
 from .task_events import TaskEventStore
 
 from .protocol import (
@@ -33,6 +34,7 @@ from .protocol import (
     OP_DAEMON_LOGS,
     OP_FILE_TRANSFER,
     OP_ASSISTANT_CONTEXT,
+    OP_HISTORY_CONTEXT,
     OP_FOCUS,
     OP_GROUP,
     OP_HELLO,
@@ -59,7 +61,10 @@ from .protocol import (
 LOGGER = logging.getLogger('supermonoagent.daemon')
 LOGGER.addHandler(logging.NullHandler())
 STATE = Path(os.environ.get("SUPERMONO_STATE_DIR") or Path.home() / ".supermonoagent")
-QUEUE_FRAMES = 32
+# Bounded per-client output queue. Interactive UI clients stall while parsing
+# multi-hundred-KB snapshot replays; the bound must outlast a replay round at
+# realistic live-output rates or "reliable" clients livelock on 1013 reconnects.
+QUEUE_FRAMES = 256
 
 
 def log_endpoint(value: str) -> str:
@@ -436,6 +441,8 @@ class Daemon:
                 if op != OP_HELLO:
                     raise ValueError('HELLO required')
                 offered = str(unpack_json(payload).get('token') or '')
+                if not offered and self._local_owner_peer(ws):
+                    offered = self.token
                 if not self.allowed(offered):
                     raise ValueError('Invalid credentials')
             except (asyncio.TimeoutError, ValueError, TypeError, ProtocolError):
@@ -505,10 +512,16 @@ class Daemon:
             return None
         try:
             opcode, payload = unpack(frame)
-            if opcode != OP_SNAPSHOT:
+            context = None
+            if opcode == OP_HISTORY_CONTEXT:
+                sid, context, _ = unpack_history_context(payload)
+                if (context['kind'] not in ('snapshot', 'resume') or not client.history_context
+                        or not client.multiplex or (context['v'] == 2 and not client.history_resume)):
+                    return None
+                session = self.hub.sessions.get(sid)
+            elif opcode != OP_SNAPSHOT:
                 return None
-            prefixed = client.multiplex or client.key.startswith('relay-')
-            if prefixed:
+            elif client.multiplex or client.key.startswith('relay-'):
                 raw_sid, separator, _ = payload.partition(b'\0')
                 if not separator:
                     return None
@@ -520,11 +533,15 @@ class Daemon:
             if session is None:
                 return None
             pty, dimensions = session.pty, (session.cols, session.rows)
+            if context is not None and dimensions != (context['cols'], context['rows']):
+                return None
             mode = (client.multiplex, client.key.startswith('relay-'))
 
             def current():
                 return (self.client_authorized(client) and self.hub.sessions.get(sid) is session
                         and session.pty is pty and (session.cols, session.rows) == dimensions
+                        and (context is None or session.pump.history_context()['epoch'] == context['epoch'])
+                        and (context is None or context['v'] == 1 or session.pump.stream_id == context['stream_id'])
                         and (client.multiplex, client.key.startswith('relay-')) == mode
                         and self.hub._channel_ok(client, session)
                         and (sid in client.subscriptions if client.multiplex else
@@ -620,6 +637,8 @@ class Daemon:
                 return [], 4001
             client.multiplex = body.get("multiplex") is True
             client.reliable = body.get("reliable") is True
+            client.history_context = client.multiplex and type(body.get('history_context')) is int and body['history_context'] == 1
+            client.history_resume = client.history_context and type(body.get('history_resume')) is int and body['history_resume'] == 1
             self.hub.ensure_owner(client.token)
             if body.get("channel") is not None:
                 self.hub.subscribe(client, str(body.get("channel") or ""))
@@ -637,8 +656,24 @@ class Daemon:
             body = unpack_json(payload)
             sessions = body.get("sessions")
             if isinstance(sessions, list) and len(sessions) <= 256:
+                history_after = None
+                if 'history_after' in body and client.history_resume:
+                    history_after = body['history_after']
+                    if (not isinstance(history_after, dict) or len(history_after) > 256
+                            or any(not isinstance(sid, str) or not sid
+                                   or any(ord(char) < 32 or ord(char) == 127 or 0xd800 <= ord(char) <= 0xdfff for char in sid)
+                                   or len(sid.encode('utf-8')) > 256
+                                   or not isinstance(cursor, dict) or set(cursor) != {'position', 'epoch', 'stream_id'}
+                                   or not valid_stream_id(cursor['stream_id'])
+                                   or any(type(cursor[key]) is not int or not 0 <= cursor[key] <= 9007199254740991
+                                          for key in ('position', 'epoch'))
+                                   for sid, cursor in history_after.items())):
+                        raise ProtocolError('Invalid history cursor')
                 existing = set(client.subscriptions) if body.get("refresh") is True else None
-                self.hub.set_subscriptions(client, sessions)
+                if body.get('replay') is False and existing is None:
+                    self.hub.set_subscriptions(client, sessions, replay=False)
+                else:
+                    self.hub.set_subscriptions(client, sessions, history_after=history_after)
                 if existing is not None:
                     # Newly added sessions already received their initial snapshot above.
                     self.hub.refresh_subscriptions(client, existing)
@@ -790,6 +825,15 @@ class Daemon:
             return False
         return host in {"127.0.0.1", "::1"}
 
+    def _local_owner_peer(self, ws) -> bool:
+        """Only an IPv4 loopback request may omit the direct owner credential."""
+        try:
+            return (ws.remote_address[0] == "127.0.0.1"
+                    and urlsplit("http://" + ws.request.headers.get("Host", "")).hostname == "127.0.0.1"
+                    and request_allowed(ws, ws.request))
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return False
+
     async def _auth_only(self, ws) -> None:
         if not self._local_peer(ws):
             await ws.close(code=4001)
@@ -864,7 +908,7 @@ class Daemon:
             self.hub._send(client, self._state(client))
 
     def _state(self, client, error: str | None = None, resize_ack: dict | None = None) -> bytes:
-        visible = self.hub.summary(client.token)
+        visible = self.hub.summary(client.token, history_context=True) if client.history_context else self.hub.summary(client.token)
         service = self.service_status()
         service['owner_authenticated'] = client.token == self.token and not client.delegated
         if client.token == self.token and not client.delegated:

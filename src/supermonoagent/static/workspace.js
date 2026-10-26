@@ -96,9 +96,13 @@
     notice(host.error);
   }
   function ping(host){host.pingSentAt=performance.now();send(owner(host),10,encoder.encode(String(host.pingSentAt)));}
+  function tokenlessLocal(settings){
+    if(settings.code)return false;
+    try{return new URL(C.socketURL(settings.relay,location.origin)).hostname==='127.0.0.1';}catch{return false;}
+  }
   function handshake(host){
     if(host.helloSent||host.ws?.readyState!==WebSocket.OPEN)return;
-    host.helloSent=true;socketSend(host,C.pack(1,encoder.encode(JSON.stringify({...(host.config.authMode==='account'?{}:{token:host.config.token}),multiplex:true,reliable:true,
+    host.helloSent=true;socketSend(host,C.pack(1,encoder.encode(JSON.stringify({...(tokenlessLocal(host.config)||host.config.authMode==='account'?{}:{token:host.config.token}),multiplex:true,reliable:true,
       channel:host.id==='local'?params.get('channel')||undefined:undefined}))));
   }
   function stopHost(host){
@@ -118,8 +122,8 @@
     }
     let url;try{url=C.socketURL(host.config.relay,location.origin);const safe=new URL(url);safe.searchParams.delete('token');url=safe.toString();}
     catch(error){host.error=error.message;host.phase='invalid';updateConnection();renderHosts();return;}
-    const account=host.config.authMode==='account'?accountFor(url):null;
-    if(host.config.authMode==='account'&&(!host.config.code||!account)){host.phase='auth-failed';host.error='请登录此中继账号并重新选择已授权电脑。';updateConnection();renderHosts();return;}
+    const local=tokenlessLocal(host.config),account=!local&&host.config.authMode==='account'?accountFor(url):null;
+    if(!local&&host.config.authMode==='account'&&(!host.config.code||!account)){host.phase='auth-failed';host.error='请登录此中继账号并重新选择已授权电脑。';updateConnection();renderHosts();return;}
     host.ws=new WebSocket(url);host.ws.binaryType='arraybuffer';metrics.socketsOpened++;renderHosts();updateConnection();
     host.ws.onopen=()=>{if(!validOwner(context))return;if(host.config.code){
       if(host.config.authMode==='account'){if(!accountFor(url)||accountFor(url)!==account){stopAccountHost(host,'账号会话已过期，请重新登录。');return;}socketSend(host,JSON.stringify({op:'phone',code:host.config.code,session:account.session,reliable:true}));}
@@ -211,6 +215,7 @@
     const frame=pane.frames.shift(),replay=frame.op===8,size=frame.grid||pane.host.controls[pane.raw];
     applyGrid(pane,size);
     pane.writing=true;
+    pane.questions?.beforeOutput({replay});
     if(replay){resizeGrid(pane,size);pane.term.reset();pane.history.hidden=false;frame.bytes=C.snapshotBytes(frame.bytes,pane.raw,pane.host.capabilities.snapshot_sgr===true);}
     const before=performance.now();
     const writeGeneration=pane.generation;
@@ -237,9 +242,13 @@
     const fit=new FitAddon.FitAddon();term.loadAddon(fit);
     if(window.Unicode11Addon?.Unicode11Addon){try{term.loadAddon(new Unicode11Addon.Unicode11Addon());term.unicode.activeVersion='11';}catch{}}
     term.open(screen);
-    // Windows Ctrl+V belongs to the browser/native clipboard accelerator.
-    // Do not turn it into the terminal's literal SYN byte (0x16).
-    term.attachCustomKeyEventHandler(event=>!(event.type==='keydown'&&/Win/i.test(navigator.platform)&&event.ctrlKey&&!event.altKey&&!event.metaKey&&!event.shiftKey&&event.key.toLowerCase()==='v'));
+    // Native clipboard accelerators must not also send SYN/interrupt bytes.
+    // Without a selection, Ctrl+C remains the CLI's ordinary interrupt key.
+    term.attachCustomKeyEventHandler(event=>{
+      if(event.type!=='keydown'||!/Win/i.test(navigator.platform)||!event.ctrlKey||event.altKey||event.metaKey||event.shiftKey)return true;
+      const key=event.key.toLowerCase();
+      return key!=='v'&&!(key==='c'&&term.hasSelection());
+    });
     // Preserve readable history when a full-screen tool clears saved lines.
     term.parser.registerCsiHandler({final:'J'},params=>params[0]===3);
     const pane={sid,host:data.win.host,raw:data.session.raw,generation:data.win.host.generation,el,screen,term,fit,history,title,own,ready:data.win.host.connected,replayPending:0,lastSize:'',renderer:'dom',webgl:null,observer:null,frames:[],writing:false,wantControl:false,redrawAfterReplay:false,redrawTimer:0,resizeRequest:null,lastAttempt:'',lastInputAt:0,repaintAt:0,composing:false};
@@ -254,6 +263,7 @@
       session.learnedAgent=next;aggregateCatalog();const info=sessionInfo(pane.sid);if(info)pane.title.textContent=info.win.title+'（'+agentType(info.session,info.win.title)+'）';renderTree();return false;
     });
     pane.highlighter=C.createHighlighter(term,{enabled:highlightEnabled});
+    pane.questions=window.TerminalQuestions?.create(pane,{enabled:highlightEnabled,isCurrent:livePane});
     panes.set(sid,pane);setRenderer(pane);updateAgentMode(pane);
     pane.followOutput=true;pane.followFrame=0;pane.followGeometry=viewportGeometry(pane);pane.userScrollUntil=0;
     const scrollIntent=event=>{
@@ -306,6 +316,7 @@
     pane.bindHeader();
     pane.bindInput=()=>{
       pane.inputSubscription?.dispose();const context=owner(pane.host);
+      pane.questions?.reset();
       pane.inputSubscription=term.onData(text=>{if(!validOwner(context)||!livePane(pane))return;text=C.terminalInput(text,pane.replayPending>0);if(!text)return;if(ctrl&&text.length===1){text=String.fromCharCode(text.toUpperCase().charCodeAt(0)&31);setCtrl(false);}input(sid,text);});
     };
     pane.bindInput();
@@ -470,7 +481,8 @@
   function input(sid,text) {
     const pane=panes.get(sid);
     if(!livePane(pane)||!pane.ready||!pane.host.connected||!pane.host.supported||!openTabs.includes(sid))return;
-    pane.lastInputAt=performance.now();const frame=C.targetFrame(17,pane.raw,text);socketSend(pane.host,frame);
+    pane.lastInputAt=performance.now();const frame=C.targetFrame(17,pane.raw,text);
+    if(socketSend(pane.host,frame))pane.questions?.observeAcceptedInput(text);
   }
   function takeControl(sid=active){const pane=panes.get(sid);if(pane){pane.wantControl=true;pane.lastAttempt='';pane.redrawAfterReplay=true;pane.resizePaused=false;fitPane(pane,true);}}
   function openView(sid, takeover=false) {
@@ -624,7 +636,7 @@
     const win=catalog.find(win=>win.id===id);if(!win)return;context=context||owner(win.host);if(!validOwner(context))return;
     renameWindow={...context,id:win.raw};$('rename-value').value=win.title;$('rename-dialog').showModal();$('rename-value').focus();$('rename-value').select();
   }
-  function terminate(sid){const pane=panes.get(sid);if(!livePane(pane))return;terminateSession={...owner(pane.host),id:pane.raw};$('terminate-dialog').showModal();}
+  function terminate(sid){const pane=panes.get(sid);if(!livePane(pane))return;terminateSession={...owner(pane.host),id:pane.raw};$('terminate-dialog').querySelector('p').textContent='这将终止当前终端中的进程。其他客户端也会断开此会话。';$('terminate-dialog').showModal();}
   function setCtrl(value){ctrl=value;$('ctrl-key').setAttribute('aria-pressed',String(value));}
   function endpoint(settings){
     const url=new URL(C.socketURL(settings.relay,location.origin));url.searchParams.delete('token');url.hash='';
@@ -930,7 +942,17 @@
   };
   $('connection-close').onclick=()=>{cancelAccountLogin();returnToWorkspace=false;$('connection-dialog').close();};$('connect-button').onclick=()=>showRelayProfiles();
   $('rename-cancel').onclick=()=>$('rename-dialog').close();$('rename-form').onsubmit=e=>{e.preventDefault();send(renameWindow,15,{action:'title',window:renameWindow?.id,title:$('rename-value').value.trim()});$('rename-dialog').close();};
-  $('terminate-cancel').onclick=()=>$('terminate-dialog').close();$('terminate-form').onsubmit=e=>{e.preventDefault();send(terminateSession,9,{session:terminateSession?.id});$('terminate-dialog').close();};
+  $('terminate-cancel').onclick=()=>$('terminate-dialog').close();$('terminate-form').onsubmit=async e=>{
+    e.preventDefault();const context=terminateSession,host=context?.host,dialog=$('terminate-dialog'),message=dialog.querySelector('p'),submit=dialog.querySelector('.danger');
+    if(!validOwner(context)||!host.connected||!send(context,9,{session:context.id})){message.textContent='当前电脑未连接，结束指令未发送。请恢复连接后重试。';return;}
+    submit.disabled=true;message.textContent='正在等待后台确认结束会话…';
+    try{
+      const exists=()=>host.catalog.some(win=>(win.sessions||[]).some(session=>session.id===context.id)),deadline=performance.now()+8000;
+      while(validOwner(context)&&host.connected&&exists()&&performance.now()<deadline)await new Promise(resolve=>setTimeout(resolve,40));
+      if(validOwner(context)&&host.connected&&!exists())dialog.close();
+      else message.textContent='尚未收到后台结束确认，请检查连接后重试。';
+    }finally{submit.disabled=false;}
+  };
   $('new-project').onclick=()=>showRelayProfiles('workspace');
   const tabPicker=node('div','tab-picker'),tabPickerToggle=button('全部窗口 ▾','查看全部已打开窗口',()=>{const menu=$('tabs-overflow-menu'),show=menu.hidden;closeRoomMenu();closeAppMenu();renderTabPicker();menu.hidden=!show;positionTabPicker();tabPickerToggle.setAttribute('aria-expanded',String(show));if(show)(menu.querySelector('[aria-checked="true"]')||menu.querySelector('button'))?.focus();});
   tabPickerToggle.id='tabs-overflow-toggle';tabPickerToggle.setAttribute('aria-haspopup','menu');tabPickerToggle.setAttribute('aria-expanded','false');tabPickerToggle.setAttribute('aria-controls','tabs-overflow-menu');
@@ -1013,7 +1035,7 @@
   $('highlight-toggle').onclick=()=>{
     highlightEnabled=!highlightEnabled;save(localStorage,'sma.workspace.highlight',highlightEnabled?'on':'off');
     $('highlight-toggle').setAttribute('aria-pressed',String(highlightEnabled));
-    for(const pane of panes.values())pane.highlighter?.setEnabled(highlightEnabled);
+    for(const pane of panes.values()){pane.highlighter?.setEnabled(highlightEnabled);pane.questions?.setEnabled(highlightEnabled);}
   };
   $('renderer').onchange=()=>{renderer=C.rendererName($('renderer').value);save(localStorage,'sma.workspace.renderer',renderer);for(const pane of panes.values())setRenderer(pane);updateFooter();};
   $('sidebar-toggle').onclick=()=>{if(mobile())$('app').classList.toggle('mobile-sidebar');else {$('app').classList.toggle('sidebar-hidden');$('app').style.gridTemplateColumns=$('app').classList.contains('sidebar-hidden')?'0 minmax(0,1fr)':($('sidebar').style.width||'240px')+' minmax(0,1fr)';}scheduleVisibleFit();};
@@ -1114,6 +1136,10 @@
   function renderAuthField(prefix){
     const workspace=prefix==='workspace',auth=$(workspace?'workspace-auth':'connection-auth'),input=$(workspace?'workspace-token':'access-token'),remember=$(workspace?'workspace-remember':'remember-token');
     const settings={relay:$(workspace?'workspace-relay':'relay-url').value,code:$(workspace?'workspace-code':'relay-code').value},account=accountFor(settings.relay),using=auth.value==='account';
+    const local=tokenlessLocal(settings);
+    input.closest('label').hidden=local;remember.closest('label').hidden=local;auth.closest('label').hidden=local;
+    if(!workspace)$('relay-code').closest('label').hidden=local;
+    if(local){$(workspace?'workspace-account-status':'connection-account-status').textContent='本机 127.0.0.1 直连无需 Token 和房间号。';return;}
     input.readOnly=using;remember.disabled=using;if(using){input.value=account?'••••••••':'';remember.checked=false;}else if(input.value==='••••••••')input.value='';
     $(workspace?'workspace-account-status':'connection-account-status').textContent=using?(account?'中继账号：'+account.account.email+'；凭据仅用于此中继，不作为电脑 Token。':'请先登录此中继，并选择账号授权的电脑。'):'手动 Token 只用于所填电脑；账号登录单独管理。';
   }
@@ -1377,7 +1403,7 @@
     for(const saved of savedHosts)hosts.set(saved.id,new HostConnection(saved.id,saved.name,{relay:saved.relay,code:saved.code,token:saved.authMode==='account'?'':boundToken(saved.id,saved),authMode:saved.authMode}));
     const selected=restoredUI?.selectedHost||read(sessionStorage,'sma.workspace.activeHost');selectedHost=hosts.has(selected)?selected:'local';
     for(const host of hosts.values())connect(host);for(const account of relayAccounts.values())connectAccountDirectory(account);refreshDirectories();renderTree();updateFooter();
-    if(!config.token&&!config.code)setTimeout(()=>{if(!userConnectedOnce)showRelayProfiles();},1500);
+    if(!tokenlessLocal(config)&&!config.token&&!config.code)setTimeout(()=>{if(!userConnectedOnce)showRelayProfiles();},1500);
   }
   bootstrap();
   window.NativeUpdates?.uiReady();

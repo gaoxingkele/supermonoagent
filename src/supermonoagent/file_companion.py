@@ -32,7 +32,7 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from .file_broker import enrollment_proof, PROTOCOL, MAX_FRAME
 from .file_transfer import TransferStore, MAX_CHUNK, _plain_directory, _validate_name
-from .file_workspaces import FileWorkspaces, RevisionConflict, _directory
+from .file_workspaces import FileWorkspaces, ProjectSelectionRequired, RevisionConflict, _directory
 from .protocol import pack, unpack, pack_json
 
 _TRANSPORT_LOG = logging.getLogger('supermonoagent.file_companion.private_transport')
@@ -539,6 +539,8 @@ class FileCompanion:
             code = 'directory_unavailable'
             if isinstance(error, RevisionConflict):
                 code = 'revision_conflict'
+            elif isinstance(error, ProjectSelectionRequired):
+                code = 'project_required'
             elif isinstance(error, CompanionError):
                 code = {'target_unavailable': 'session_unavailable', 'owner_unverified': 'unauthorized',
                         'target_changed': 'target_changed', 'invalid_request': 'invalid_request'}.get(str(error), 'unavailable')
@@ -775,6 +777,8 @@ class FileCompanion:
             code = 'delivery_failed'
             if isinstance(error, RevisionConflict):
                 code = 'revision_conflict'
+            elif isinstance(error, ProjectSelectionRequired):
+                code = 'project_required'
             elif isinstance(error, CompanionError) and str(error) in {
                     'target_changed', 'target_unavailable', 'owner_unverified', 'saved_file_changed',
                     'target_conflict', 'invalid_download_ticket', 'invalid_download_response', 'journal_mismatch'}:

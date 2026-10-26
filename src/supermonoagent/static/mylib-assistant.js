@@ -10,10 +10,16 @@
   const toggle=document.createElement('button');toggle.id='mylib-toggle';toggle.textContent='mylib 助理';toggle.setAttribute('aria-expanded','false');
   document.querySelector('.titlebar .header-spacer')?.before(toggle);
   const panel=document.createElement('aside');panel.id='mylib-panel';panel.hidden=true;panel.setAttribute('aria-label','mylib 助理');
-  panel.innerHTML='<h2>mylib 助理</h2><p id="mylib-target"></p><button id="mylib-refresh">重新分析</button><button id="mylib-pause">暂停感知</button><p>本机技能建议使用本地匹配；模型对话使用所选入口。</p><details><summary>本次上下文</summary><pre id="mylib-context"></pre></details><div id="mylib-results"></div><details><summary>metaRSI 进化</summary><p>重复失败可登记为改进信号。需关联目标电脑的可信项目路径及证据账本后，才能展示项目模式、登记实验和验证进化；当前不会自动修改规则。</p></details>';
+  panel.innerHTML='<h2>mylib 助理</h2><p id="mylib-target"></p><button id="mylib-refresh">重新分析</button><button id="mylib-pause">暂停感知</button><p id="mylib-library-source">技能匹配在本机进行；中央库只提供技能目录与正文。</p><details><summary>本次上下文</summary><pre id="mylib-context"></pre></details><div id="mylib-results"></div><details><summary>metaRSI 进化</summary><p>重复失败可登记为改进信号。需关联目标电脑的可信项目路径及证据账本后，才能展示项目模式、登记实验和验证进化；当前不会自动修改规则。</p></details>';
   const evolution=document.createElement('section');evolution.id='mylib-evolution';evolution.setAttribute('aria-label','metaRSI 进化建议');panel.append(evolution);
   const project=document.createElement('details'),projectHeading=document.createElement('summary'),projectNote=document.createElement('p'),ledger=document.createElement('pre');project.id='mylib-project';projectHeading.textContent='目标项目与证据账本';ledger.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px';project.append(projectHeading,projectNote,ledger);panel.append(project);
   document.body.append(panel);
+  const preview=document.createElement('dialog');preview.id='mylib-skill-preview';preview.setAttribute('aria-label','中央库技能正文');
+  preview.style.cssText='width:min(760px,90vw);max-height:85dvh;overflow:auto';
+  const previewTitle=document.createElement('h2'),previewSource=document.createElement('p'),previewText=document.createElement('pre'),previewClose=document.createElement('button');
+  previewText.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px';previewClose.textContent='关闭';previewClose.onclick=()=>preview.close();preview.append(previewTitle,previewSource,previewText,previewClose);document.body.append(preview);
+  let previewRevision=0;
+  preview.addEventListener('close',()=>{previewRevision++;});
   if(window.pywebview.api.get_assistant_preferences&&window.pywebview.api.save_assistant_preferences){
     const settings=document.createElement('dialog');settings.id='mylib-settings';
     settings.innerHTML='<form id="mylib-settings-form"><h2>助手模型配置</h2><p>保存配置不会发起模型调用。发送问题时才调用所选入口。</p><label>模型入口<select id="mylib-provider"><option value="unconfigured">稍后配置</option><option value="codex">本机 Codex 登录</option><option value="api">已有模型 API</option></select></label><label>模型名称<input id="mylib-model" type="text" maxlength="128" autocomplete="off"></label><label id="mylib-endpoint-label">API 地址<input id="mylib-endpoint" type="url" maxlength="2048" autocomplete="off" placeholder="https://…/v1"></label><label id="mylib-key-label">API 密钥（仅本次运行保留）<input id="mylib-api-key" type="password" maxlength="8192" autocomplete="off" placeholder="本机无鉴权服务可留空"></label><label class="check"><input id="mylib-auto-context" type="checkbox">对话时自动附带当前窗口上下文</label><label>上下文字符上限<input id="mylib-context-limit" type="number" min="512" max="32768" step="1"></label><p id="mylib-settings-status" role="status"></p><div class="dialog-actions"><button id="mylib-settings-cancel" type="button">取消</button><button id="mylib-settings-save" type="submit">保存配置</button></div></form>';
@@ -113,7 +119,7 @@
     const retry=()=>{run.failed=true;run.failures++;run.retryAt=performance.now()+Math.min(30000,4000*2**Math.min(run.failures-1,3));};
     panel.querySelector('#mylib-target').textContent=c.target;
     panel.querySelector('#mylib-context').textContent=c.text;
-    content.textContent='正在匹配本机技能…';
+    content.textContent='正在读取技能目录并匹配…';
     evolution.textContent='';
     projectNote.textContent='正在查询目标电脑的启动目录…';ledger.textContent='';
     try{
@@ -122,6 +128,8 @@
       if(request!==revision||panel.hidden||w.activePane!==c.pane||w.panes.get(c.pane.sid)!==c.pane||!sameEvidenceIdentity(c.identity,evidenceIdentity(c.pane))){run.failed=true;run.retryAt=0;return;}
       if(!context.available&&currentEvidence(c.identity)&&c.identity.host.capabilities.assistant_context)retry();else run.failures=0;
       content.replaceChildren();
+      const library=result.library||{},central=library.kind==='central';
+      panel.querySelector('#mylib-library-source').textContent=central?'中央 mylib · 版本 '+String(library.revision||'').slice(0,12)+(library.stale?' · 连接暂不可用，使用缓存目录。':' · 使用已同步目录；当前窗口内容留在本机匹配。'):library.central_status?'中央库暂不可用，使用本机 mylib 匹配。':'本机 mylib · 使用本地目录匹配。';
       projectNote.textContent=context.project?'终端启动目录：'+context.project+'（不跟踪 shell 内的 cd）'+(context.ledger?.enabled?' · 已关联证据账本。':context.ledger?.status==='not_enabled'?' · 此目录未启用 metaRSI。':' · 项目证据暂不可读。'):context.note||'未获得可信项目目录。';
       ledger.textContent=Object.entries(context.ledger?.pages||{}).map(([name,page])=>name+' ['+({ready:'已读取',missing:'无记录',unavailable:'无法读取'}[page.status]||'未知')+']\n'+(typeof page==='string'?page:page.text||'')+(page.truncated?'\n[内容已截断]':'')).join('\n\n');
       for(const idea of result.evolution||[]){const article=document.createElement('article'),heading=document.createElement('strong'),evidence=document.createElement('p'),next=document.createElement('p'),falsifier=document.createElement('p'),boundary=document.createElement('p'),related=recordMatches(idea,context);heading.textContent=bounded(idea.name,240)+' · 未验证（待验证建议）';evidence.textContent='具体故障输出行：'+related.faultLines.join('；');next.textContent=bounded(idea.next_step,1024);falsifier.textContent='可证伪条件：'+bounded(idea.falsifier,1024);boundary.textContent='账本静态快照；输出行数不是独立故障计数。未执行 tick、独立验证或自动准入。';article.append(heading,evidence,next,falsifier,boundary);for(const record of related.matches){const source=document.createElement('code'),snippet=document.createElement('p');source.textContent=record.category+'片段 · '+record.source;snippet.textContent=record.text;article.append(source,snippet);}if(!related.matches.length){const missing=document.createElement('p');missing.textContent=context.ledger?.enabled?'可读账本快照中没有可靠匹配的记录，暂不推断已有否决、试验或影子规则。':'未获得可读账本，不能判断是否已有同类否决、试验或影子规则。';article.append(missing);}evolution.append(article);}
@@ -130,14 +138,27 @@
       for(const card of result.skills){
         const article=document.createElement('article'),title=document.createElement('strong'),description=document.createElement('p'),reason=document.createElement('p'),source=document.createElement('code'),copy=document.createElement('button');
         title.textContent=card.name;description.textContent=card.description;reason.textContent=card.reason;source.textContent=card.source;
-        copy.textContent='复制调用指令';copy.onclick=async()=>{try{await navigator.clipboard.writeText('请使用 '+card.name+' 技能；先读取对应 SKILL.md，并确认当前电脑已安装该技能。');copy.textContent='已复制';}catch{copy.textContent='复制失败';}};
+        copy.textContent='复制调用指令';copy.onclick=async()=>{try{await navigator.clipboard.writeText(central?'请通过中央 mylib MCP 读取 '+card.source+'（skill_id='+card.id+'，revision='+card.revision+'），再按 '+card.name+' 技能的要求处理当前任务；先确认当前电脑的适用条件。':'请使用 '+card.name+' 技能；先读取对应 SKILL.md，并确认当前电脑已安装该技能。');copy.textContent='已复制';}catch{copy.textContent='复制失败';}};
         article.append(title,description,reason,source,document.createElement('br'),copy);content.append(article);
+        if(central&&typeof card.id==='string'&&typeof card.revision==='string'&&api.read_assistant_skill){
+          const read=document.createElement('button');read.textContent='查看技能';read.className='mylib-read-skill';
+          read.onclick=async()=>{
+            if(!currentEvidence(c.identity)||window.smaWorkspace.activePane!==c.pane)return;
+            const ticket=++previewRevision;previewTitle.textContent=card.name;previewSource.textContent='中央库 · '+card.source+' · '+card.revision.slice(0,12);previewText.textContent='正在读取…';preview.showModal();read.disabled=true;
+            try{const body=await api.read_assistant_skill({skill_id:card.id,revision:card.revision});
+              if(ticket!==previewRevision||!preview.open)return;
+              if(!currentEvidence(c.identity)||window.smaWorkspace.activePane!==c.pane){previewText.textContent='窗口已切换，请在目标窗口重新查看。';return;}
+              previewText.textContent=typeof body.text==='string'?body.text+(body.truncated?'\n[正文已截断]':''):'技能正文暂不可读。';
+            }catch{if(ticket===previewRevision&&preview.open)previewText.textContent='中央库正文暂不可读，请重新分析后再试。';}
+            finally{read.disabled=false;}
+          };article.append(read);
+        }
         if(context.inventory?.available){const availability=document.createElement('p');availability.textContent=context.inventory.skill_names.includes(card.name)?'目标电脑技能库中可找到此技能。':'目标电脑技能库中未找到此技能；使用前需配置。';article.append(availability);}
       }
     }catch(error){run.failed=true;run.retryAt=0;if(request===revision&&!panel.hidden&&window.smaWorkspace.activePane===c.pane&&sameEvidenceIdentity(c.identity,evidenceIdentity(c.pane))){content.textContent=String(error.message||error);if(currentEvidence(c.identity))retry();}}
     finally{run.pending=false;}
   }
-  toggle.onclick=()=>{panel.hidden=!panel.hidden;revision++;document.body.classList.toggle('mylib-open',!panel.hidden);toggle.setAttribute('aria-expanded',String(!panel.hidden));if(!panel.hidden)analyze(true);};
+  toggle.onclick=()=>{panel.hidden=!panel.hidden;revision++;if(panel.hidden&&preview.open)preview.close();document.body.classList.toggle('mylib-open',!panel.hidden);toggle.setAttribute('aria-expanded',String(!panel.hidden));if(!panel.hidden)analyze(true);};
   panel.querySelector('#mylib-refresh').onclick=()=>analyze(true);
   panel.querySelector('#mylib-pause').onclick=event=>{paused=!paused;revision++;event.target.textContent=paused?'继续感知':'暂停感知';if(!paused)analyze(true);};
   timer=setInterval(()=>analyze(),4000);

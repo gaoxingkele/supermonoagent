@@ -32,6 +32,12 @@ class InvalidSettings(ValueError):
     """Existing settings are unreadable or invalid; never replace with defaults."""
 
 
+class ProjectSelectionRequired(ValueError):
+    """The user profile root is not an established project directory."""
+    def __init__(self):
+        super().__init__('project_required')
+
+
 class RevisionConflict(ValueError):
     def __init__(self, expected, actual):
         super().__init__('File workspace revision conflict')
@@ -134,6 +140,15 @@ def _contained_exchange(project, exchange):
     project, exchange = _path(project), _path(exchange)
     if exchange == project or not exchange.is_relative_to(project):
         raise ValueError('Exchange directory must be a true project subdirectory')
+
+
+def _is_home(project):
+    return _path(project) == Path.home().resolve(strict=False)
+
+
+def _require_project(project):
+    if _is_home(project):
+        raise ProjectSelectionRequired()
 
 
 def _unique(pairs):
@@ -270,6 +285,8 @@ class FileWorkspaces:
             entry = self._load()['windows'].get(window_id)
             project = entry['project_dir'] if entry else session_cwd
             project, project_status = _description(project, reject_unsafe=entry is not None)
+            if _is_home(project):
+                project_status = 'selection_required'
             exchange = entry['exchange_dir'] if entry else str(_path(project) / 'tmp')
             exchange, exchange_status = _description(exchange, reject_unsafe=entry is not None)
             _contained_exchange(project, exchange)
@@ -281,6 +298,7 @@ class FileWorkspaces:
         _window_id(window_id)
         _revision(expected_revision)
         project, _ = _directory(project_dir, required=True)
+        _require_project(project)
         exchange, _ = _directory(exchange_dir if exchange_dir is not None else _path(project) / 'tmp')
         _contained_exchange(project, exchange)
         if os.name != 'nt' and isinstance(_path(exchange), PureWindowsPath):
@@ -332,6 +350,7 @@ class FileWorkspaces:
             result = self.get(window_id, session_cwd)
             if result['revision'] != expected_revision:
                 raise RevisionConflict(expected_revision, result['revision'])
+            _require_project(result['project_dir'])
             _directory(result['project_dir'], required=True)
             _directory(result['exchange_dir'])
             _directory(_path(result['exchange_dir']).anchor, required=True)

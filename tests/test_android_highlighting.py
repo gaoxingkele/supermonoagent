@@ -71,13 +71,13 @@ async def check_highlights(playwright, renderer):
                         url = f'http://127.0.0.1:{port}/mobile/index.html#'+quote(json.dumps(config))
                         await page.goto(url)
                         await page.wait_for_function('window.MobileTerminal?.ready')
-                        await page.wait_for_function("highlightDecorations.some(d=>!d.isDisposed&&d.options.foregroundColor==='#ffcb6b')")
+                        await page.wait_for_function("highlightDecorations.some(d=>!d.isDisposed&&d.options.foregroundColor===TerminalClient.commonAgentProfile.tokens[2].color)")
                         assert await page.evaluate('MobileTerminal.terminal.buffer.active.getLine(0).getCell(0).isFgDefault()')
                         assert await page.evaluate('MobileTerminal.terminal.buffer.active.getLine(1).getCell(0).getFgColor()') == 1
                         assert not await page.evaluate('highlightDecorations.some(d=>!d.isDisposed&&d.marker.line===1)')
                         await page.evaluate('MobileTerminal.pause();MobileTerminal.resume()')
                         await page.wait_for_function('window.MobileTerminal?.ready')
-                        await page.wait_for_function("highlightDecorations.some(d=>!d.isDisposed&&d.options.foregroundColor==='#ffcb6b')")
+                        await page.wait_for_function("highlightDecorations.some(d=>!d.isDisposed&&d.options.foregroundColor===TerminalClient.commonAgentProfile.tokens[2].color)")
 
                         # Every byte boundary, including UTF-8, OSC and SGR fragments.
                         await page.evaluate(r"""async () => {
@@ -91,7 +91,7 @@ async def check_highlights(playwright, renderer):
                         assert not await page.evaluate('highlightDecorations.some(d=>!d.isDisposed&&d.marker.line===1)')
                         if renderer == 'dom':
                             await page.wait_for_function("""() => [...document.querySelector('.xterm-rows > div').querySelectorAll('span')]
-                              .filter(s=>getComputedStyle(s).color==='rgb(255, 203, 107)').map(s=>s.textContent).join('').includes('app.py')""")
+                              .filter(s=>getComputedStyle(s).color==='rgb(229, 192, 123)').map(s=>s.textContent).join('').includes('app.py')""")
                         else:
                             assert await page.locator('#renderer').input_value() == 'webgl'
                             assert 'WEBGL' in await page.locator('#render-status').text_content()
@@ -112,18 +112,18 @@ async def check_highlights(playwright, renderer):
                         await page.wait_for_function('highlightDecorations.some(d=>!d.isDisposed)')
 
                         # Cursor overwrite removes old marks; native colors stay native.
-                        await write(page, '\x1b[H\x1b[2Japp.py')
+                        await write(page, '\x1b[H\x1b[2Japp.py\r\n')
                         await page.wait_for_function('highlightDecorations.some(d=>!d.isDisposed)')
-                        await write(page, '\r\x1b[2Kplain')
+                        await write(page, '\x1b[H\x1b[2Kplain\x1b[2;1H')
                         await page.wait_for_function('highlightDecorations.every(d=>d.isDisposed)')
-                        await write(page, '\r\x1b[2K\x1b[32mapp.py\x1b[0m')
+                        await write(page, '\x1b[H\x1b[2K\x1b[32mapp.py\x1b[0m\x1b[2;1H')
                         assert not await page.evaluate('highlightDecorations.some(d=>!d.isDisposed)')
                         for style in ('7', '8', '44'):
-                            await write(page, f'\r\x1b[2K\x1b[0;{style}mapp.py\x1b[0m')
+                            await write(page, f'\x1b[H\x1b[2K\x1b[0;{style}mapp.py\x1b[0m\x1b[2;1H')
                             await page.wait_for_function('highlightDecorations.every(d=>d.isDisposed)')
 
                         # Alternate screen and normal scrollback use separate markers.
-                        await write(page, '\x1b[?1049h\x1b[Happ.py 42')
+                        await write(page, '\x1b[?1049h\x1b[Happ.py 42\r\n')
                         await page.wait_for_function('highlightDecorations.some(d=>!d.isDisposed)')
                         await write(page, '\x1b[?1049l')
                         await page.wait_for_function('highlightDecorations.every(d=>d.isDisposed)')

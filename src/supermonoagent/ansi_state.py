@@ -1,4 +1,4 @@
-"""Bounded rendition and cursor visibility for cropped history only."""
+"""Bounded rendition, cursor visibility and input modes for cropped history."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ class SgrState:
         self.mode = "text"
         self.csi = bytearray()
         self.cursor_visible: bool | None = None
+        self.application_cursor = False
+        self.bracketed_paste = False
 
     def copy(self) -> SgrState:
         other = SgrState()
@@ -18,6 +20,8 @@ class SgrState:
         other.mode = self.mode
         other.csi = self.csi.copy()
         other.cursor_visible = self.cursor_visible
+        other.application_cursor = self.application_cursor
+        other.bracketed_paste = self.bracketed_paste
         return other
 
     def feed(self, data: bytes) -> None:
@@ -44,7 +48,9 @@ class SgrState:
                 elif byte in b"PX^_":
                     self.mode = "string"
                 elif byte == ord("c"):
+                    self._replay_reset(False)
                     self.attributes.clear()
+                    self.application_cursor = self.bracketed_paste = False
                     # Bundled xterm's RIS preserves core cursor visibility.
                     # DECSTR below explicitly restores the visible default.
                     self.mode = "text"
@@ -71,15 +77,25 @@ class SgrState:
                     self.csi.clear()
                 elif 0x40 <= byte <= 0x7e:
                     if self.mode == "csi":
+                        self._replay_csi(byte, bytes(self.csi))
                         if byte == ord("m"):
                             self._sgr(bytes(self.csi))
                         elif byte == ord("p") and self.csi == b"!":
                             self.attributes.clear()  # DECSTR soft reset.
                             self.cursor_visible = True
+                            self.application_cursor = self.bracketed_paste = False
                         elif byte in (ord("h"), ord("l")) and self.csi.startswith(b"?"):
                             modes = bytes(self.csi[1:]).split(b";")[:32]  # Bundled xterm parser limit.
-                            if all(not mode or mode.isdigit() for mode in modes) and any(int(mode or b"0") == 25 for mode in modes):
-                                self.cursor_visible = byte == ord("h")
+                            if all(not mode or mode.isdigit() for mode in modes):
+                                enabled = byte == ord("h")
+                                for mode in modes:
+                                    code = int(mode or b"0")
+                                    if code == 25:
+                                        self.cursor_visible = enabled
+                                    elif code == 1:
+                                        self.application_cursor = enabled
+                                    elif code == 2004:
+                                        self.bracketed_paste = enabled
                     self.mode = "text"
                     self.csi.clear()
                 elif self.mode == "csi" and 0x20 <= byte <= 0x3f:
@@ -88,6 +104,12 @@ class SgrState:
                     else:
                         self.csi.clear()
                         self.mode = "csi_ignore"
+
+    def _replay_csi(self, final: int, raw: bytes) -> None:
+        """Optional context hook; legacy rendition output stays unchanged."""
+
+    def _replay_reset(self, soft: bool) -> None:
+        """Optional hook for replay state beyond rendition."""
 
     def _sgr(self, raw: bytes) -> None:
         if any(byte not in b"0123456789;:" for byte in raw):
@@ -158,7 +180,8 @@ class SgrState:
         # Self-drawn TUI inputs often leave the hardware cursor on a blank row.
         # Restore DECTCEM if its command aged out; never guess a prompt position.
         visibility = b"" if self.cursor_visible is None else (b"\x1b[?25h" if self.cursor_visible else b"\x1b[?25l")
-        return rendition + visibility
+        input_modes = (b"\x1b[?1h" if self.application_cursor else b"") + (b"\x1b[?2004h" if self.bracketed_paste else b"")
+        return rendition + visibility + input_modes
 
 
 def bounded_snapshot(data: bytes, limit: int, initial: SgrState | None = None, *, cropped: bool = False) -> bytes:

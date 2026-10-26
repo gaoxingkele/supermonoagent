@@ -58,3 +58,39 @@ def test_generation_change_during_provider_rejected(window):
     def provider():holder['item']._page_generation+=1;return {'enabled':False}
     holder['item']=D.DesktopFiles(window,window.url,file_config_provider=provider)
     with pytest.raises(ValueError):holder['item'].file_exchange_config()
+
+
+def test_text_clipboard_methods_are_explicit_and_exposed(window, monkeypatch):
+    calls=[]
+    monkeypatch.setattr(D,'read_clipboard_text',lambda:calls.append(('read',)) or 'owned text',raising=False)
+    monkeypatch.setattr(D,'write_clipboard_text',lambda text:calls.append(('write',text)) or True,raising=False)
+    item=D.DesktopFiles(window,window.url)
+    assert not calls
+    exposed={fn.__name__ for fn in window.exposed}
+    assert {'clipboard_read_text','clipboard_write_text'}<=exposed
+    assert item.clipboard_read_text()=='owned text'
+    assert item.clipboard_write_text('selected text') is True
+    assert calls==[('read',),('write','selected text')]
+
+
+@pytest.mark.parametrize('operation',['read','write'])
+@pytest.mark.parametrize('boundary',['origin','path','generation','closed','native-error'])
+def test_text_clipboard_checks_before_and_after_and_sanitizes(window, monkeypatch, operation, boundary):
+    calls=[]
+    item=D.DesktopFiles(window,window.url)
+    def native(*args):
+        calls.append(True)
+        if boundary=='origin':window.url='https://untrusted.invalid/workspace'
+        elif boundary=='path':window.url='http://127.0.0.1:1234/other'
+        elif boundary=='generation':item._page_generation+=1
+        elif boundary=='closed':item._closed.set()
+        elif boundary=='native-error':raise OSError('DO_NOT_LEAK_TEXT')
+        return 'DO_NOT_LEAK_TEXT' if operation=='read' else True
+    monkeypatch.setattr(D,'read_clipboard_text',native,raising=False)
+    monkeypatch.setattr(D,'write_clipboard_text',native,raising=False)
+    method=getattr(item,'clipboard_'+operation+'_text')
+    with pytest.raises(ValueError) as error:method(*(['selected text'] if operation=='write' else []))
+    assert str(error.value)=='Clipboard text unavailable' and calls==[True]
+    if boundary in ['origin','path','closed']:
+        with pytest.raises(ValueError):method(*(['selected text'] if operation=='write' else []))
+        assert calls==[True]

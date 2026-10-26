@@ -107,6 +107,20 @@ async def stage(client, host, data=b'fixture PDF bytes', **changes):
     return finished['result'], delivery['job']
 
 
+def test_selection_required_preflight_rejects_before_staging(tmp_path):
+    async def scenario():
+        async with running(tmp_path / 'broker', auth_file(tmp_path)) as (broker, url):
+            host, viewer = await login(url, hello('host')), await login(url, hello())
+            try:
+                result = await begin(viewer, host, target_changes={'project_status': 'selection_required'})
+                assert not result['ok'] and result['error'] == 'project_required', result
+                assert not broker._uploads
+                assert not list((tmp_path / 'broker').rglob('*.part'))
+            finally:
+                await viewer.close(); await host.close()
+    asyncio.run(scenario())
+
+
 def test_real_loopback_stage_download_ack_duplicate_and_private_storage(tmp_path):
     async def scenario():
         auth = auth_file(tmp_path)

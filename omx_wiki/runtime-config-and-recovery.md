@@ -12,6 +12,16 @@ source_paths:
 
 # 运行时配置与回滚验收
 
+## 2026-10-26 本机直连与回放队列
+
+用户指定：`127.0.0.1` 本机直连不要求 Token 或房间号；中继仍要求对应认证。源码只对真实 IPv4 回环连接且 Host/Origin 校验通过的请求提供本机所有者身份；显式非空凭据仍按原身份验证，不能把中继会话升级为本机所有者。界面直连忽略过期缓存凭据。来源：`src/supermonoagent/daemon.py`、`src/supermonoagent/frontend.py`、`src/supermonoagent/static/workspace.js`；测试：`tests/test_loopback_daemon_auth.py`、`tests/test_loopback_frontend_auth.py`、`tests/test_workspace_loopback_auth.py`。
+
+原窗口曾显示访问验证失败，但端口健康、当前所有者凭据的独立 HELLO 成功。用户随后提供多页签回放触发 `1013 Slow client output queue overflow` 的复现。不能将所有断连都归因于 Token。Hub 的可靠发送队列会在同步回放突发塞满时断开；改为只保存待回放会话 ID，队列有余量后生成快照，维持原队列上限及真实慢客户端断开逻辑。来源：`src/supermonoagent/hub.py`、`tests/test_replay_backpressure.py`。合成压力测试证明队列边界及顺序，不能单独证明真实六页签在默认队列下的完整触发条件。
+
+为保留运行中的 Codex，前端可在进程内部使用私有所有者凭据连接旧后台，并通过订阅排空屏障分批回放。界面不需要输入或传递该凭据。旧后台源码改动不会自动加载；不能把替换前端称为旧后台已升级。来源：`src/supermonoagent/frontend.py`、`tests/test_frontend_replay_backpressure.py`。
+
+本次用户授权清理后只保留 `s桌面端`、`s手机端` 两个 Codex 会话，关闭另外 6 个终端会话及 2 个空窗口；远程电脑会话未操作。验收证据：`.omx/artifacts/loopback-auth/cleanup.json`。禁止在 wiki 或验证报告中写入真实 Token 或其摘要。
+
 ## Token 与房间
 
 当前授权方式为 Token＋房间号，统一邮箱账户生产部署不再是交付前提。默认 Token 运行时读取 `token.txt`，不嵌入公开 APK、EXE 或界面包。文件定位配置只保存路径；后台所有者鉴权成功后才向本机界面提供默认值，远程目录不能覆盖默认值。不同目标不能继承自动预填凭据；保存凭据仍需明确选择。来源：`src/supermonoagent/token_config.py`、`frontend.py`、`static/workspace.js`。

@@ -1,5 +1,41 @@
 # 修改 TODO
 
+## 2026-10-27：继续执行，0.2.51 候选与文件服务 V2
+
+- [x] 新建 Windows PTY 的颜色环境修复已提交独立集成分支 `ba23aee`：仅调整子进程环境副本，提供 `SUPERMONO_TERMINAL_COLOR=preserve`；24 项环境及 PTY 测试通过。未改变当前会话，未证明当前 Grok/Kimi 的具体环境。
+- [x] 数字版本 `0.2.51` 已构建；43 个冻结模块、77 个源文件指纹、28 个静态文件匹配。隐藏 WebView2 编辑器加载、两次隔离安装保留配置和 Token 均通过；公开 ZIP 未检出当前已知两项私有配置值。
+- [x] 0.2.51 完整候选回归为 **681 passed / 2 skipped**；完整 `dist` 已推送独立集成分支，验收说明提交 `c221f7f`。已发布正式 Windows 更新源，序号 `1793052160977249`，HTTPS 回读、签名及安装 ZIP 哈希通过。未安装或重启用户客户端及后台，完整目标仍处于 active。
+- [x] 文件服务 V2 已以独立目录、状态库及 loopback 端口运行；Nginx 两个文件入口完成版本分流并通过配置检查及平滑重载。公网验证旧 WSS 连接保持、新版 READY=2、非法查询和未授权下载拒绝；旧进程、排队任务与鉴权文件保持不变。
+- [x] V2 公网真实 Windows helper 下载 PNG/PDF 字节样本通过：内容、SHA-256、项目绑定及项目 `tmp` 路径一致，PTY 输入为 0。V2 已启用开机启动，同一运行 PID 保持；旧任务与认证配置不变。该自有测试不代替真实系统剪贴板或六种 CLI 交互验收。
+- [ ] Grok 缺失画面仍未修复。独立原生视口预览原型已修复浏览器 FILETIME 精度和取消请求竞态，四模块 **131 passed**，取消交接连续 100 次通过；提交 `435c5d5` 已推送，未并入 0.2.51。不得把只读预览称为完整 VT 或历史恢复。
+
+
+## 2026-10-27：0.2.50 候选与 Kimi／Grok 现场检查
+
+- [x] 源码及完整公开 `dist/windows/0.2.50`／安装 ZIP 已提交并推送独立分支 `codex/windows-integration-50`，远端核实提交 `9ba0c911d8394bc105da79e900503c8749036082`。候选完整定向组合 **626 passed / 2 skipped**；跳过是可选官方 SDK 环境及当前账户目录符号链接权限。未合并或重置主工作树，未提升正式更新频道。
+- [x] 最终候选 43 个冻结产品模块、77 个源码指纹、28 个打包静态资源匹配，隐藏 WebView2 通过，两次隔离完整安装保留配置。公开包及源码未检出当前已知两项私有配置值。公开 ZIP SHA-256 `d4b25aaed4761d788bb1f6b14821733b3456818c3767da64b195f16ea896b1b9`。
+- [x] 实际客户端已核实马来西亚页签选中 Kimi；`JINLONG3090 / 零碳辅助` 已显式选择 Grok。0.2.50 候选源码修正了手选类型后标题／侧栏仍显示“其他”的问题，按连接、房间和会话隔离记忆。不能把候选源码称为已安装生效。
+- [ ] Grok 画面恢复仍未完成：实际 GUI 有空白／重复段落；只读 OP16 按确认的 158×43 网格重放约 256 KiB，仅恢复约 12 字符。SGR 仅重置，含大量绝对定位；Kimi 文字也以默认色为主。统计见 `.omx/artifacts/six-cli/target-render-readonly.json`，未保存终端正文。
+- [x] 自有 ConPTY 试验证明：程序只画一次正文、随后仅更新计数时，暂停程序后 80→79→80 产生 0 字节重绘；恢复计数更新也不补正文。原始画面 5/5 标记、裁剪回放／短暂改宽均 0/5。故未在用户 Grok 上执行自动尺寸抖动；不得把此当完整恢复方案。证据 `.omx/artifacts/six-cli/grok-owned-refresh-20261027-012717-result.json`。
+- [x] 通用可见网格采集原型在独立 `codex/viewport-recovery` 工作树完成 **72 passed**，含自有隐藏 Windows 控制台的中文、emoji 原始 UTF-16、viewport／光标信息；未接入 daemon、客户端或用户会话，不宣称完整 VT／真彩色／dim／scrollback 无损恢复。
+- [ ] 正式文件服务仍保留一个来源不能完全证明的旧 queued 任务，未升级或变更状态。新绑定 broker 与 Windows helper 已在实际 Linux／Windows 经 SSH 隧道验证；为保留旧任务和旧 helper，正在实现独立 V2 服务与并存 helper 的兼容接入，完成前不提升新客户端正式频道。
+
+## 2026-10-26：多窗口队列与剪贴板后续验收
+
+- [x] 独立分支 `codex/local-replay-fix` 的 Windows **0.2.49** 已发布，提交 `fd9fbb0`。16 个真实测试终端、四轮完整历史回放及最终 136 项测试／14 项子测试通过。该发布未包含本工作树尚在开发的编辑器、mylib 或 Android 修改；诊断见该分支 `docs/local-replay-overflow.md`。
+- [ ] 当前用户后台的启用切换仍需空闲重启；此前只读检查有 5 个本机会话。未自行结束这些会话，不把安装包已发布称为运行后台已升级。
+- [x] Windows 右键菜单源码回归：修正 xterm 隐藏 textarea 被误认普通编辑框、异步读取后光标变动／改只读仍插入、Esc 丢失输入焦点。7 项菜单测试与六种 CLI 模式快捷键回归共 **13 passed**；证据 `.omx/artifacts/six-cli/clipboard-context-menu.xml`。测试使用自有浏览器／PTY 和模拟原生剪贴板。
+- [x] 同一工作树的已提交问题标色、中央技能预览、统一配色及灰色推荐提示定向复验 **23 passed**；证据 `.omx/artifacts/six-cli/readability-central-recheck.xml`。该组不替代真实六种 CLI 及 Android 真机验收。
+- [x] 独立集成分支 `codex/windows-integration-50` 从已发布 49 创建：功能组 **316 passed / 2 skipped**、配色 Node **11 passed**；剪贴板／编辑框／既有队列回归组 **178 passed**。真实自有 broker＋两个 companion 验证连续附件分别保存到两个项目 tmp、草稿／回执隔离和 PTY 输入 0。这是分组结果，不是一次全套结果。
+- [x] 0.2.50 验证 EXE 已构建；43 个产品模块字节码与隔离源码一致，隐藏 WebView2 加载编辑器通过。尚未发布、安装到用户目录或重启用户后台。证据见 `.omx/artifacts/six-cli/{integration-feature-pass.xml,integration-clipboard-pass.xml,frozen-verification.json,native-smoke.json}`。
+- [x] 集成源码审查后修正助理关闭顺序：先取消模型、再释放技能目录等待者；确定性红测复现旧顺序会启动模型，修后 **127 passed / 1 skipped**。菜单异步回调也不再于 destroy 后重建已移除 UI，菜单／六模式快捷键 **15 passed**。两项修正发生于初次 EXE 之后，需重建，不把旧包称为已含修正。
+- [ ] 审查新增并发图片内存预算缺口（捕获后、长散列锁前尚未计账）及上传项目绑定正在隔离分支修复；完成后重新跑回归、重建并核实包内源码。未发布当前候选包。
+- [ ] 自动项目目录：隔离实验证明可读取已可信绑定的原生进程 CWD，也复现 shell／venv 包装进程仍在旧目录；不能把根 PID 的 CWD 当作 CLI 当前项目。需 owner-only 进程绑定和上传目标指纹，防止 A 上传期间切 B 后误投，方案 `.omx/artifacts/six-cli/project-cwd-investigation.md`。当前仅 home guard 通过，自动识别未完成。
+- [ ] 上述右键菜单修改尚未打包发布；真实客户端的六种 CLI、系统剪贴板文件／截图连续粘贴、自动定位实际项目目录及接收回执仍须验收。不能以模拟原生桥或静态启动 cwd 替代这些要求。
+- [ ] Android 当前并行 WIP 仍需独立集成：附件走 OP21，尚未接入 broker／HTTP 拉取到项目 tmp；纯文本历史归档丢 SGR／dim，新 OP23 依赖未归档后台模块，不能只发布 UI。默认 16 宫格仍在。来源 `android/assets/mobile/{app.js,mobile-core.js}`。
+- [ ] 文件夹交换仍未实现。用户此前要求文件夹同样经中继临时目录转交到项目 tmp；当前 `terminal-composer.js::addFiles` 明确拒绝 `webkitRelativePath` 并显示“暂不支持整个文件夹”。普通多文件／截图通过不等于目录选择、相对路径保留、打包传输及安全落盘已完成。
+- [ ] Android 新独立 UI 打包工具 `android/tools/package-ui.py` 尚未验证 APK 签名、实际版本与受验收源码；误选旧 APK 仍可提升 revision 发布旧页面。保持正式发布门禁，不能以分离频道代替来源和回退验收；旧 APK 亦不会通过页面热更新自动取得新原生 feed。
+
 ## 2026-10-26：Cursor CLI 底部额外光标
 
 - [x] 实际客户端确认 `JINLONG3090 / IIA_Benchmark` 输入行高于底部白块；隔离测试复现历史裁剪丢失早期 DECTCEM 隐藏状态。后端快照源码已恢复该有限状态，不移动输入位置、不改实时输出。相关组合 21 passed，见 [诊断与验证边界](cursor-caret-diagnosis.md)。

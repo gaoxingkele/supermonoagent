@@ -99,6 +99,31 @@ def test_without_native_configuration_preserves_footer_and_opens_no_network(tmp_
     run(exercise, tmp_path)
 
 
+def test_home_startup_prompts_for_project_and_keeps_directory_settings_usable(tmp_path):
+    async def exercise(playwright, folder):
+        from unittest.mock import patch
+        from test_file_companion import environment
+        async with environment(folder) as (_broker, url, parents, companions):
+            chosen = folder / 'confirmed-project'
+            chosen.mkdir()
+            with patch('supermonoagent.file_workspaces.Path.home', return_value=parents[0].project):
+                async with browser_page(playwright, url) as (page, errors, _sockets):
+                    await page.wait_for_function('document.querySelector("#file-workspace-project")?.textContent.includes("请选择当前项目")')
+                    assert '选择项目后使用 tmp' in await page.locator('#file-workspace-exchange').inner_text()
+                    await page.locator('#file-workspace-project').click()
+                    await page.wait_for_function('!document.querySelector("#file-workspace-save").disabled')
+                    assert '不能使用用户主目录' in await page.locator('#file-workspace-state').inner_text()
+                    await page.locator('#file-project').fill(str(chosen))
+                    await page.locator('#file-workspace-save').click()
+                    await page.wait_for_function('document.querySelector("#file-workspace-state").textContent.includes("已保存")')
+                    assert await page.locator('#file-workspace-project').get_attribute('title') == str(chosen)
+                    assert await page.locator('#file-workspace-exchange').get_attribute('title') == str(chosen / 'tmp')
+                    assert not (parents[0].project / 'tmp').exists()
+                    assert not await page.evaluate('fixtureInputs') and not errors
+            assert companions[0].workspaces.get('window1', parents[0].project)['project_dir'] == str(chosen)
+    run(exercise, tmp_path)
+
+
 def test_real_host_default_browse_cas_save_footer_geometry_and_removal(tmp_path):
     async def exercise(playwright, folder):
         from test_file_companion import environment

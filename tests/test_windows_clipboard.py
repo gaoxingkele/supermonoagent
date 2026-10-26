@@ -146,19 +146,127 @@ def test_file_snapshot_hash_chunks_and_handles_release(tmp_path):
         clipboard.read(item['id'], 0)
 
 
-def test_snapshot_replaces_old_ids_and_closes_handles(tmp_path):
+def test_snapshot_preserves_published_ids_until_release_or_close(tmp_path):
     source = tmp_path / 'word.docx'
     source.write_bytes(b'word')
     clipboard = ClipboardFiles(getter=lambda: [source])
     first = clipboard.snapshot()['items'][0]['id']
     stream = clipboard._items[first].stream
     second = clipboard.snapshot()['items'][0]['id']
-    assert first != second and stream.closed
-    with pytest.raises(ValueError):
-        clipboard.read(first, 0)
+    assert first != second and not stream.closed
+    assert base64.b64decode(clipboard.read(first, 0)['data']) == b'word'
+    second_stream = clipboard._items[second].stream
     clipboard.close()
+    assert stream.closed and second_stream.closed
     with pytest.raises(ValueError):
         clipboard.read(second, 0)
+
+
+@pytest.mark.parametrize('budget', ['count', 'bytes', 'invalid_batch', 'cancelled'])
+def test_failed_snapshot_only_rolls_back_new_handles(tmp_path, budget):
+    source = tmp_path/'source.pdf'
+    source.write_bytes(b'owned')
+    clipboard = ClipboardFiles(getter=lambda: [source], max_sources=2, max_total_size=10)
+    first = clipboard.snapshot()['items'][0]['id']
+    original = clipboard._items[first].stream
+    clipboard._getter = lambda: [source, source]
+    if budget == 'bytes':
+        clipboard.max_sources = 10
+        clipboard.max_total_size = 12
+    elif budget == 'invalid_batch':
+        clipboard._getter = lambda: [source, tmp_path]
+    elif budget == 'cancelled':
+        checks = []
+        def cancelled():
+            checks.append(1)
+            return len(checks) >= 7
+    with pytest.raises(ValueError):
+        clipboard.snapshot(**({'cancelled': cancelled} if budget == 'cancelled' else {}))
+    assert set(clipboard._items) == {first}
+    assert not original.closed
+    assert base64.b64decode(clipboard.read(first, 0)['data']) == b'owned'
+    clipboard.release(first)
+    assert original.closed and not clipboard._items
+    clipboard._getter = lambda: [source]
+    assert len(clipboard.snapshot()['items']) == 1
+    clipboard.close()
+
+
+def test_default_source_budget_retains_all_128_and_release_restores_capacity(tmp_path):
+    source = tmp_path/'tiny.pdf'
+    source.write_bytes(b'x')
+    clipboard = ClipboardFiles(getter=lambda: [source]*32)
+    assert clipboard.max_sources == 128 and clipboard.max_total_size == 1024**3
+    published = [clipboard.snapshot() for _ in range(4)]
+    with pytest.raises(ValueError, match='budget'):
+        clipboard.snapshot()
+    assert len(clipboard._items) == 128
+    assert base64.b64decode(clipboard.read(published[0]['items'][0]['id'], 0)['data']) == b'x'
+    for item in published[0]['items']:
+        clipboard.release(item['id'])
+    assert len(clipboard.snapshot()['items']) == 32
+    streams = [item.stream for item in clipboard._items.values()]
+    clipboard.close()
+    assert all(stream.closed for stream in streams) and not clipboard._items
+
+
+def test_next_getter_captures_b_before_a_hash_lock_releases(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import threading
+    import supermonoagent.windows_clipboard as module
+    paths = []
+    for name in ['a', 'b', 'c']:
+        path = tmp_path/name
+        path.write_bytes(name.encode())
+        paths.append(path)
+    current = [paths[0]]
+    hashing_a, release_hash, captured_b = threading.Event(), threading.Event(), threading.Event()
+    real_hash = hashlib.sha256
+    class GateHash:
+        def __init__(self):
+            self.inner = real_hash()
+        def update(self, data):
+            if threading.current_thread().name == 'clipboard-A':
+                hashing_a.set()
+                assert release_hash.wait(3)
+            self.inner.update(data)
+        def hexdigest(self):
+            return self.inner.hexdigest()
+    monkeypatch.setattr(module, 'hashlib', SimpleNamespace(sha256=GateHash))
+    def getter():
+        value = list(current)
+        if threading.current_thread().name == 'clipboard-B':
+            captured_b.set()
+        return value
+    clipboard = ClipboardFiles(getter=getter)
+    results, errors = {}, []
+    def snapshot(key):
+        try:
+            results[key] = clipboard.snapshot()['items'][0]
+        except BaseException as error:
+            errors.append(error)
+    first = threading.Thread(target=snapshot, args=('A',), name='clipboard-A')
+    second = threading.Thread(target=snapshot, args=('B',), name='clipboard-B')
+    try:
+        first.start()
+        assert hashing_a.wait(2)
+        current[:] = [paths[1]]
+        second.start()
+        # No sleeps: B must capture while A is demonstrably still hashing.
+        assert captured_b.wait(1), 'B getter blocked by A long hash lock'
+        current[:] = [paths[2]]
+    finally:
+        release_hash.set()
+        first.join(3)
+        if second.ident is not None:
+            second.join(3)
+    try:
+        assert not first.is_alive() and not second.is_alive() and not errors
+        assert base64.b64decode(clipboard.read(results['A']['id'], 0)['data']) == b'a'
+        assert base64.b64decode(clipboard.read(results['B']['id'], 0)['data']) == b'b'
+        assert results['B']['sha256'] == real_hash(b'b').hexdigest()
+    finally:
+        clipboard.close()
 
 
 def test_image_source_and_empty_clipboard():
@@ -278,7 +386,7 @@ def test_empty_file_reads_eof_and_user_supplied_strings_are_not_paths(tmp_path):
         ClipboardFiles(getter=lambda: [str(source)]).snapshot()
 
 
-def test_cancelled_snapshot_does_not_call_getter_or_keep_previous_handles(tmp_path):
+def test_cancelled_snapshot_does_not_call_getter_and_preserves_previous_handles(tmp_path):
     source = tmp_path / 'fixture.pdf'
     source.write_bytes(b'fixture')
     calls = []
@@ -287,7 +395,10 @@ def test_cancelled_snapshot_does_not_call_getter_or_keep_previous_handles(tmp_pa
     stream = clipboard._items[old].stream
     with pytest.raises(ValueError, match='cancelled'):
         clipboard.snapshot(cancelled=lambda: True)
-    assert calls == [True] and stream.closed and clipboard._items == {}
+    assert calls == [True] and not stream.closed and set(clipboard._items) == {old}
+    assert base64.b64decode(clipboard.read(old, 0)['data']) == b'fixture'
+    clipboard.close()
+    assert stream.closed
 
 
 def test_cancellation_immediately_after_getter_opens_no_sources(tmp_path, monkeypatch):

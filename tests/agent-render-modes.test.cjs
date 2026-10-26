@@ -9,15 +9,33 @@ const raw=id=>JSON.parse(fs.readFileSync(path.join(directory,id+'.json'),'utf8')
 const profile=id=>C.validateAgentProfile(raw(id),id);
 const write=(t,text)=>new Promise(done=>t.write(text,done));
 
-test('six independent files have distinct readable palettes and agent rules',()=>{
+test('six independent modes share one readable semantic palette and keep independent agent rules',()=>{
   assert.deepEqual(C.agentProfiles.map(p=>p.id),['codex','claude-code','grok','kimi','pi-dev','cursor-cli']);
   const profiles=C.agentProfiles.map(p=>profile(p.id));
-  assert.equal(new Set(profiles.map(p=>p.theme.background)).size,6);
-  assert.equal(new Set(profiles.map(p=>JSON.stringify(p.theme))).size,6);
+  assert.equal(new Set(profiles.map(p=>p.theme.background)).size,1);
+  assert.equal(new Set(profiles.map(p=>JSON.stringify(p.theme))).size,1);
+  assert.deepEqual(profiles[0].theme,C.commonAgentProfile.theme);
   assert.equal(new Set(profiles.map(p=>JSON.stringify(p.tokens))).size,6);
   assert.equal(new Set(profiles.map(p=>p.tokens[2].pattern)).size,6);
   for(const p of profiles){assert.ok(Object.isFrozen(p)&&Object.isFrozen(p.tokens)&&Object.isFrozen(p.theme));assert.ok(p.tokens.length>=4);}
   assert.equal(C.commonAgentProfile.label,'自动');
+});
+
+test('six modes and auto assign identical semantic colors without making ordinary text gray',async()=>{
+  const term=new Terminal({cols:120,rows:8,allowProposedApi:true});
+  try{
+    await write(term,'# Result\r\napp.py "literal" `code()` 42\r\nError: failed\r\nPASSED 成功\r\nordinary user input\r\n');
+    for(const p of [C.commonAgentProfile,...C.agentProfiles.map(item=>profile(item.id))]){
+      const heading=C.highlightSpans(term.buffer.active.getLine(0),120,p);assert.ok(heading.length,p.id);
+      assert.ok(heading.every(s=>s.foregroundColor==='#82cfff'),p.id);
+      const code=C.highlightSpans(term.buffer.active.getLine(1),120,p);assert.ok(code.length>=4,p.id);
+      assert.ok(code.every(s=>s.foregroundColor==='#e5c07b'),p.id);
+      assert.ok(C.highlightSpans(term.buffer.active.getLine(2),120,p).some(s=>s.foregroundColor==='#e06c75'),p.id);
+      assert.ok(C.highlightSpans(term.buffer.active.getLine(3),120,p).some(s=>s.foregroundColor==='#98c379'),p.id);
+      assert.deepEqual(C.highlightSpans(term.buffer.active.getLine(4),120,p),[],p.id);
+      assert.equal(p.theme.brightBlack,'#8b929c');assert.equal(p.theme.foreground,'#d6d9df');
+    }
+  }finally{term.dispose();}
 });
 
 test('profiles load individually with exact identity and bounded same-origin fetch',async()=>{
@@ -143,7 +161,7 @@ test('cursorKey follows real terminal DECCKM without touching Chinese ghost text
 });
 
 test('setProfile disposes and repaints without PTY writes; dispose releases listeners and timers',async()=>{
-  const actual=new Terminal({cols:80,rows:4});await write(actual,'Codex app.py 42');
+  const actual=new Terminal({cols:80,rows:4});await write(actual,'Codex app.py 42\r\n');
   const events={},jobs=new Map(),decorations=[],markers=[];let next=0,listenerDisposals=0;
   const listen=name=>fn=>{events[name]=fn;return{dispose(){listenerDisposals++;}};};
   const term={cols:80,rows:4,buffer:{active:actual.buffer.active,onBufferChange:listen('buffer')},

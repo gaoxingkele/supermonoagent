@@ -5,6 +5,12 @@
 #screen[data-viewport-mode=readable]::-webkit-scrollbar{display:none}
 /* FitAddon subtracts xterm padding, but cannot subtract parent border-box padding. */
 #screen>.xterm{padding:5px 6px 0}
+#screen-history{flex:1;min-height:0;min-width:0;overflow:auto;overscroll-behavior:none;background:var(--bg);touch-action:pan-x pan-y}
+#history-terminal>.xterm{padding:5px 6px 0;pointer-events:none}
+#resume{max-width:calc(100% - 16px)}
+/* Status text must not resize a phone-owned remote terminal. */
+#notice{position:absolute;z-index:4;top:56px;left:8px;right:8px;border:1px solid #665632;border-radius:7px;box-shadow:0 3px 12px #0005;pointer-events:none}
+@media(max-height:430px){#notice{top:46px}}
 #notice{overflow-wrap:anywhere;max-height:20%;overflow:auto}
 .session span{max-width:100%;overflow-wrap:anywhere}
 dialog{max-width:calc(100% - 16px);max-height:80dvh}
@@ -41,10 +47,18 @@ dialog input,dialog select{min-width:0;max-width:100%}
 #composer #draft{display:block;width:100%;max-height:32dvh;min-height:72px;margin-bottom:10px}
 #composer-status{min-height:2.8em}
 #composer .form-actions{margin-top:10px}
+.attachment-actions{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.attachment-actions button{min-height:34px;font-size:12px;padding:4px 10px}
+#attachment-list{list-style:none;padding:0;margin:8px 0;max-height:18dvh;overflow:auto}
+.attachment-item{display:flex;align-items:center;gap:8px;border-top:1px solid var(--line);padding:5px 0;font-size:12px;min-width:0}
+.attachment-item span{flex:1;min-width:0;overflow-wrap:anywhere}
+.attachment-item button{flex:none;min-height:28px;padding:3px 7px;font-size:11px}
+#attachment-status{margin-bottom:8px;max-height:5.6em;overflow:auto}
 #composer #send{min-width:108px;background:#d8eadf;color:#11261a;border-color:#b5d6c1}
 #keys{display:grid;grid-template-columns:repeat(8,minmax(0,1fr))}
-#keys #mode,#keys #github{grid-column:span 4}
-@media(min-width:600px){#keys{display:flex}#keys #github{flex:2}}
+#keys #model{grid-column:span 2}
+#keys #mode,#keys #github{grid-column:span 3}
+@media(min-width:600px){#keys{display:flex}}
 @media(max-height:430px){#composer{padding:10px}#composer .dialog-heading{margin-bottom:6px}#composer #draft{min-height:52px;max-height:25dvh}#composer-status{min-height:0}#composer .form-actions{margin-top:6px}}
 
 #terminal-actions{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;padding:4px 5px;background:var(--panel);border-top:1px solid var(--line);flex:none}
@@ -67,7 +81,7 @@ dialog input,dialog select{min-width:0;max-width:100%}
 .debug-toolbar select{min-height:34px;padding:3px 6px;font-size:12px}
 .debug-pagination{justify-content:center}
 .debug-pagination button{font-size:12px;min-height:34px;padding:4px 10px}
-#debug-board{flex:1;min-height:0;min-width:0;display:flex;align-items:center;justify-content:center}
+#debug-board{flex:1;min-height:0;min-width:0;display:flex;align-items:center;justify-content:center;touch-action:pan-y;user-select:none}
 #debug-grid{display:grid;grid-template-columns:repeat(var(--debug-columns,4),minmax(0,1fr));grid-template-rows:repeat(var(--debug-columns,4),minmax(0,1fr));gap:6px;width:min(100%,var(--debug-side,80vw));aspect-ratio:1;flex:none}
 .debug-tile{display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:5px;min-width:0;min-height:0;padding:9px;text-align:left;overflow:hidden;border:1px solid #3c4654;border-radius:10px;background:linear-gradient(145deg,#26303c,#1a202a);color:#edf2f9;touch-action:manipulation}
 .debug-tile[aria-current=true]{border-color:#83b8ff;box-shadow:inset 0 0 0 1px #83b8ff}
@@ -96,7 +110,15 @@ dialog input,dialog select{min-width:0;max-width:100%}
 #debug-grid[data-density="16"] .debug-tile-name{font-size:12px;-webkit-line-clamp:1}
 #debug-grid[data-density="16"] .debug-tile-prompt small{display:none}
 #debug-grid[data-density="16"] .debug-tile-state,#debug-grid[data-density="16"] .debug-tile-host{font-size:10px}
+#debug-grid[data-density="25"] .debug-tile{padding:4px;gap:2px}
+#debug-grid[data-density="25"] .debug-tile-name{font-size:11px;line-height:1.1}
+#debug-grid[data-density="25"] .debug-tile-host,#debug-grid[data-density="25"] .debug-tile-state,#debug-grid[data-density="25"] .debug-tile-prompt{font-size:10px;line-height:1.1}
+#debug-grid[data-density="25"] .debug-tile-prompt small{display:none}
+#debug-grid[data-density="25"] .session-dot{width:5px;height:5px}
+@media(max-width:540px){#debug-grid[data-density="25"] .debug-tile-host{display:none}}
+@media(max-width:380px){#debug-grid[data-density="25"] .debug-tile{padding:2px;gap:1px}#debug-grid[data-density="25"] .debug-tile-name,#debug-grid[data-density="25"] .debug-tile-state,#debug-grid[data-density="25"] .debug-tile-prompt{font-size:9px;line-height:1.05}#debug-grid[data-density="25"] .debug-marquee{line-height:1.1}}
 @media(max-width:380px),(max-height:480px){#debug-dialog{padding:8px;gap:5px}#debug-dialog .dialog-heading .hint{display:none}#debug-grid{gap:4px}.debug-tile{padding:5px;gap:2px}.debug-tile-name{font-size:11px;-webkit-line-clamp:1}.debug-tile-host,.debug-tile-state,.debug-tile-prompt{font-size:10px}.debug-tile-prompt small{display:none}#debug-grid[data-density="16"] .debug-tile{padding:4px;gap:1px}#debug-grid[data-density="16"] .debug-tile-name{font-size:10px}}
 @media(max-height:480px){.debug-tile-host{display:none}.debug-tile,#debug-grid[data-density="16"] .debug-tile{padding:3px;gap:1px}.debug-tile-name,.debug-tile-state,.debug-tile-prompt{line-height:1.15}#debug-grid[data-density="16"] .debug-tile-name,#debug-grid[data-density="16"] .debug-tile-state,#debug-grid[data-density="16"] .debug-tile-prompt{font-size:9px}.debug-tile .session-dot{width:5px;height:5px}}
+@media(max-height:480px){#debug-grid[data-density="25"] .debug-tile{padding:2px;gap:1px}#debug-grid[data-density="25"] .debug-tile-name,#debug-grid[data-density="25"] .debug-tile-state,#debug-grid[data-density="25"] .debug-tile-prompt{font-size:9px;line-height:1.05}#debug-grid[data-density="25"] .debug-marquee{line-height:1.1}}
 @media(max-width:380px){#debug-grid[data-density="16"] .debug-tile-host{display:none}}
 @media(prefers-reduced-motion:reduce){.debug-tile .session-dot,.debug-marquee.is-scrolling .debug-marquee-track{animation:none}.debug-marquee{overflow:auto}.debug-marquee.is-scrolling .debug-marquee-track>span+span{display:none}}

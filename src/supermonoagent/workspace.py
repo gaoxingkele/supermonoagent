@@ -41,7 +41,7 @@ def javascript(static_root=None):
 
     root = Path(static_root) if static_root is not None else Path(__file__).parent / 'static'
     parts = [(root / 'workspace.js').read_text(encoding='utf-8')]
-    for name in ('file-client.js', 'file-workspace-ui.js', 'clipboard-files.js', 'terminal-composer.js', 'mylib-assistant.js', 'assistant-chat.js'):
+    for name in ('file-client.js', 'file-workspace-ui.js', 'clipboard-files.js', 'terminal-composer.js', 'terminal-questions.js', 'clipboard-context-menu.js', 'mylib-assistant.js', 'assistant-chat.js'):
         path = root / name
         if path.is_file():
             parts.append(path.read_text(encoding='utf-8'))

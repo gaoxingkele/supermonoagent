@@ -19,6 +19,7 @@ from .protocol import (
     OP_SESSIONS,
     OP_SNAPSHOT,
     OP_TASK_EVENT,
+    ProtocolError,
     fit_payload,
     pack,
     pack_feed,
@@ -26,6 +27,7 @@ from .protocol import (
 )
 from .pty import PtyClosed, WinPty, default_cwd, shell_command
 from .pump import OutputPump
+from .history_context import pack_history_context
 from .task_events import DEFAULT_SUMMARY, TaskEventStore, TaskStateDetector
 
 
@@ -73,12 +75,19 @@ class Client:
     token: str = ""
     multiplex: bool = False
     reliable: bool = False
+    history_context: bool = False
+    history_resume: bool = False
     subscriptions: set[str] = field(default_factory=set)
     failure: str = ""
     feed_offsets: dict[str, int] = field(default_factory=dict)
     delegated: bool = False
     authorize: Callable[[], bool] | None = field(default=None, repr=False)
     task_subscribed: bool = False
+    pending_replays: set[str] = field(default_factory=set)
+    history_after: dict[str, dict[str, int | str]] = field(default_factory=dict)
+    replay_handle: asyncio.TimerHandle | None = field(default=None, repr=False)
+    resync_pending: set[str] = field(default_factory=set)
+    resync_handle: asyncio.TimerHandle | None = field(default=None, repr=False)
 
 
 DEFAULT_PRESETS = (
@@ -164,7 +173,17 @@ class Hub:
     def detach(self, key: str) -> None:
         released = False
         with self._lock:
-            self.clients.pop(key, None)
+            client = self.clients.pop(key, None)
+            if client is not None:
+                client.pending_replays.clear()
+                client.history_after.clear()
+                if client.replay_handle is not None:
+                    client.replay_handle.cancel()
+                    client.replay_handle = None
+                client.resync_pending.clear()
+                if client.resync_handle is not None:
+                    client.resync_handle.cancel()
+                    client.resync_handle = None
             for session in self.sessions.values():
                 if session.resize_owner == key:
                     session.resize_owner = None
@@ -172,7 +191,7 @@ class Hub:
         if released:
             self._catalog()
 
-    def summary(self, owner: str | None = None) -> dict:
+    def summary(self, owner: str | None = None, *, history_context: bool = False) -> dict:
         groups = list(self.groups.values())
         if owner is not None:
             groups = [group for group in groups if group.owner == owner]
@@ -189,6 +208,7 @@ class Hub:
                     "focused": window.focused,
                     "sessions": [
                         {"id": item.id, "shell": item.shell, "cwd": item.cwd,
+                         **({"output_age_ms": item.pump.output_age_ms()} if history_context else {}),
                          **({"agent": item.task_detector.app} if item.task_detector.app else {})}
                         for item in window.sessions.values()
                     ],
@@ -430,6 +450,7 @@ class Hub:
             cwd=workdir,
             pty=pty,
         )
+        session.pump.mark_grid(session.cols, session.rows)
         with self._lock:
             window.sessions[session.id] = session
             window.focused = session.id
@@ -472,7 +493,8 @@ class Hub:
             if self.view(client) is session:
                 session.pty.write(data)
 
-    def set_subscriptions(self, client: Client, session_ids: list[str]) -> None:
+    def set_subscriptions(self, client: Client, session_ids: list[str], *, replay: bool = True,
+                          history_after: dict | None = None) -> None:
         if not client.multiplex or client.failure:
             return
         selected = {
@@ -482,6 +504,15 @@ class Hub:
         added = selected - client.subscriptions
         removed = client.subscriptions - selected
         client.subscriptions = selected
+        client.pending_replays.intersection_update(selected)
+        client.history_after = {sid: cursor for sid, cursor in client.history_after.items() if sid in selected}
+        if not client.pending_replays and client.replay_handle is not None:
+            client.replay_handle.cancel()
+            client.replay_handle = None
+        client.resync_pending.intersection_update(selected)
+        if not client.resync_pending and client.resync_handle is not None:
+            client.resync_handle.cancel()
+            client.resync_handle = None
         released = False
         for sid in removed:
             client.feed_offsets.pop(sid, None)
@@ -493,7 +524,12 @@ class Hub:
             session = self.sessions[sid]
             # Keep interactive output batches short without one wakeup per read.
             session.pump.coalesce_s = min(session.pump.coalesce_s, 0.004)
-            self._send(client, self._session_snapshot(client, session))
+            if replay:
+                if client.history_resume and history_after and sid in history_after:
+                    client.history_after[sid] = history_after[sid]
+                self._queue_replay(client, session)
+            else:
+                client.feed_offsets[sid] = session.pump.position()
         if released:
             self._catalog()
 
@@ -503,7 +539,77 @@ class Hub:
         for sid in sorted(selected):
             session = self.subscribed_session(client, sid)
             if session is not None:
+                client.history_after.pop(sid, None)
+                self._queue_replay(client, session)
+
+    def _queue_replay(self, client: Client, session: Session) -> None:
+        """Defer replay identities, rather than filling the live output queue."""
+        if client.failure or (client.authorize is not None and not client.authorize()):
+            return
+        limit = max(1, client.queue.maxsize // 2)
+        if not client.pending_replays and (not client.queue.maxsize or client.queue.qsize() < limit):
+            self._send(client, self._session_snapshot(client, session))
+            return
+        client.pending_replays.add(session.id)
+        if client.replay_handle is None and self.loop is not None:
+            client.replay_handle = self.loop.call_later(.004, self._drain_replays, client)
+
+    def _drain_replays(self, client: Client) -> None:
+        client.replay_handle = None
+        if (client.failure or self.clients.get(client.key) is not client
+                or (client.authorize is not None and not client.authorize())):
+            client.pending_replays.clear()
+            client.history_after.clear()
+            return
+        limit = max(1, client.queue.maxsize // 2)
+        while client.pending_replays and (not client.queue.maxsize or client.queue.qsize() < limit):
+            sid = min(client.pending_replays)
+            client.pending_replays.remove(sid)
+            session = self.subscribed_session(client, sid)
+            if session is not None:
+                # Capture bytes and their position only when the bounded queue can
+                # accept them. Live flushes for deferred sessions are covered here.
                 self._send(client, self._session_snapshot(client, session))
+            else:
+                client.history_after.pop(sid, None)
+        if client.pending_replays and self.loop is not None:
+            client.replay_handle = self.loop.call_later(.004, self._drain_replays, client)
+
+    def _pace_client(self, client: Client, session_id: str) -> bool:
+        """Throttle stream delivery to a client whose queue is above the low-water mark.
+
+        The pump ring retains every byte, so a skipped stream frame is recovered
+        losslessly by a fresh snapshot once the client's queue drains. Without
+        this, a UI busy parsing large snapshot replays backs its bounded queue
+        into the reliable-client 1013 fail path and livelocks on reconnect.
+        """
+        if client.failure or (client.authorize is not None and not client.authorize()):
+            return False
+        maxsize = client.queue.maxsize
+        if not maxsize or client.queue.qsize() < max(1, maxsize // 2):
+            return False
+        client.resync_pending.add(session_id)
+        if client.resync_handle is None and self.loop is not None:
+            client.resync_handle = self.loop.call_later(.004, self._drain_resyncs, client)
+        return True
+
+    def _drain_resyncs(self, client: Client) -> None:
+        client.resync_handle = None
+        if (client.failure or self.clients.get(client.key) is not client
+                or (client.authorize is not None and not client.authorize())):
+            client.resync_pending.clear()
+            return
+        limit = max(1, client.queue.maxsize // 2)
+        while client.resync_pending and (not client.queue.maxsize or client.queue.qsize() < limit):
+            sid = min(client.resync_pending)
+            client.resync_pending.remove(sid)
+            session = self.subscribed_session(client, sid)
+            if session is not None:
+                # A snapshot supersedes the skipped stream bytes; the low-water
+                # gate leaves headroom for state frames behind it.
+                self._send(client, self._session_snapshot(client, session))
+        if client.resync_pending and self.loop is not None:
+            client.resync_handle = self.loop.call_later(.004, self._drain_resyncs, client)
 
     def subscribed_session(self, client: Client, session_id: str) -> Session | None:
         if (client.failure or self.clients.get(client.key) is not client
@@ -535,9 +641,15 @@ class Hub:
                 return False
             cols, rows = self._terminal_size(cols, rows)
             changed = (session.cols, session.rows, session.resize_owner) != (cols, rows, client.key)
-            if (session.cols, session.rows) != (cols, rows):
+            dimensions_changed = (session.cols, session.rows) != (cols, rows)
+            if dimensions_changed:
+                session.pump.begin_resize()
                 session.pty.resize(cols, rows)
+                session.cols, session.rows = cols, rows
+                session.pump.mark_grid(cols, rows)
             if self.clients.get(client.key) is not client:
+                if dimensions_changed:
+                    self._catalog()
                 return False
             session.resize_owner = client.key
             session.cols, session.rows = cols, rows
@@ -552,7 +664,8 @@ class Hub:
     def controls(self, client: Client) -> dict:
         return {
             sid: {"cols": session.cols, "rows": session.rows, "owner": session.resize_owner == client.key,
-                  "busy": session.resize_owner not in {None, client.key}}
+                  "busy": session.resize_owner not in {None, client.key},
+                  **({"history_epoch": session.pump.history_context()['epoch']} if client.history_context else {})}
             for sid in client.subscriptions
             if (session := self.sessions.get(sid)) is not None and self._channel_ok(client, session)
         }
@@ -567,8 +680,10 @@ class Hub:
             cols, rows = self._terminal_size(cols, rows)
             changed = (session.cols, session.rows) != (cols, rows)
             if changed:
+                session.pump.begin_resize()
                 session.pty.resize(cols, rows)
                 session.cols, session.rows = cols, rows
+                session.pump.mark_grid(cols, rows)
         if changed:
             self._catalog()
 
@@ -655,7 +770,7 @@ class Hub:
     def _hello(self, client: Client) -> bytes:
         return pack_json(
             OP_HELLO_OK,
-            {**self.summary(client.token), "selected": client.window_id or "", "session": client.session_id or "",
+            {**(self.summary(client.token, history_context=True) if client.history_context else self.summary(client.token)), "selected": client.window_id or "", "session": client.session_id or "",
              **({"controls": self.controls(client)} if client.multiplex else {})},
         )
 
@@ -728,6 +843,27 @@ class Hub:
         return self._session_snapshot(client, session)
 
     def _session_snapshot(self, client: Client, session: Session) -> bytes:
+        if client.multiplex and client.history_context:
+            session.pump.mark_grid(session.cols, session.rows)
+            cursor = client.history_after.pop(session.id, None)
+            if not client.history_resume:
+                cursor = None
+            if cursor is not None:
+                data, position, context = session.pump.history_resume_position(cursor['position'], cursor['epoch'], cursor['stream_id'])
+                try:
+                    frame = pack_history_context(session.id, context, data)
+                except ProtocolError:
+                    # An exact delta cannot be cropped to fit the envelope budget.
+                    data, position, context = session.pump.history_snapshot_position()
+                else:
+                    client.feed_offsets[session.id] = position
+                    return frame
+            else:
+                data, position, context = session.pump.history_snapshot_position()
+            if client.history_resume:
+                context.update(v=2, end_position=position, stream_id=session.pump.stream_id)
+            client.feed_offsets[session.id] = position
+            return pack_history_context(session.id, context, data)
         data, position = session.pump.snapshot_position()
         if client.multiplex:
             client.feed_offsets[session.id] = position
@@ -767,9 +903,18 @@ class Hub:
             return
         op = OP_SNAPSHOT if overflow else OP_OUTPUT
         for client in targets:
-            if overflow and client.reliable:
-                self.fail_client(client, "PTY output overflow; reconnect for bounded history replay")
+            if session_id in client.pending_replays:
                 continue
+            if self._pace_client(client, session_id):
+                continue
+            if overflow and client.reliable:
+                # The staged bytes were dropped, but the ring retained them: a
+                # full snapshot is a lossless recovery, same as for unreliable
+                # clients. Disconnecting a local UI here only costs the
+                # resubscribe replay storm this pacing exists to prevent.
+                if client.delegated:
+                    self.fail_client(client, "PTY output overflow; reconnect for bounded history replay")
+                    continue
             chunk = data
             end = session.pump.flushed_position
             if client.multiplex and not overflow and end:
@@ -779,11 +924,25 @@ class Hub:
                     continue
                 chunk = data[max(0, seen - (end - len(data))):]
                 client.feed_offsets[session_id] = end
-            self._send(client, self._feed_frame(client, op, session_id, chunk))
+            if client.multiplex and client.history_context:
+                try:
+                    if overflow:
+                        frame = self._session_snapshot(client, session)
+                    else:
+                        context = session.pump.flushed_history_context()
+                        if client.history_resume:
+                            context.update(v=2, end_position=end, stream_id=session.pump.stream_id)
+                        frame = pack_history_context(session_id, context, chunk)
+                except ProtocolError:
+                    self.fail_client(client, 'History output frame overflow; reconnect for bounded replay')
+                    continue
+                self._send(client, frame)
+            else:
+                self._send(client, self._feed_frame(client, op, session_id, chunk))
 
     def _catalog(self) -> None:
         for client in list(self.clients.values()):
-            summary = self.summary(client.token)
+            summary = self.summary(client.token, history_context=True) if client.history_context else self.summary(client.token)
             if client.multiplex:
                 summary["controls"] = self.controls(client)
             self._send(client, pack_json(OP_SESSIONS, summary))
