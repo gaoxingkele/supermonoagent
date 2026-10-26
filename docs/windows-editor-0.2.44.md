@@ -35,3 +35,5 @@
 - 文件 broker 增加 Python 3.10 兼容的分块散列，43 项 broker 回归通过；不更改原终端解释器。
 
 原始证据：`.omx/artifacts/windows44-final-components.xml`、`windows44-integration.xml`（保留首次清理竞态失败）、`file-broker-py310-final.xml`、`frozen-file44-acceptance.json`、`native-composer44-acceptance.json`、`windows-files-0.2.44/full-installer-verification.json`、`cursor-input/`。
+
+公开完整程序频道已发布 0.2.44，序号 `1792987356111283`；专用包受限链接已激活。公网签名及 HTTPS 校验通过，公开包 Range 206 与专用包 200 的下载前缀均与本地一致；服务端上传 SHA 和本地完整包安装已验证。全量公网下载耗时过长后停止，未把前缀校验称为完整网络下载成功。证据：`.omx/artifacts/windows-files-0.2.44/{final-publication.json,https-prefix-verification.json}`。
