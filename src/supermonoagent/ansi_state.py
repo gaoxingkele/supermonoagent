@@ -1,4 +1,4 @@
-"""Bounded SGR state for cropped history, never a live-stream transformation."""
+"""Bounded rendition and cursor visibility for cropped history only."""
 
 from __future__ import annotations
 
@@ -10,12 +10,14 @@ class SgrState:
         self.attributes: dict[str, str] = {}
         self.mode = "text"
         self.csi = bytearray()
+        self.cursor_visible: bool | None = None
 
     def copy(self) -> SgrState:
         other = SgrState()
         other.attributes = self.attributes.copy()
         other.mode = self.mode
         other.csi = self.csi.copy()
+        other.cursor_visible = self.cursor_visible
         return other
 
     def feed(self, data: bytes) -> None:
@@ -43,6 +45,8 @@ class SgrState:
                     self.mode = "string"
                 elif byte == ord("c"):
                     self.attributes.clear()
+                    # Bundled xterm's RIS preserves core cursor visibility.
+                    # DECSTR below explicitly restores the visible default.
                     self.mode = "text"
                 elif 0x20 <= byte <= 0x2f:
                     self.mode = "escape_intermediate"
@@ -71,6 +75,11 @@ class SgrState:
                             self._sgr(bytes(self.csi))
                         elif byte == ord("p") and self.csi == b"!":
                             self.attributes.clear()  # DECSTR soft reset.
+                            self.cursor_visible = True
+                        elif byte in (ord("h"), ord("l")) and self.csi.startswith(b"?"):
+                            modes = bytes(self.csi[1:]).split(b";")[:32]  # Bundled xterm parser limit.
+                            if all(not mode or mode.isdigit() for mode in modes) and any(int(mode or b"0") == 25 for mode in modes):
+                                self.cursor_visible = byte == ord("h")
                     self.mode = "text"
                     self.csi.clear()
                 elif self.mode == "csi" and 0x20 <= byte <= 0x3f:
@@ -145,7 +154,11 @@ class SgrState:
                 self.attributes["script"] = str(code)
 
     def prefix(self) -> bytes:
-        return ("\x1b[" + ";".join(["0", *(self.attributes[key] for key in sorted(self.attributes))]) + "m").encode("ascii")
+        rendition = ("\x1b[" + ";".join(["0", *(self.attributes[key] for key in sorted(self.attributes))]) + "m").encode("ascii")
+        # Self-drawn TUI inputs often leave the hardware cursor on a blank row.
+        # Restore DECTCEM if its command aged out; never guess a prompt position.
+        visibility = b"" if self.cursor_visible is None else (b"\x1b[?25h" if self.cursor_visible else b"\x1b[?25l")
+        return rendition + visibility
 
 
 def bounded_snapshot(data: bytes, limit: int, initial: SgrState | None = None, *, cropped: bool = False) -> bytes:

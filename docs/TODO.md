@@ -1,5 +1,10 @@
 # 修改 TODO
 
+## 2026-10-26：Cursor CLI 底部额外光标
+
+- [x] 实际客户端确认 `JINLONG3090 / IIA_Benchmark` 输入行高于底部白块；隔离测试复现历史裁剪丢失早期 DECTCEM 隐藏状态。后端快照源码已恢复该有限状态，不移动输入位置、不改实时输出。相关组合 21 passed，见 [诊断与验证边界](cursor-caret-diagnosis.md)。
+- [ ] 尚未部署该后端修复至 JINLONG3090，尚未验证实际 Cursor 的早期隐藏状态。旧 daemon 已裁掉的状态无法凭前端更新补回；保留用户现有会话，继续核对实际 CLI 版本和完整会话重连行为。
+
 ## 2026-10-26：文本粘贴热修复 Windows 0.2.46
 
 - [x] 纯文本 paste 不再被旧文件标记／native bridge 拦截，Windows Ctrl+V 交还原生快捷键，不发 0x16；保留 xterm paste 原路径。两处旧源红测后修复，组合 26 passed，编译资源一致及隐藏原生窗口通过。见 [文本粘贴修复](windows-text-paste-0.2.46.md)。

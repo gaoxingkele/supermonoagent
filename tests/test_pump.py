@@ -23,6 +23,62 @@ class Loop:
 
 
 class PumpTest(unittest.TestCase):
+    def test_fragmented_cursor_visibility_is_bounded_and_ignores_strings(self):
+        state = SgrState()
+        for byte in b"\x1b[?1;25l":
+            state.feed(bytes([byte]))
+        self.assertEqual(state.prefix(), b"\x1b[0m\x1b[?25l")
+        copied = state.copy()
+        copied.feed(b"\x1b]0;fake \x1b[?25h\x07\x1bPfake \x1b[?25h\x1b\\\x1b[0m")
+        self.assertEqual(copied.prefix(), state.prefix())
+        copied.feed(b"\x1b[?25h")
+        self.assertEqual(copied.prefix(), b"\x1b[0m\x1b[?25h")
+        self.assertEqual(state.prefix(), b"\x1b[0m\x1b[?25l")
+        copied.feed(b"\x1b[?25l\x1bc")
+        self.assertEqual(copied.prefix(), b"\x1b[0m\x1b[?25l")
+        copied.feed(b"\x1b[!p")
+        self.assertEqual(copied.prefix(), b"\x1b[0m\x1b[?25h")
+        copied.feed(b"\x1b[?25;invalidl\x1b[?" + b"1;" * 1000 + b"25l")
+        self.assertTrue(copied.cursor_visible)
+        copied.feed(b"\x1b[?25;l")
+        self.assertFalse(copied.cursor_visible)
+
+    def test_visibility_survives_two_crops_without_rewriting_live_bytes(self):
+        pump, loop, flushed = OutputPump(), Loop(), []
+        raw = b"\x1b[?25l" + b"A" * 200 + b"\x1b[20;3H"
+        with patch("supermonoagent.pump.RING_BYTES", 96):
+            for byte in raw:
+                pump.add(bytes([byte]), loop, lambda data, overflow: flushed.append((data, overflow)))
+            snapshot, position = pump.snapshot_position()
+        self.assertIn(b"\x1b[?25l", bounded_snapshot(snapshot, 48))
+        self.assertEqual(position, len(raw))
+        fn, args = loop.pending.pop()
+        fn(*args)
+        self.assertEqual(flushed, [(raw, False)])
+        pump.remember(b"\x1b[?25h" + b"B" * 100)
+        self.assertIn(b"\x1b[?25h", bounded_snapshot(pump.snapshot(), 48))
+
+    @unittest.skipUnless(shutil.which("node"), "bundled xterm requires Node")
+    def test_bundled_xterm_cursor_visibility_matches_cropped_reset_sequences(self):
+        vectors = []
+        for mode in (b"\x1b[?25l", b"\x1b[?25h", b"\x1b[?25;l", b"\x1b[?;25l",
+                     b"\x1b[?" + b"1;" * 31 + b"25l", b"\x1b[?" + b"1;" * 32 + b"25l"):
+            for reset in (b"", b"\x1bc", b"\x1b[!p"):
+                raw = mode + reset + b"A" * 200 + b"\x1b[4;2H"
+                vectors.append([base64.b64encode(value).decode() for value in (raw, bounded_snapshot(raw, 64))])
+        script = r"""
+const {Terminal}=require('./src/supermonoagent/static/xterm.js');
+(async()=>{for(const pair of JSON.parse(require('fs').readFileSync(0,'utf8'))){
+ const values=[];for(const value of pair){const t=new Terminal({cols:32,rows:8});
+ await new Promise(done=>t.write(Buffer.from(value,'base64'),done));
+ values.push([t._core.coreService.isCursorHidden,t.buffer.active.cursorX,t.buffer.active.cursorY]);t.dispose();}
+ if(JSON.stringify(values[0])!==JSON.stringify(values[1]))throw Error(JSON.stringify(values));
+}})().catch(error=>{console.error(error);process.exit(1)});
+"""
+        result = subprocess.run([shutil.which("node"), "-e", script], input=json.dumps(vectors),
+                                cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_bounded_history_restores_discarded_sgr_without_changing_position(self):
         pump = OutputPump()
         with patch("supermonoagent.pump.RING_BYTES", 64):
@@ -47,7 +103,7 @@ class PumpTest(unittest.TestCase):
         self.assertEqual(state.prefix(), b"\x1b[0m")
         for reset in (b"\x1b[0m", b"\x1b[m", b"\x1bc", b"\x1b[!p"):
             state.feed(b"\x1b[91;104;1m" + reset)
-            self.assertEqual(state.prefix(), b"\x1b[0m")
+            self.assertEqual(state.prefix(), b"\x1b[0m\x1b[?25h" if reset == b"\x1b[!p" else b"\x1b[0m")
 
     def test_control_sequence_state_and_utf8_boundaries_are_bounded(self):
         state = SgrState()
