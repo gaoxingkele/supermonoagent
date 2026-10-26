@@ -29,3 +29,23 @@ A separate owned native ConPTY experiment disproved assuming that shrinking and
 restoring columns forces an application-independent repaint: its static body
 did not reappear in the stream. Do not introduce an automatic resize workaround
 for missing Grok history based on the capture prototype.
+
+An explicit OP22 `console.viewport` preview route now exists on this isolated
+branch. Only the owning authenticated, subscribed client can request its session;
+the server chooses the cached native process identity. It shares the existing
+four-reader budget, checks authorization and identity again after capture, and
+retains a running reader's slot through request cancellation or timeout. Requests
+cancelled while waiting for the executor are checked before starting a read.
+
+The wire payload is marked `console_viewport_preview` and
+`stream_checkpoint: false`; it must never be injected into the VT output stream.
+UTF-16 cells and attributes use bounded little-endian base64 matrices. Windows
+creation FILETIME uses a canonical decimal uint64 string because JavaScript JSON
+numbers cannot preserve its precision. Native identity checks still use integers.
+The preview can capture a later display while output continues; it is not a
+synchronized VT checkpoint. No client display or automatic polling is included.
+
+Fresh root verification: 131 tests passed across viewport RPC, native viewport,
+existing console snapshot and protocol modules. A deterministic cancellation
+regression also passed 100 consecutive handoffs. This route is not included in
+the Windows 0.2.51 build and has not been deployed to a user's daemon.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import struct
+import sys
 
 from .ansi_state import bounded_snapshot
 
@@ -32,6 +33,7 @@ OP_ASSISTANT_CONTEXT = 22
 
 CAPABILITIES = {
     "protocol_version": 2, "multiplex": True, "targeted_input": True, "resize_lease": True, "reliable": True, "window_themes": True, "snapshot_sgr": True, "snapshot_footer": True, "snapshot_refresh": True, "replay_backpressure": True, "daemon_logs": True, "assistant_context": True, "file_transfer": True, "resize_ack": True, "conpty_paste": True, "relay_delegation": True, "task_events": True}
+CAPABILITIES['console_viewport'] = sys.platform == 'win32'
 
 _HEADER = struct.Struct("<I")
 MAX_FRAME = 256 * 1024

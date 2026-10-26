@@ -670,6 +670,9 @@ class Daemon:
             return [], 4001
         if op == OP_ASSISTANT_CONTEXT:
             body = unpack_json(payload)
+            if 'action' in body:
+                from .console_viewport_rpc import handle_viewport_request
+                return await handle_viewport_request(self, client, payload)
             request, sid = body.get('request', ''), body.get('session', '')
             if not isinstance(request, str) or len(request) > 64 or not isinstance(sid, str) or len(sid) > 256:
                 raise ProtocolError('Invalid assistant context request')
