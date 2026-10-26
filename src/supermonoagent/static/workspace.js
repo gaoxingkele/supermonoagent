@@ -237,6 +237,9 @@
     const fit=new FitAddon.FitAddon();term.loadAddon(fit);
     if(window.Unicode11Addon?.Unicode11Addon){try{term.loadAddon(new Unicode11Addon.Unicode11Addon());term.unicode.activeVersion='11';}catch{}}
     term.open(screen);
+    // Windows Ctrl+V belongs to the browser/native clipboard accelerator.
+    // Do not turn it into the terminal's literal SYN byte (0x16).
+    term.attachCustomKeyEventHandler(event=>!(event.type==='keydown'&&/Win/i.test(navigator.platform)&&event.ctrlKey&&!event.altKey&&!event.metaKey&&!event.shiftKey&&event.key.toLowerCase()==='v'));
     // Preserve readable history when a full-screen tool clears saved lines.
     term.parser.registerCsiHandler({final:'J'},params=>params[0]===3);
     const pane={sid,host:data.win.host,raw:data.session.raw,generation:data.win.host.generation,el,screen,term,fit,history,title,own,ready:data.win.host.connected,replayPending:0,lastSize:'',renderer:'dom',webgl:null,observer:null,frames:[],writing:false,wantControl:false,redrawAfterReplay:false,redrawTimer:0,resizeRequest:null,lastAttempt:'',lastInputAt:0,repaintAt:0,composing:false};

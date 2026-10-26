@@ -51,11 +51,15 @@
   document.addEventListener('paste',event=>{
     if(!event.target.closest?.('.terminal-screen'))return;
     const files=[...(event.clipboardData?.files||[])],native=!!window.supermonoClipboardHasFiles;
+    const plain=event.clipboardData?.getData('text/plain')||'';
+    // The current paste event is authoritative for text. A stale file-format
+    // beacon or an unavailable native bridge must not consume or delay it.
+    if(plain&&!files.length)return;
     if(!files.length&&!native)return;
-    const pane=W.activePane,plain=event.clipboardData?.getData('text/plain')||'';
+    const pane=W.activePane;
     let pinned;try{pinned=target();}catch(error){event.preventDefault();status(error.message);return;}
     event.preventDefault();event.stopImmediatePropagation();
-    const fallback=()=>{if(plain&&W.panes.get(pane?.sid)===pane)pane.term.paste(plain);};
+    const fallback=()=>{if(plain&&valid(pinned)&&W.activePane===pane)pane.term.paste(plain);};
     const api=window.pywebview?.api;
     if(api?.clipboard_has_files){
       api.clipboard_has_files().then(has=>{if(has)run(nativeSources,fallback,pinned);else if(files.length)run(()=>browserSources(files),fallback,pinned);else fallback();}).catch(()=>{if(files.length)run(()=>browserSources(files),fallback,pinned);else fallback();});

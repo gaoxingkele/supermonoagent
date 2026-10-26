@@ -1,5 +1,10 @@
 # 修改 TODO
 
+## 2026-10-26：文本粘贴热修复 Windows 0.2.46
+
+- [x] 纯文本 paste 不再被旧文件标记／native bridge 拦截，Windows Ctrl+V 交还原生快捷键，不发 0x16；保留 xterm paste 原路径。两处旧源红测后修复，组合 26 passed，编译资源一致及隐藏原生窗口通过。见 [文本粘贴修复](windows-text-paste-0.2.46.md)。
+- [ ] 用户 Windows／Claude CLI 的实际 OS 剪贴板粘贴待更新后现场确认；不是凭合成事件宣称用户已恢复。Cursor caret 独立问题仍保留前述边界。
+
 ## 2026-10-26：Windows 编辑框与文件交换 0.2.44
 
 - [x] 顶部编辑对话框、多行草稿、标准文本粘贴、多图片／文件队列、进度及回执已实现；独立 broker 已上线，编译版 helper 经真实公网／HTTPS 保存 PNG、PDF 至自有项目 tmp。完整专用安装包注入私有 profile，保留原 daemon／PTY。见 [使用与验证边界](windows-editor-0.2.44.md)。
