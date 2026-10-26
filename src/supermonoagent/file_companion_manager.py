@@ -24,6 +24,8 @@ import time
 
 from .file_companion import _endpoint, _process_birth, CompanionError
 from .file_broker import PROTOCOL
+from .file_broker import FILE_PROTOCOL
+from .file_workspaces import _document, _unique, _directory, MAX_SETTINGS_BYTES
 
 _LOCKS, _ATTEMPTS = {}, {}
 _GUARD = threading.Lock()
@@ -259,8 +261,9 @@ def public_config(value):
 
 class FileCompanionManager:
     def __init__(self, state_root, backend, owner_token, room, profile_path=None):
-        self.root = Path(state_root).absolute()/'file-exchange'
-        self.profile = Path(profile_path).absolute() if profile_path is not None else self.root/'profile.json'
+        self.base = Path(state_root).absolute()/'file-exchange'
+        self.root = self.base/'v2'
+        self.profile = Path(profile_path).absolute() if profile_path is not None else self.base/'profile.json'
         self.owner_token, self.room = owner_token, room
         self._invalid = None
         try: self.backend = _endpoint(backend, backend=True)
@@ -290,7 +293,7 @@ class FileCompanionManager:
     def _status(self, record, broker):
         try:
             status = _read_private(self.root/'helper/status.json', 8192)
-            fields={'role':'file-companion','protocol':PROTOCOL,'backend':self.backend,'broker_url':broker,
+            fields={'role':'file-companion','protocol':PROTOCOL,'file_protocol':FILE_PROTOCOL,'backend':self.backend,'broker_url':broker,
                     'room':self.room,'status_id':record['status_id']}
             if not isinstance(status,dict) or type(status.get('schema')) is not int or status['schema']!=1 or any(status.get(key)!=item for key,item in fields.items()): return 'connecting'
             updated=status.get('updated_at')
@@ -306,6 +309,31 @@ class FileCompanionManager:
             state=status.get('state')
             return state if state in {'online','connecting','parent_unavailable','broker_unavailable','authentication_failed','stopped'} else 'connecting'
         except (OSError,ValueError,TypeError,KeyError): return 'connecting'
+
+    def _migrate_workspaces(self, helper):
+        """Copy only a validated V1 settings snapshot, once, without overwrite."""
+        source, target = self.base/'helper/workspaces.json', helper/'workspaces.json'
+        if _present(target) is not None or _present(source) is None:
+            return
+        _private(source)
+        with source.open('rb') as stream:raw=stream.read(MAX_SETTINGS_BYTES+1)
+        if len(raw)>MAX_SETTINGS_BYTES:raise ManagerError('workspace_settings_unavailable')
+        try:
+            document = _document(json.loads(raw.decode('utf-8-sig'), object_pairs_hook=_unique,
+                parse_constant=lambda _: (_ for _ in ()).throw(ValueError())))
+            for entry in document['windows'].values():
+                _directory(entry['project_dir']);_directory(entry['exchange_dir'])
+            if document['mylib'] is not None:_directory(document['mylib']['root'])
+        except (ValueError,UnicodeError,TypeError,KeyError,RuntimeError):
+            raise ManagerError('workspace_settings_unavailable') from None
+        descriptor, name = tempfile.mkstemp(prefix='.workspace-migration-', dir=str(helper))
+        try:
+            with os.fdopen(descriptor,'wb') as stream:
+                _secure(Path(name));stream.write(raw);stream.flush();os.fsync(stream.fileno())
+            try:os.link(name,target)
+            except FileExistsError:pass
+        finally:
+            Path(name).unlink(missing_ok=True)
 
     def ensure_running(self):
         if self._invalid: return self._config(reason=self._invalid)
@@ -342,6 +370,7 @@ class FileCompanionManager:
                     try:
                         with _lease(helper/'companion.lock'): pass
                     except ManagerError: return self._config(reason='helper_already_running')
+                    self._migrate_workspaces(helper)
                     _write_private(helper/'owner.token',self.owner_token.encode())
                     _write_private(helper/'broker.token',token.encode())
                     _write_private(helper/'enrollment.key',key.encode())
@@ -358,6 +387,6 @@ class FileCompanionManager:
                     return self._config(True,reason='connecting',broker=broker)
             finally:self._lock.release()
         except ManagerError as error:
-            reason=str(error) if str(error) in {'unsafe_state','invalid_profile','starting'} else 'invalid_profile'
+            reason=str(error) if str(error) in {'unsafe_state','invalid_profile','starting','workspace_settings_unavailable'} else 'invalid_profile'
             return self._config(reason=reason)
         except (OSError,ValueError,TypeError,KeyError):return self._config(reason='invalid_profile')

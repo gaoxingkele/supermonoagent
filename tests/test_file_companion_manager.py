@@ -25,12 +25,13 @@ def test_missing_profile_is_noop_and_room_is_not_guessed(tmp_path,monkeypatch):
 
 
 @pytest.mark.parametrize('change',[{'schema':True},{'enrollment_key':'short'},{'broker_url':'ws://remote.invalid:123/file/ws'},
-    {'broker_url':'wss://user:password@example.invalid/file/ws'},{'unknown_secret':'owned'},{'broker_token':'bad token'}])
+    {'broker_url':'wss://user:password@example.invalid/file/ws'},{'broker_url':'wss://example.invalid/file/ws?file_protocol=2'},
+    {'unknown_secret':'owned'},{'broker_token':'bad token'}])
 def test_invalid_profile_never_starts(tmp_path,monkeypatch,change):
     root,_,_=profile(tmp_path,**change)
     monkeypatch.setattr(subprocess,'Popen',lambda *a,**k:pytest.fail('Unexpected process'))
     assert not M.FileCompanionManager(root,'http://127.0.0.1:1234','OWNED_OWNER','r').ensure_running()['enabled']
-    assert not (root/'file-exchange/helper').exists()
+    assert not (root/'file-exchange/v2/helper').exists()
 
 
 @pytest.fixture
@@ -45,7 +46,7 @@ from supermonoagent.file_companion_manager import _write_private
 p=argparse.ArgumentParser()
 for n in ['backend','broker','room','state-dir','owner-token-file','broker-token-file','enrollment-key-file','status-id']:p.add_argument('--'+n)
 a=p.parse_args()
-body={'schema':1,'role':'file-companion','protocol':'sma-files-1','pid':os.getpid(),'process_start':_process_birth(os.getpid()),'backend':a.backend,'broker_url':a.broker,'room':a.room,'status_id':a.status_id,'state':'online'}
+body={'schema':1,'role':'file-companion','protocol':'sma-files-1','file_protocol':2,'pid':os.getpid(),'process_start':_process_birth(os.getpid()),'backend':a.backend,'broker_url':a.broker,'room':a.room,'status_id':a.status_id,'state':'online'}
 while True:
  body['updated_at']=time.time();_write_private(Path(a.state_dir)/'status.json',json.dumps(body).encode());time.sleep(.1)
 '''.replace('SOURCE',repr(source_root)),encoding='utf8')
@@ -90,12 +91,83 @@ def test_hidden_private_launch_singleton_and_new_gui_adopts(tmp_path,owned_helpe
     assert M.FileCompanionManager(root,'http://127.0.0.1:1234','OWNED_OWNER','saved-code').ensure_running()['ready']
     assert len(owned_helper)==1
     assert all(secret not in json.dumps(value) for secret in ['OWNED_OWNER','OWNED_BROKER',raw['enrollment_key'],str(root)])
-    for name in ['owner.token','broker.token','enrollment.key']:M._private(root/'file-exchange/helper'/name)
+    for name in ['owner.token','broker.token','enrollment.key']:M._private(root/'file-exchange/v2/helper'/name)
+
+
+def test_live_v1_lease_identity_and_journal_are_not_reused_or_stopped(tmp_path,owned_helper):
+    root, profile_path, _ = profile(tmp_path)
+    original_profile = profile_path.read_bytes()
+    v1 = root/'file-exchange'
+    legacy = M.FileCompanionManager(root,'http://127.0.0.1:1234','OWNED_OWNER','r')
+    legacy.root = v1  # Owned prior-layout process fixture, not an upgrade fallback.
+    assert legacy.ensure_running()['enabled']
+    original_record = (v1/'manager.json').read_bytes()
+    preserved = {'host.json':b'{"host_id":"owned-v1-only","host_secret":"owned-v1-only"}',
+                 'deliveries.sqlite3':b'owned-v1-journal-marker'}
+    for name, value in preserved.items():M._write_private(v1/'helper'/name,value)
+    with M._lease(v1/'helper/companion.lock'):
+        manager=M.FileCompanionManager(root,'http://127.0.0.1:1234','OWNED_OWNER','r')
+        assert online(manager)['ready']
+        for _ in range(5):assert M.FileCompanionManager(root,'http://127.0.0.1:1234','OWNED_OWNER','r').ensure_running()['ready']
+        assert len(owned_helper)==2 and all(p.poll() is None for p in owned_helper)
+        assert (v1/'manager.json').read_bytes()==original_record and profile_path.read_bytes()==original_profile
+        for name,value in preserved.items():
+            assert (v1/'helper'/name).read_bytes()==value
+            assert not (v1/'v2/helper'/name).exists()
+
+
+def test_only_validated_workspace_settings_are_copied_once_without_overwrite(tmp_path,owned_helper):
+    from supermonoagent.file_workspaces import FileWorkspaces
+    root,_,_=profile(tmp_path)
+    project=tmp_path/'project';project.mkdir()
+    library=tmp_path/'library';library.mkdir()
+    source=root/'file-exchange/helper/workspaces.json'
+    M._private_directory(source.parent)
+    settings=FileWorkspaces(source,default_mylib_root=library)
+    settings.save('window1',project,expected_revision=0)
+    settings.save_mylib(library,expected_revision=0)
+    before=source.read_bytes()
+    manager=M.FileCompanionManager(root,'http://127.0.0.1:1234','OWNED_OWNER','r')
+    online(manager)
+    target=manager.root/'helper/workspaces.json'
+    assert target.read_bytes()==before and source.read_bytes()==before
+    M._private(target)
+    settings.save('window1',project,project/'other',expected_revision=1)
+    manager._migrate_workspaces(target.parent)
+    assert target.read_bytes()==before and source.read_bytes()!=before
+
+
+def test_malformed_v1_settings_do_not_copy_or_start_v2(tmp_path,monkeypatch):
+    root,_,_=profile(tmp_path)
+    source=root/'file-exchange/helper/workspaces.json'
+    raw=b'{"schema":1,"windows":{},"mylib":null,"unknown":"owned"}'
+    M._write_private(source,raw)
+    monkeypatch.setattr(subprocess,'Popen',lambda *a,**k:pytest.fail('Invalid settings started helper'))
+    result=M.FileCompanionManager(root,'http://127.0.0.1:1234','OWNED_OWNER','r').ensure_running()
+    assert not result['enabled'] and result['reason']=='workspace_settings_unavailable'
+    assert source.read_bytes()==raw and not (root/'file-exchange/v2/helper/workspaces.json').exists()
+
+
+def test_workspace_copy_creation_race_never_overwrites_existing_v2_settings(tmp_path,monkeypatch):
+    root,_,_=profile(tmp_path)
+    source=root/'file-exchange/helper/workspaces.json'
+    valid=b'{"schema":1,"windows":{},"mylib":null}'
+    M._write_private(source,valid)
+    manager=M.FileCompanionManager(root,'http://127.0.0.1:1234','OWNED_OWNER','r')
+    helper=manager.root/'helper';M._private_directory(helper)
+    target=helper/'workspaces.json';replacement=b'{"schema":1,"windows":{},"mylib":null}\n'
+    original=os.link
+    def raced(src,dst):
+        M._write_private(Path(dst),replacement)
+        return original(src,dst)
+    monkeypatch.setattr(os,'link',raced)
+    manager._migrate_workspaces(helper)
+    assert target.read_bytes()==replacement and source.read_bytes()==valid
 
 
 def test_live_config_change_preserves_files_and_process(tmp_path,owned_helper):
     root,_,_=profile(tmp_path);manager=M.FileCompanionManager(root,'http://127.0.0.1:1234','OWNED_OWNER','r')
-    online(manager);path=root/'file-exchange/helper/owner.token';original=path.read_bytes()
+    online(manager);path=root/'file-exchange/v2/helper/owner.token';original=path.read_bytes()
     value=M.FileCompanionManager(root,'http://127.0.0.1:1234','OTHER_OWNER','r').ensure_running()
     assert not value['enabled'] and value['reason']=='configuration_changed'
     assert path.read_bytes()==original and len(owned_helper)==1 and owned_helper[0].poll() is None
@@ -103,7 +175,7 @@ def test_live_config_change_preserves_files_and_process(tmp_path,owned_helper):
 
 def test_stale_or_wrong_status_cannot_claim_ready(tmp_path,owned_helper):
     root,_,_=profile(tmp_path);manager=M.FileCompanionManager(root,'http://127.0.0.1:1234','OWNED_OWNER','r')
-    online(manager);record=M._read_private(root/'file-exchange/manager.json');path=root/'file-exchange/helper/status.json'
+    online(manager);record=M._read_private(root/'file-exchange/v2/manager.json');path=root/'file-exchange/v2/helper/status.json'
     value=M._read_private(path);owned_helper[0].terminate();owned_helper[0].wait(timeout=5)
     value['status_id']='0'*32;M._write_private(path,json.dumps(value).encode())
     assert manager._status(record,'ws://127.0.0.1:12345/file/ws')=='connecting'
@@ -150,11 +222,11 @@ def test_profile_with_broad_acl_is_rejected_before_body_read(tmp_path,monkeypatc
 
 def test_matching_nonce_cannot_adopt_an_unrelated_pid(tmp_path,owned_helper):
     root,_,_=profile(tmp_path);manager=M.FileCompanionManager(root,'http://127.0.0.1:1234','OWNED_OWNER','r')
-    online(manager);record=M._read_private(root/'file-exchange/manager.json')
-    value=M._read_private(root/'file-exchange/helper/status.json')
+    online(manager);record=M._read_private(root/'file-exchange/v2/manager.json')
+    value=M._read_private(root/'file-exchange/v2/helper/status.json')
     value.update(pid=os.getpid(),process_start=M._process_birth(os.getpid()))
     owned_helper[0].terminate();owned_helper[0].wait(timeout=5)
-    M._write_private(root/'file-exchange/helper/status.json',json.dumps(value).encode())
+    M._write_private(root/'file-exchange/v2/helper/status.json',json.dumps(value).encode())
     assert manager._status(record,'ws://127.0.0.1:12345/file/ws')=='connecting'
 
 

@@ -37,6 +37,8 @@ from .file_transfer import TransferStore, MAX_CHUNK, _plain_directory, _validate
 from .file_workspaces import timestamped_name
 
 PROTOCOL = 'sma-files-1'
+FILE_PROTOCOL = 2
+FILE_PROTOCOL_QUERY = 'file_protocol=2'
 MAX_FRAME = 262144
 _ROUTED = frozenset({'workspace.get', 'workspace.browse', 'workspace.set', 'library.get', 'library.set'})
 _HOST_ERRORS = frozenset({'invalid_request', 'session_unavailable', 'unauthorized', 'revision_conflict',
@@ -327,8 +329,9 @@ class Broker:
 
     def _authenticate(self, hello):
         if (not isinstance(hello, dict) or hello.get('protocol') != PROTOCOL
+                or type(hello.get('file_protocol')) is not int or hello['file_protocol'] != FILE_PROTOCOL
                 or hello.get('role') not in ('client', 'host')
-                or set(hello) - {'id', 'protocol', 'role', 'room', 'token', 'host_id', 'host_secret', 'enrollment'}):
+                or set(hello) - {'id', 'protocol', 'file_protocol', 'role', 'room', 'token', 'host_id', 'host_secret', 'enrollment'}):
             _fail('authentication_failed')
         room, token = _label(hello.get('room')), hello.get('token')
         if not isinstance(token, str) or not token or len(token) > 8192 or not token.isprintable():
@@ -397,7 +400,7 @@ class Broker:
         self._handlers.add(current)
         try:
             request = getattr(ws, 'request', None)
-            if request is not None and ('?' in request.path or request.path not in ('/file/ws', '/')):
+            if request is not None and request.path not in ('/file/ws', '/', '/file/ws?' + FILE_PROTOCOL_QUERY):
                 _fail('authentication_failed')
             hello = _json(await asyncio.wait_for(ws.recv(), 2))
             identity = _id(hello.get('id', 'hello')) if isinstance(hello, dict) else 'hello'
@@ -410,6 +413,7 @@ class Broker:
             if connection.role == 'host':
                 await self._io(self._register_host, connection)
             await self._send(connection, {'type': 'ready', 'id': identity, 'role': connection.role,
+                                         'file_protocol': FILE_PROTOCOL,
                                          'room': connection.room, 'agent_online': pair in self._hosts})
             if self._sweeper is None:
                 self._sweeper = asyncio.create_task(self._sweep())
@@ -868,7 +872,8 @@ class Broker:
             def do_GET(self):
                 match = re.fullmatch(r'/file/download/([a-f0-9]{48})', self.path)
                 header = self.headers.get_all('Authorization', [])
-                if not match or len(header) != 1 or not header[0].startswith('Bearer '):
+                selector = self.headers.get_all('X-SuperMono-File-Protocol', [])
+                if selector != [str(FILE_PROTOCOL)] or not match or len(header) != 1 or not header[0].startswith('Bearer '):
                     self.deny(401)
                     return
                 try:
@@ -895,6 +900,7 @@ class Broker:
                             broker._db.execute("UPDATE jobs SET state='downloading' WHERE file_id=? AND state='queued'", (match[1],))
                         self.send_response(206 if partial else 200)
                         self.send_header('Cache-Control', 'no-store')
+                        self.send_header('X-SuperMono-File-Protocol', str(FILE_PROTOCOL))
                         self.send_header('Accept-Ranges', 'bytes')
                         self.send_header('Content-Type', 'application/octet-stream')
                         self.send_header('X-Content-Type-Options', 'nosniff')

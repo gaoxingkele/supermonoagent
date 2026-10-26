@@ -30,7 +30,7 @@ from urllib.request import build_opener, ProxyHandler, HTTPRedirectHandler
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
-from .file_broker import enrollment_proof, PROTOCOL, MAX_FRAME
+from .file_broker import enrollment_proof, PROTOCOL, FILE_PROTOCOL, FILE_PROTOCOL_QUERY, MAX_FRAME
 from .file_transfer import TransferStore, MAX_CHUNK, _plain_directory, _validate_name
 from .file_workspaces import FileWorkspaces, ProjectSelectionRequired, RevisionConflict, _directory, directory_binding
 from .protocol import pack, unpack, pack_json
@@ -387,7 +387,7 @@ class FileCompanion:
         value = state or self._status_state
         if value == 'online' and not self.inspector.valid.is_set():
             value = 'parent_unavailable'
-        body = {'schema': 1, 'role': 'file-companion', 'protocol': PROTOCOL,
+        body = {'schema': 1, 'role': 'file-companion', 'protocol': PROTOCOL, 'file_protocol': FILE_PROTOCOL,
                 'pid': os.getpid(), 'process_start': self._self_birth,
                 'backend': self.backend, 'broker_url': self.broker_url, 'room': self.room,
                 'status_id': self.status_id, 'state': value, 'updated_at': time.time()}
@@ -702,7 +702,8 @@ class FileCompanion:
             self._streams[job['file_id']] = [connection, None, None]
         try:
             # http.client neither follows redirects nor reads proxy environment.
-            connection.request('GET', path, headers={'Authorization': 'Bearer ' + ticket['ticket'], 'Accept-Encoding': 'identity'})
+            connection.request('GET', path, headers={'Authorization': 'Bearer ' + ticket['ticket'], 'Accept-Encoding': 'identity',
+                                                   'X-SuperMono-File-Protocol': str(FILE_PROTOCOL)})
             transport = connection.sock
             with self._stream_lock:
                 self._streams[job['file_id']][1] = transport
@@ -710,6 +711,7 @@ class FileCompanion:
             with self._stream_lock:
                 self._streams[job['file_id']][2] = response
             if (response.status != 200 or response.getheader('Content-Length') != str(job['size'])
+                    or response.getheader('X-SuperMono-File-Protocol') != str(FILE_PROTOCOL)
                     or response.getheader('X-Content-SHA256') != job['sha256']
                     or response.getheader('Transfer-Encoding') is not None
                     or response.getheader('Content-Encoding') not in (None, 'identity')):
@@ -931,9 +933,9 @@ class FileCompanion:
                     token = await self.io(_secret, self.broker_token_file, maximum=4096)
                     key = await self.io(_secret, self.enrollment_key_file)
                     stamp, nonce = int(time.time()), secrets.token_hex(16)
-                    hello = {'protocol': PROTOCOL, 'role': 'host', 'room': self.room, 'token': token, **self.identity,
+                    hello = {'protocol': PROTOCOL, 'file_protocol': FILE_PROTOCOL, 'role': 'host', 'room': self.room, 'token': token, **self.identity,
                              'enrollment': {'timestamp': stamp, 'nonce': nonce, 'proof': enrollment_proof(key, self.room, self.identity['host_id'], self.identity['host_secret'], stamp, nonce)}}
-                    async with _DirectConnect(self.broker_url, proxy=None, ping_interval=None, open_timeout=3, close_timeout=1, max_size=MAX_FRAME, max_queue=8, logger=_TRANSPORT_LOG) as ws:
+                    async with _DirectConnect(self.broker_url + '?' + FILE_PROTOCOL_QUERY, proxy=None, ping_interval=None, open_timeout=3, close_timeout=1, max_size=MAX_FRAME, max_queue=8, logger=_TRANSPORT_LOG) as ws:
                         if self._closed:
                             break
                         self._ws = ws
@@ -941,7 +943,8 @@ class FileCompanion:
                         generation = self._generation
                         await self._send(hello)
                         ready = _json(await asyncio.wait_for(ws.recv(), 2))
-                        if not isinstance(ready, dict) or ready.get('type') != 'ready' or ready.get('role') != 'host' or ready.get('room') != self.room:
+                        if (not isinstance(ready, dict) or ready.get('type') != 'ready' or ready.get('role') != 'host' or ready.get('room') != self.room
+                                or type(ready.get('file_protocol')) is not int or ready['file_protocol'] != FILE_PROTOCOL):
                             raise CompanionError('broker_rejected')
                         self._status_state = 'online'
                         async for raw in ws:

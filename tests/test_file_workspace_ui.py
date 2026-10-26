@@ -37,6 +37,31 @@ def test_commonjs_file_client_rejects_insecure_urls_without_creating_sockets():
     assert result.returncode == 0, result.stderr
 
 
+def test_new_client_requires_v2_ready_and_never_falls_back_to_bare_url():
+    node=shutil.which('node')
+    if not node:pytest.skip('Node unavailable')
+    code=r'''
+    const assert=require('node:assert/strict'),sockets=[];
+    global.WebSocket=class {constructor(url){this.url=url;this.readyState=0;this.sent=[];sockets.push(this);}
+      send(raw){this.sent.push(JSON.parse(raw));}close(){this.readyState=3;}
+      open(){this.readyState=1;this.onopen();}emit(body){this.onmessage({data:JSON.stringify(body)});}};
+    const api=require(process.argv[1]),base='ws://127.0.0.1:1234/file/ws';
+    (async()=>{
+      for(const marker of [undefined,1,'2',null,true]){
+        const before=sockets.length,client=api.createClient({url:base,room:'A',token:'owned-token'});
+        const pending=client.connect(),ws=sockets.at(-1);ws.open();const hello=ws.sent[0];
+        ws.emit({type:'ready',file_protocol:marker,id:hello.id,role:'client',room:'A',agent_online:true});
+        await assert.rejects(pending,e=>e.code==='file_protocol_required');
+        assert.equal(ws.url,base+'?file_protocol=2');assert.equal(hello.file_protocol,2);
+        assert.equal(sockets.length,before+1);assert.equal(client.connected,false);client.close();
+      }
+      assert.throws(()=>api.createClient({url:base+'?file_protocol=2',room:'A',token:'owned'}));
+    })().catch(error=>{console.error(error.message);process.exitCode=1;});
+    '''
+    result=subprocess.run([node,'-e',code,str(CLIENT)],capture_output=True,text=True,timeout=10)
+    assert result.returncode==0,result.stderr
+
+
 def test_upload_binding_is_strictly_validated_before_any_socket_or_credentials():
     node = shutil.which('node')
     if not node: pytest.skip('Node unavailable')
@@ -321,7 +346,8 @@ def test_commonjs_client_nonce_deadlines_and_old_socket_responses_are_isolated()
     const tick=async()=>{await Promise.resolve();await Promise.resolve();};
     async function ready(client){const pending=client.connect(),ws=sockets.at(-1);ws.open();
       const hello=ws.sent[0];assert.equal(hello.token,options.token);assert(!ws.url.includes(options.token));
-      ws.emit({type:'ready',id:hello.id,role:'client',room:'A',agent_online:true});await pending;return ws;}
+      assert.equal(hello.file_protocol,2);assert.equal(ws.url,options.url+'?file_protocol=2');
+      ws.emit({type:'ready',file_protocol:2,id:hello.id,role:'client',room:'A',agent_online:true});await pending;return ws;}
     (async()=>{
       const client=api.createClient(options),old=await ready(client);
       const first=client.request('workspace.get','session',{}).catch(e=>e.code);await tick();const oldID=old.sent.at(-1).id;
@@ -348,7 +374,7 @@ def test_commonjs_client_nonce_deadlines_and_old_socket_responses_are_isolated()
       incoming.emit({type:'response',id:incoming.sent.at(-1).id,ok:true,result:{value:'x'.repeat(262144)}});
       assert.equal(await oversize,'invalid_response');assert.equal(huge.connected,false);huge.close();
       const wrong=api.createClient(options),mismatch=wrong.connect().catch(e=>e.code),last=sockets.at(-1);last.open();
-      last.emit({type:'ready',id:'wrong_nonce',role:'client',room:'A',agent_online:true});
+      last.emit({type:'ready',file_protocol:2,id:'wrong_nonce',role:'client',room:'A',agent_online:true});
       assert.equal(await mismatch,'invalid_response');wrong.close();
       assert.equal(timers.size,0);
     })().then(()=>process.stdout.write('complete')).catch(error=>{console.error(error);process.exitCode=1;});

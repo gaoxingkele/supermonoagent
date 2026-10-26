@@ -6,9 +6,9 @@
   else root.SuperMonoFileClient=api;
 })(typeof globalThis!=='undefined'?globalThis:this,function(root){
   'use strict';
-  const MAX_FRAME=262144,TIMEOUT=15000,MAX_PENDING=64;
+  const MAX_FRAME=262144,TIMEOUT=15000,MAX_PENDING=64,FILE_PROTOCOL=2;
   const encoder=new TextEncoder();
-  const bindingErrors={project_binding_required:'项目绑定不可用，请更新接收电脑的文件助手和客户端后重试。',project_binding_changed:'接收项目或目录已变化，请重新确认当前项目后重试。'};
+  const bindingErrors={project_binding_required:'项目绑定不可用，请更新接收电脑的文件助手和客户端后重试。',project_binding_changed:'接收项目或目录已变化，请重新确认当前项目后重试。',file_protocol_required:'文件服务协议不匹配，请升级接收电脑的文件助手和中继文件服务。'};
   class FileClientError extends Error{constructor(code){super(Object.hasOwn(bindingErrors,code)?bindingErrors[code]:code);this.name='FileClientError';this.code=code;}}
   const fail=code=>{throw new FileClientError(code);};
   const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
@@ -59,7 +59,7 @@
       if(typeof root.WebSocket!=='function')return Promise.reject(new FileClientError('unsupported'));
       prefix=nonce();sequence=0;
       const generation=++epoch,hello=prefix+'_hello';
-      let ws;try{ws=new root.WebSocket(url);}catch{return Promise.reject(new FileClientError('connection_failed'));}
+      let ws;try{ws=new root.WebSocket(url+'?file_protocol=2');}catch{return Promise.reject(new FileClientError('connection_failed'));}
       socket=ws;
       let resolve,reject;
       const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});
@@ -68,7 +68,7 @@
       const current=()=>socket===ws&&epoch===generation;
       ws.onopen=()=>{
         if(!current())return;
-        try{ws.send(JSON.stringify({protocol:'sma-files-1',id:hello,role:'client',room,token}));}
+        try{ws.send(JSON.stringify({protocol:'sma-files-1',file_protocol:FILE_PROTOCOL,id:hello,role:'client',room,token}));}
         catch{disconnect('connection_failed',ws,generation);}
       };
       ws.onmessage=event=>{
@@ -79,6 +79,7 @@
           message=JSON.parse(event.data);if(!object(message))fail('invalid_response');
         }catch{disconnect('invalid_response',ws,generation);return;}
         if(!ready){
+          if(message.file_protocol!==FILE_PROTOCOL){disconnect('file_protocol_required',ws,generation);return;}
           if(message.type!=='ready'||message.id!==hello||message.role!=='client'||message.room!==room||typeof message.agent_online!=='boolean'){
             disconnect('invalid_response',ws,generation);return;
           }

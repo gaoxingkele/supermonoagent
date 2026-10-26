@@ -132,7 +132,7 @@ async def environment(tmp_path, *, download_mode='http'):
 @asynccontextmanager
 async def client(url, room):
     async with connect(url, proxy=None) as ws:
-        await ws.send(json.dumps({'protocol': 'sma-files-1', 'role': 'client', 'room': room, 'token': 'owned-viewer-token'}))
+        await ws.send(json.dumps({'protocol': 'sma-files-1', 'file_protocol': 2, 'role': 'client', 'room': room, 'token': 'owned-viewer-token'}))
         assert json.loads(await ws.recv())['type'] == 'ready'
         yield ws
 
@@ -890,6 +890,7 @@ def test_http_rejects_redirect_and_untrusted_path_and_closes_blocked_read(tmp_pa
                 def do_GET(self):
                     contacts.append(self.path)
                     assert '?' not in self.path and self.headers['Authorization'].startswith('Bearer ')
+                    assert self.headers['X-SuperMono-File-Protocol']=='2'
                     if fault == 'redirect':
                         self.send_response(302);self.send_header('Location', 'http://untrusted.invalid/leak')
                         self.send_header('Content-Length', '0');self.end_headers();return
@@ -897,7 +898,7 @@ def test_http_rejects_redirect_and_untrusted_path_and_closes_blocked_read(tmp_pa
                     row = dict(broker._db.execute('SELECT * FROM jobs WHERE file_id=?', (file_id,)).fetchone())
                     data = broker._job_path(row).read_bytes()
                     self.send_response(200);self.send_header('Content-Length', str(len(data)))
-                    self.send_header('X-Content-SHA256', row['sha256']);self.end_headers()
+                    self.send_header('X-Content-SHA256', row['sha256']);self.send_header('X-SuperMono-File-Protocol','2');self.end_headers()
                     self.wfile.write(data[:98304]);self.wfile.flush()
                     release.wait(8)
                     try: self.wfile.write(data[98304:])

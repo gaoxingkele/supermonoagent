@@ -48,7 +48,7 @@ async def running(root, auth, **options):
 
 
 def hello(role='client', room='room', token=TOKEN, secret=SECRET, enroll=True, now=None, host_id='host'):
-    value = {'protocol': 'sma-files-1', 'role': role, 'room': room, 'token': token}
+    value = {'protocol': 'sma-files-1', 'file_protocol': 2, 'role': role, 'room': room, 'token': token}
     if role == 'host':
         value.update(host_id=host_id, host_secret=secret)
         if enroll:
@@ -641,7 +641,7 @@ def test_http_ticket_stream_range_requires_header_and_is_not_a_public_alias(tmp_
                     return error.code, dict(error.headers), error.read()
 
             assert (await asyncio.to_thread(fetch))[0] == 401
-            auth = {'Authorization': 'Bearer ' + ticket['ticket']}
+            auth = {'Authorization': 'Bearer ' + ticket['ticket'], 'X-SuperMono-File-Protocol': '2'}
             status, headers, content = await asyncio.to_thread(fetch, auth)
             assert status == 200 and content == b'fixture PDF bytes'
             assert headers['Cache-Control'] == 'no-store' and headers['X-Content-SHA256'] == job['sha256']
@@ -661,7 +661,7 @@ def test_http_ticket_stream_range_requires_header_and_is_not_a_public_alias(tmp_
 def http_fetch(base, path, ticket='', range_value=None):
     import urllib.request
     import urllib.error
-    headers = {'Authorization': 'Bearer ' + ticket} if ticket else {}
+    headers = {'X-SuperMono-File-Protocol': '2', **({'Authorization': 'Bearer ' + ticket} if ticket else {})}
     if range_value is not None:
         headers['Range'] = range_value
     request = urllib.request.Request(base + path, headers=headers)
@@ -781,7 +781,7 @@ def test_http_streams_two_megabytes_with_bounded_memory_and_live_websocket_ping(
             def streaming_get():
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
                 request = urllib.request.Request(f'http://127.0.0.1:{address[1]}' + ticket['download_path'],
-                    headers={'Authorization': 'Bearer ' + ticket['ticket']})
+                    headers={'Authorization': 'Bearer ' + ticket['ticket'], 'X-SuperMono-File-Protocol': '2'})
                 digest, total = hashlib.sha256(), 0
                 with opener.open(request, timeout=3) as response:
                     while chunk := response.read(32768):
