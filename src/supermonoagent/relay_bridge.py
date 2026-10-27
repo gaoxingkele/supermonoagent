@@ -24,7 +24,7 @@ from urllib.parse import urlsplit, urlunsplit
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
-from .protocol import OP_HELLO, OP_HELLO_OK, OP_SESSIONS, pack, pack_json, unpack, unpack_json
+from .protocol import OP_HELLO, OP_HELLO_OK, OP_SESSIONS, OP_SUBSCRIBE, pack, pack_json, unpack, unpack_json
 from .security import loopback, request_allowed
 from .web import text_response
 from .defaults import DEFAULT_RELAY
@@ -59,6 +59,9 @@ def socket_url(value: str, *, local: bool = False) -> str:
 class Phone:
     queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(QUEUE_FRAMES))
     job: asyncio.Task | None = None
+    paused: bool = False
+    resync: bool = False
+    pace: object = None
 
 
 class RelayBridge:
@@ -172,9 +175,25 @@ class RelayBridge:
                         self._validate_phone_frame(frame, False)
                         await local.send(frame)
 
+                state = {}
+
+                async def pace(paused, resync):
+                    if self.phones.get(phone_id) is not route:
+                        return
+                    route.paused = paused
+                    if paused:
+                        return
+                    if resync or route.resync:
+                        route.resync = False
+                        sessions = list(state.get('controls', {}))
+                        if sessions and self.phones.get(phone_id) is route:
+                            await local.send(pack_json(OP_SUBSCRIBE, {'sessions': sessions, 'refresh': True}))
+
+                route.pace = pace
+
                 async def replies():
-                    state = {}
                     recovery_waiting = set()
+                    nonlocal state
                     async for frame in local:
                         if not isinstance(frame, bytes):
                             raise ValueError("Binary daemon frames required")
@@ -185,6 +204,9 @@ class RelayBridge:
                             sid, separator, _raw = payload.partition(b'\0')
                             if separator and len(recovery_waiting) < 64:
                                 recovery_waiting.add(sid)
+                        if route.paused and opcode in {3, 8, 23}:
+                            route.resync = True
+                            continue
                         await outbound.put((phone_id, route, struct.pack("<I", phone_id) + frame))
                         if opcode in {OP_HELLO_OK, OP_SESSIONS, 8} and self.footer_recovery is not None:
                             for sid in tuple(recovery_waiting):
@@ -217,10 +239,11 @@ class RelayBridge:
         async with connect(endpoint, max_size=MAX_SIZE, max_queue=QUEUE_FRAMES,
                            compression=None, open_timeout=5, close_timeout=2) as ws:
             await ws.send(json.dumps({"op": "host", "code": code, "tokens": [self.token],
-                                      "machine": self.machine, "project": self.project}))
+                                      "machine": self.machine, "project": self.project, "flow_control": 1}))
             ready = await asyncio.wait_for(ws.recv(), 5)
             if not isinstance(ready, str) or json.loads(ready).get("op") != "ready":
                 raise ValueError("Relay host rejected")
+            flow_control = json.loads(ready).get("flow_control") == 1
             self.relay_connected = True
 
             async def send():
@@ -253,6 +276,10 @@ class RelayBridge:
                             if route and route.job:
                                 route.job.cancel()
                                 await asyncio.gather(route.job, return_exceptions=True)
+                        elif flow_control and body.get("op") == "pace" and type(body.get("paused")) is bool:
+                            route = self.phones.get(phone_id)
+                            if route and callable(route.pace):
+                                await route.pace(body["paused"], body.get("resync") is True)
                         if body.get("op") == "join":
                             if (not self.authorized(body.get("token"))
                                     or any(name in body for name in ("account", "expires", "session"))):

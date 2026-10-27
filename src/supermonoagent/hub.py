@@ -88,6 +88,7 @@ class Client:
     replay_handle: asyncio.TimerHandle | None = field(default=None, repr=False)
     resync_pending: set[str] = field(default_factory=set)
     resync_handle: asyncio.TimerHandle | None = field(default=None, repr=False)
+    remote_paused: bool = False
 
 
 DEFAULT_PRESETS = (
@@ -547,11 +548,12 @@ class Hub:
         if client.failure or (client.authorize is not None and not client.authorize()):
             return
         limit = max(1, client.queue.maxsize // 2)
-        if not client.pending_replays and (not client.queue.maxsize or client.queue.qsize() < limit):
+        if (not client.remote_paused and not client.pending_replays
+                and (not client.queue.maxsize or client.queue.qsize() < limit)):
             self._send(client, self._session_snapshot(client, session))
             return
         client.pending_replays.add(session.id)
-        if client.replay_handle is None and self.loop is not None:
+        if not client.remote_paused and client.replay_handle is None and self.loop is not None:
             client.replay_handle = self.loop.call_later(.004, self._drain_replays, client)
 
     def _drain_replays(self, client: Client) -> None:
@@ -562,7 +564,8 @@ class Hub:
             client.history_after.clear()
             return
         limit = max(1, client.queue.maxsize // 2)
-        while client.pending_replays and (not client.queue.maxsize or client.queue.qsize() < limit):
+        while (not client.remote_paused and client.pending_replays
+               and (not client.queue.maxsize or client.queue.qsize() < limit)):
             sid = min(client.pending_replays)
             client.pending_replays.remove(sid)
             session = self.subscribed_session(client, sid)
@@ -572,8 +575,27 @@ class Hub:
                 self._send(client, self._session_snapshot(client, session))
             else:
                 client.history_after.pop(sid, None)
-        if client.pending_replays and self.loop is not None:
+        if not client.remote_paused and client.pending_replays and self.loop is not None:
             client.replay_handle = self.loop.call_later(.004, self._drain_replays, client)
+
+    def set_remote_paused(self, client: Client, paused: bool, resync: bool = False) -> None:
+        if self.clients.get(client.key) is not client:
+            return
+        client.remote_paused = paused
+        if resync:
+            client.resync_pending.update(client.subscriptions)
+        if paused:
+            for name in ('replay_handle', 'resync_handle'):
+                handle = getattr(client, name)
+                if handle is not None:
+                    handle.cancel()
+                    setattr(client, name, None)
+            return
+        for name, pending, callback in (
+                ('replay_handle', client.pending_replays, self._drain_replays),
+                ('resync_handle', client.resync_pending, self._drain_resyncs)):
+            if pending and getattr(client, name) is None and self.loop is not None:
+                setattr(client, name, self.loop.call_later(.004, callback, client))
 
     def _pace_client(self, client: Client, session_id: str) -> bool:
         """Throttle stream delivery to a client whose queue is above the low-water mark.
@@ -586,10 +608,10 @@ class Hub:
         if client.failure or (client.authorize is not None and not client.authorize()):
             return False
         maxsize = client.queue.maxsize
-        if not maxsize or client.queue.qsize() < max(1, maxsize // 2):
+        if not client.remote_paused and (not maxsize or client.queue.qsize() < max(1, maxsize // 2)):
             return False
         client.resync_pending.add(session_id)
-        if client.resync_handle is None and self.loop is not None:
+        if not client.remote_paused and client.resync_handle is None and self.loop is not None:
             client.resync_handle = self.loop.call_later(.004, self._drain_resyncs, client)
         return True
 
@@ -600,7 +622,8 @@ class Hub:
             client.resync_pending.clear()
             return
         limit = max(1, client.queue.maxsize // 2)
-        while client.resync_pending and (not client.queue.maxsize or client.queue.qsize() < limit):
+        while (not client.remote_paused and client.resync_pending
+               and (not client.queue.maxsize or client.queue.qsize() < limit)):
             sid = min(client.resync_pending)
             client.resync_pending.remove(sid)
             session = self.subscribed_session(client, sid)
@@ -608,7 +631,7 @@ class Hub:
                 # A snapshot supersedes the skipped stream bytes; the low-water
                 # gate leaves headroom for state frames behind it.
                 self._send(client, self._session_snapshot(client, session))
-        if client.resync_pending and self.loop is not None:
+        if not client.remote_paused and client.resync_pending and self.loop is not None:
             client.resync_handle = self.loop.call_later(.004, self._drain_resyncs, client)
 
     def subscribed_session(self, client: Client, session_id: str) -> Session | None:

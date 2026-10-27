@@ -199,6 +199,33 @@ class ReplayBackpressureTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(frame, client.failure)
         self.assertFalse(client.failure)
 
+    async def test_remote_pause_defers_live_output_and_resume_refreshes_once(self):
+        sessions, client = self.prepare(2, 8)
+        ids = [session.id for session in sessions]
+        self.hub.set_subscriptions(client, ids)
+        await self.drain_replay(client)
+        self.hub.set_remote_paused(client, True)
+        before = client.queue.qsize()
+        for session in sessions:
+            session.pump.remember(b'while-paused')
+            session.pump.flushed_position = session.pump.snapshot_position()[1]
+            self.hub._flushed(session.id, b'while-paused', False)
+        self.assertEqual(client.queue.qsize(), before)
+        self.assertEqual(client.resync_pending, set(ids))
+        self.hub.set_remote_paused(client, False, True)
+        frames = await self.drain_replay(client)
+        for _ in range(100):
+            while not client.queue.empty():
+                frames.append(unpack(client.queue.get_nowait()))
+            if not client.resync_pending:
+                break
+            await asyncio.sleep(.006)
+        self.assertFalse(client.failure)
+        self.assertFalse(client.remote_paused)
+        self.assertFalse(client.resync_pending)
+        self.assertEqual({payload.partition(b'\0')[0] for op, payload in frames if op == OP_SNAPSHOT},
+                         {sid.encode() for sid in ids})
+
     async def test_genuinely_slow_live_client_still_fails_with_bounded_queue(self):
         _sessions, client = self.prepare(1, 4)
         for _ in range(5):

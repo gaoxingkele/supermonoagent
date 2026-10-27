@@ -1,6 +1,10 @@
 # Wiki Index
 
-> 8 pages | Last updated: 2026-10-25
+> 9 pages | Last updated: 2026-10-27
+
+## reference
+
+- [Windows 0.2.52 发布与交接](windows-release-0.2.52.md) — 同版本源码／安装包、验证证据、运维边界和暂停后的恢复条件
 
 ## decision
 

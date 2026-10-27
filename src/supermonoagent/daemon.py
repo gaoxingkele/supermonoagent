@@ -997,10 +997,12 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
                         "owner_secret": next((item.get("owner_secret", "") for item in daemon.relay_targets if item["url"] == url and item["code"] == code), ""),
                         "machine": daemon.hub.machine,
                         "project": daemon.hub.project,
+                        "flow_control": 1,
                     }))
                     ack = json.loads(await ws.recv())
                     if ack.get("op") != "ready":
                         raise RuntimeError(ack)
+                    flow_control = ack.get("flow_control") == 1
                     generation = object()
                     daemon._relay_generations[url] = generation
                     daemon._relay_sockets[url] = ws
@@ -1108,6 +1110,11 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
                                         await ws.send(json.dumps({"op": "joined", "id": phone_id, "ok": True}))
                                 elif ctrl.get("op") == "leave":
                                     remove_route(phone_id)
+                                elif flow_control and ctrl.get("op") == "pace":
+                                    route = phones.get(phone_id)
+                                    paused = ctrl.get("paused")
+                                    if route is not None and type(paused) is bool and route_valid(phone_id, route[0]):
+                                        daemon.hub.set_remote_paused(route[0], paused, ctrl.get("resync") is True)
                                 continue
                             if len(message) < 5:
                                 continue

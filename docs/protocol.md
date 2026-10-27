@@ -70,8 +70,13 @@
 | 18 | TASK_SUBSCRIBE | 客户端 → daemon | `{after?,replay?}`；订阅任务完成事件，`after` 为最后收到的 event_id，`replay:false` 只建立游标 |
 | 19 | TASK_EVENT | daemon → 客户端 | 完成事件 JSON，含 `event_id,session,window,title,machine,project,status,summary,agent,created_at`；基线确认时为 `{type:"cursor",cursor}` |
 | 20 | DAEMON_LOGS | 客户端 ↔ daemon | `{request,lines?}` 获取根所有者的有界运行日志；回复同 request 与 text 或安全错误，仅监控元数据、不改变 PTY |
+| 21 | FILE_TRANSFER | 客户端 ↔ daemon | 有界文件传输控制与分块；仅对应授权会话 |
+| 22 | ASSISTANT_CONTEXT | 客户端 ↔ daemon | 有界项目上下文请求与响应 |
+| 23 | HISTORY_CONTEXT | daemon → 客户端 | raw session 前缀、有界 JSON 元数据和终端字节；快照、实时输出或增量恢复 |
 
 OP16/17/5 都受 Token 所有权与订阅约束。OP18 的回放按 Token 所有权过滤，relay 客户端还按频道过滤；OP19 只发给已订阅且仍有权限的连接。客户端内部的 host/session 元组键不能放进线协议；不同 daemon 的相同 raw ID 由其所属连接隔离。关闭标签页只从 OP16 订阅集移除该 ID，不发送 OP9。
+
+HELLO 可协商 `history_context:1` 和 `history_resume:1`。OP16 的 `history_after` 按会话携带 `{position,epoch,stream_id}`；daemon 仅在保留区间、尺寸 epoch 和流身份都匹配时发送 `kind:resume` 的 OP23，否则回退 `kind:snapshot`。桌面与 Android 只在 xterm 写回调确认后推进游标；缺口或身份不匹配必须请求新快照，不得续接损坏的 ANSI 流。旧 daemon/客户端继续使用 OP3/OP8。
 
 ### 任务完成事件
 
@@ -133,7 +138,11 @@ OP2/OP7 的共同字段如下；OP2 另有当前选择和 service，resize 的 O
 
 已登记 host 收到 `ready`；phone 加入/离开由 relay 给 host 发 `join:{id,token,reliable}` / `leave:{id}`。host 后续可发 `tokens` 替换访问 Token 集、`identity` 更新机器/项目名、`disconnect` 关闭指定 phone。终端数据在 host–relay 链路外包四字节 LE `phone_id`；relay–phone 链路只传原终端帧。relay 不解释终端 payload，但它是可见凭据与转发内容的信任边界，当前没有端到端加密层。
 
+host 可在首帧声明 `flow_control:1`，relay 的 `ready` 以同字段确认。协商后 phone 队列达到 24 帧高水位时，relay 发送 `pace:{id,paused:true,resync:false}`；发送到手机并降回 8 帧低水位后发送 `paused:false`。暂停期间若 32 帧硬上限仍会满，relay 丢弃暂停后的新帧并设置恢复消息的 `resync:true`；daemon 必须暂停该路由的实时输出，并在恢复时为重同步路由发送最新快照。未协商的旧路径仍按原规则溢出断连。控制消息只按 phone ID 和当前路由代际生效，不改变输入、尺寸租约或其他 phone。
+
 来源：[relay.py:handler/_host/_phone/_account](../src/supermonoagent/relay.py)、[daemon.py:relay_uplink](../src/supermonoagent/daemon.py)。
+
+中继可轮询公开 HTTPS stable manifest，并向已认证 phone 发送文本 `{"op":"ui_update","revision":"…","sequence":…}`；版本变化时广播，新连接在 `ready` 后补发。提示独立于终端帧队列，不携带下载地址、账号或凭据，不触发输入/重载。支持的桌面和 Android 页面调用原生更新器，重新从 HTTPS 获取 manifest、验签和确认；提示不是信任根。旧客户端忽略该文本消息并沿用定时检查。
 
 ### 已知房间推送目录
 
@@ -173,7 +182,7 @@ daemon、relay、frontend 对 HTTP 与 WS 升级检查 Host 和 Origin：默认�
 
 ## 背压与有界历史
 
-`reliable:true` 表示溢出时明确断开并要求重新订阅有界历史，**不代表带序号的永久无损日志**。daemon 客户端队列、relay phone 队列均为 32 帧；reliable 连接不能静默丢帧后继续 ANSI 流，慢连接以 1013 等关闭。旧非 reliable 路径仍可丢最旧帧。PTY 待发合并超限时，reliable 订阅端失败重连，旧路径可收到快照。
+`reliable:true` 表示未协商流控的旧路径溢出时明确断开并要求重新订阅有界历史，**不代表带序号的永久无损日志**。daemon 客户端队列、relay phone 队列均为 32 帧；旧 reliable 连接不能静默丢帧后继续 ANSI 流，慢连接以 1013 等关闭。新版 `flow_control:1` 路径通过暂停和最新快照重同步处理突发，不扩大队列。旧非 reliable 路径仍可丢最旧帧。PTY 待发合并超限时，旧 reliable 订阅端失败重连，旧路径可收到快照。
 
 每会话环形历史 256 KiB、待发上限 128 KiB，默认合并窗口 20ms；multiplex 订阅时会把该会话合并窗口降到不高于 4ms。订阅快照记录输出位置，防止紧随其后的 pending batch 重复回放。客户端把 bytes 直接写入 xterm，跨帧保存 UTF-8/ANSI 解析状态。来源：[pump.py](../src/supermonoagent/pump.py)、[hub.py:_flushed/_send/fail_client/set_subscriptions](../src/supermonoagent/hub.py)、[relay.py:_enqueue](../src/supermonoagent/relay.py)。
 

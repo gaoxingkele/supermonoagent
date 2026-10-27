@@ -217,6 +217,30 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
             await until(lambda: not bridge.phones and len(daemon.hub.clients) == clients_before)
             self.assertEqual(len(daemon.hub.sessions), 2)
 
+    async def test_bridge_pause_discards_old_stream_and_resume_requests_snapshot(self):
+        async with fixture() as (daemon, _, bridge, url):
+            window = daemon.hub.open_window('paced', owner=daemon.token)
+            session = daemon.hub.open_cli(window.id, 'cmd')
+            session.pump.remember(b'before-pause')
+            async with connect(url) as phone:
+                await join(phone)
+                await phone.send(pack_json(OP_HELLO, {'token': daemon.token, 'multiplex': True, 'reliable': True}))
+                await receive_op(phone, 2)
+                await phone.send(pack_json(OP_SUBSCRIBE, {'sessions': [session.id]}))
+                await barrier(phone)
+                route = next(iter(bridge.phones.values()))
+                await until(lambda: callable(route.pace))
+                await route.pace(True, False)
+                session.pump.remember(b'during-pause')
+                session.pump.flushed_position = session.pump.snapshot_position()[1]
+                daemon.hub._flushed(session.id, b'during-pause', False)
+                await until(lambda: route.resync)
+                self.assertTrue(route.paused)
+                await route.pace(False, True)
+                snapshot = await receive_op(phone, 8)
+                self.assertEqual(snapshot, session.id.encode() + b'\0' + session.pump.snapshot())
+                self.assertFalse(route.paused)
+
     async def test_wrong_token_and_hello_reauthentication_are_rejected(self):
         async with fixture() as (daemon, _, bridge, url):
             async with connect(url) as phone:

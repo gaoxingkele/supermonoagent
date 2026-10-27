@@ -23,6 +23,8 @@ from . import web
 from .relay_identity import RelayIdentity, normalize_public_url
 
 QUEUE_FRAMES = 32
+FLOW_HIGH_WATER = 24
+FLOW_LOW_WATER = 8
 FIRST_FRAME_S = 2.0
 
 
@@ -39,6 +41,9 @@ class Room:
     senders: dict = field(default_factory=dict)
     phone_sessions: dict = field(default_factory=dict)
     joins: dict = field(default_factory=dict)
+    flow_control: bool = False
+    paused: set[int] = field(default_factory=set)
+    resync: set[int] = field(default_factory=set)
     next_id: int = 1
     machine: str = ""
     project: str = "默认"
@@ -62,7 +67,7 @@ def group_hosts(hosts: list[dict]) -> list[dict]:
 
 
 class Relay:
-    def __init__(self, enrollment_file=None, *, development=False, allowed_origins=(), identity_file=None, public_url="", reverse_proxy_tls=False, trusted_proxies=("127.0.0.1", "::1")) -> None:
+    def __init__(self, enrollment_file=None, *, development=False, allowed_origins=(), identity_file=None, public_url="", reverse_proxy_tls=False, trusted_proxies=("127.0.0.1", "::1"), update_feed="") -> None:
         self.rooms: dict[str, Room] = {}
         self.development = development
         self.allowed_origins = tuple(allowed_origins)
@@ -80,6 +85,8 @@ class Relay:
         self._login_slots = asyncio.Semaphore(4)
         self._login_attempts = {}
         self._last_identity_revision = -1
+        from .release_notifications import ReleaseNotifier
+        self.release_notifier = ReleaseNotifier(lambda: self.rooms, feed=update_feed)
 
     def _secure_accounts(self, ws):
         transport = getattr(ws, 'transport', None)
@@ -389,6 +396,7 @@ class Relay:
 
     async def handler(self, ws) -> None:
         self._start_identity_monitor()
+        self.release_notifier.start()
         if '?' in ws.request.path:
             await ws.close(code=4001, reason='Credentials must be in the first frame')
             return
@@ -432,6 +440,7 @@ class Relay:
                 room.machine = str(hello.get("machine") or "")[:40]
                 room.project = str(hello.get("project") or "默认")[:40] or "默认"
                 room.service = 'notifications' if hello.get('service') == 'notifications' else 'terminal'
+                room.flow_control = hello.get('flow_control') == 1
             await self._host(ws, code, room)
         elif role in {"register", "login", "rotate"}:
             await self._account(ws, code, hello)
@@ -459,7 +468,7 @@ class Relay:
         room.host = ws
         self._publish()
         try:
-            await ws.send(json.dumps({"op": "ready"}))
+            await ws.send(json.dumps({"op": "ready", "flow_control": 1 if room.flow_control else 0}))
             async for message in ws:
                 if isinstance(message, str):
                     try:
@@ -559,7 +568,9 @@ class Relay:
             else:
                 await room.host.send(json.dumps({'op':'join','id':phone_id,'token':token,'reliable':reliable}))
             await ws.send(json.dumps({'op':'ready'}))
-            sender = asyncio.create_task(self._drain(ws,queue))
+            await self.release_notifier.send_current(ws)
+            sender = asyncio.create_task(self._drain(
+                ws, queue, lambda: self._phone_sent(room, phone_id)))
             room.senders[phone_id] = sender
             async for message in ws:
                 host = room.host
@@ -581,6 +592,8 @@ class Relay:
             room.senders.pop(phone_id,None)
             room.queues.pop(phone_id,None)
             room.reliable.discard(phone_id)
+            room.paused.discard(phone_id)
+            room.resync.discard(phone_id)
             if sender:
                 sender.cancel()
                 await asyncio.gather(sender,return_exceptions=True)
@@ -590,6 +603,35 @@ class Relay:
             if room.host is None and not room.phones and self.rooms.get(code) is room:
                 self.rooms.pop(code,None)
 
+    def _schedule_flow(self, room: Room, phone_id: int, paused: bool) -> None:
+        if not room.flow_control or room.host is None or phone_id not in room.phones:
+            return
+        if paused:
+            room.paused.add(phone_id)
+        else:
+            room.paused.discard(phone_id)
+        asyncio.create_task(self._send_flow(room, phone_id, paused))
+
+    async def _send_flow(self, room: Room, phone_id: int, paused: bool) -> None:
+        host = room.host
+        if (host is None or phone_id not in room.phones
+                or (phone_id in room.paused) != paused):
+            return
+        resync = not paused and phone_id in room.resync
+        try:
+            await host.send(json.dumps({'op': 'pace', 'id': phone_id,
+                                        'paused': paused, 'resync': resync}))
+        except ConnectionClosed:
+            return
+        if not paused and phone_id not in room.paused:
+            room.resync.discard(phone_id)
+
+    def _phone_sent(self, room: Room, phone_id: int) -> None:
+        queue = room.queues.get(phone_id)
+        if (queue is not None and phone_id in room.paused
+                and queue.qsize() <= FLOW_LOW_WATER):
+            self._schedule_flow(room, phone_id, False)
+
     def _enqueue(self, room: Room, phone_id: int, message: bytes) -> None:
         if phone_id in room.phone_sessions and not self._delegation_valid(room, phone_id):
             self._drop_phone(room, phone_id)
@@ -597,7 +639,13 @@ class Relay:
         queue = room.queues.get(phone_id)
         if queue is None:
             return
+        if room.flow_control and phone_id not in room.paused and queue.qsize() >= FLOW_HIGH_WATER:
+            self._schedule_flow(room, phone_id, True)
         if queue.full():
+            if room.flow_control:
+                self._schedule_flow(room, phone_id, True)
+                room.resync.add(phone_id)
+                return
             if phone_id in room.reliable:
                 phone = room.phones.get(phone_id)
                 if phone is not None:
@@ -612,10 +660,12 @@ class Relay:
         except asyncio.QueueFull:
             room.phones.pop(phone_id, None)
 
-    async def _drain(self, ws, queue: asyncio.Queue) -> None:
+    async def _drain(self, ws, queue: asyncio.Queue, on_sent=None) -> None:
         try:
             while True:
                 await ws.send(await queue.get())
+                if on_sent is not None:
+                    on_sent()
         except (asyncio.CancelledError, ConnectionClosed):
             return
 
@@ -642,9 +692,11 @@ def main() -> None:
     if args.development and not loopback(args.host):
         parser.error('--development requires a loopback bind address')
     try:
+        from .release_notifications import DEFAULT_FEED
+        import os
         relay = Relay(args.enrollment_file, development=args.development, allowed_origins=args.allowed_origin,
                       identity_file=args.identity_file, public_url=args.public_url, reverse_proxy_tls=args.reverse_proxy_tls,
-                      trusted_proxies=args.trusted_proxy)
+                      trusted_proxies=args.trusted_proxy, update_feed=os.environ.get('SUPERMONO_UPDATE_FEED', DEFAULT_FEED))
         if args.create_account or args.reset_account_password:
             import getpass
             import sys

@@ -14,6 +14,16 @@ test('seven window palettes all have strong text contrast', () => {
     assert.ok((values[1]+0.05)/(values[0]+0.05)>=7,theme.label);
   }
 });
+test('update hints validate public metadata without trusting a download', () => {
+  assert.equal(client.updateHintRevision({op:'ui_update',revision:'0.2.50',sequence:50}),'0.2.50');
+  for(const message of [{op:'ui_update',revision:'../secret',sequence:50},{op:'ui_update',revision:'ok',sequence:-1},{op:'ui_update',revision:'ok',sequence:1.5},{op:'other',revision:'ok',sequence:50},null])assert.equal(client.updateHintRevision(message),'');
+  const fs=require('node:fs');
+  for(const path of ['../src/supermonoagent/static/workspace.js','../android/assets/mobile/app.js']){
+    const source=fs.readFileSync(require.resolve(path),'utf8');
+    assert.match(source,/(?:message|m)\.op==='ui_update'\)/);
+    assert.match(source,/Promise\.resolve\(window\.NativeUpdates\.check\(\)\)/);
+  }
+});
 test('targeted input preserves session identity and UTF8 bytes', () => {
   const frame = client.targetFrame(17, 'session-a', '中文\u001b[A');
   const unpacked = client.unpack(frame);
@@ -123,4 +133,27 @@ test('closing a view releases every resource once and keeps other open parsers',
   assert.equal(panes.get('other'),other);
   assert.equal(client.disposePane(panes,'closed'),false);
   assert.equal(calls.length,4);
+});
+
+test('desktop history parser validates metadata and preserves raw bytes',()=>{
+  const context={v:2,kind:'resume',cols:100,rows:30,epoch:2,partial:false,reason:'',end_position:105,stream_id:'0123456789abcdef01234567'};
+  const metadata=new TextEncoder().encode(JSON.stringify(context)),prefix=new TextEncoder().encode('12345678\0');
+  const payload=new Uint8Array(prefix.length+2+metadata.length+5);payload.set(prefix);payload[prefix.length]=metadata.length&255;payload[prefix.length+1]=metadata.length>>8;
+  payload.set(metadata,prefix.length+2);payload.set(new TextEncoder().encode('hello'),prefix.length+2+metadata.length);
+  const parsed=client.historyPayload(payload);
+  assert.equal(parsed.session,'12345678');assert.deepEqual(parsed.context,context);assert.equal(new TextDecoder().decode(parsed.bytes),'hello');
+  const malformed=payload.slice();malformed[prefix.length]=1;malformed[prefix.length+1]=0;
+  assert.throws(()=>client.historyPayload(malformed));
+});
+
+test('desktop history cursor rejects gaps and trims duplicate output',()=>{
+  const cursor={position:100,epoch:2,stream_id:'0123456789abcdef01234567'};
+  const context={v:2,kind:'output',end_position:105,epoch:2,stream_id:cursor.stream_id};
+  const bytes=new TextEncoder().encode('hello');
+  assert.equal(new TextDecoder().decode(client.historyFrameBytes(context,bytes,cursor).bytes),'hello');
+  assert.equal(new TextDecoder().decode(client.historyFrameBytes(context,bytes,{...cursor,position:103}).bytes),'lo');
+  assert.equal(client.historyFrameBytes(context,bytes,{...cursor,position:105}).bytes.length,0);
+  assert.equal(client.historyFrameBytes(context,bytes,{...cursor,position:99}),null);
+  assert.equal(client.historyFrameBytes(context,bytes,{...cursor,epoch:3}),null);
+  assert.equal(client.historyFrameBytes({...context,kind:'snapshot'},bytes,null).reset,true);
 });

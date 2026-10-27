@@ -1,9 +1,12 @@
 ---
 type: decision
-updated: 2026-10-26
+updated: 2026-10-27
+links: ["windows-release-0.2.52.md"]
 ---
 
 # 文件粘贴与 mylib 助理的隔离边界
+
+最新发布与后续接手边界见 [Windows 0.2.52 发布交接](windows-release-0.2.52.md)。本页保留各阶段的原始验收记录。
 
 ## 右键菜单与异步剪贴板
 
@@ -40,6 +43,12 @@ OP22 只读目标终端启动目录内的固定 metaRSI wiki 页面及目标技�
 source_path: `src/supermonoagent/assistant_context.py`, `D:/aicoding/mylib/skills/meta-rsi/SKILL.md`, `tests/test_daemon_assistant_context.py`
 
 ## 验收边界
+
+2026-10-27 的实际桌面检查补充：安装目录的 EXE 为 0.2.48，编辑框真实 Ctrl+C／Ctrl+V 可用，选中文字后未出现右键菜单。隔离的 0.2.51 WebView2（显式 `--url`，未启用原生桥接）已实测右键菜单、复制及授权后粘贴，快捷键复制粘贴也通过；假 PTY 写入数为 0。首次浏览器剪贴板权限确认后，最初一次读取仍失败，需要再次粘贴，具体原因未证实，不能称为原生桥接通过。
+
+用户随后按物理 Escape 停止桌面控制。两个自有验证窗口均已清理，原生桥接模式尚未交互验收；不因自动目标继续而恢复桌面控制。上述证明不涵盖真实文件／图片剪贴板，也不涵盖六种 CLI 的完整输入与光标验收。
+
+source_path: `.omx/artifacts/six-cli/clipboard-cua-20261027.json`, `.omx/artifacts/six-cli/live-native-51-cleanup.json`, `.omx/artifacts/six-cli/live-native-bridge-51-cleanup.json`, `.omx/artifacts/six-cli/release-feature-audit-summary.md`
 
 真实隐藏 WebView2、pywebview 原生桥接和测试文件源已完成 192000 字节上传及 SHA-256 核对，假 PTY 输入为 0，测试子进程无残留。该证据不能替代真实系统剪贴板读取：当前环境创建私有窗口站、只读打开剪贴板均被系统拒绝，没有覆盖用户剪贴板。
 

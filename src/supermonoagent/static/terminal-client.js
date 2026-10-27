@@ -169,6 +169,33 @@
     if (separator < 1) throw new Error('Missing session delimiter');
     return {session: new TextDecoder().decode(bytes.subarray(0, separator)), bytes: bytes.subarray(separator + 1)};
   }
+  function historyPayload(payload) {
+    if(!(payload instanceof Uint8Array)||payload.length>262143)throw new Error('Invalid history frame');
+    const end=payload.indexOf(0);if(end<1||end>256||end+3>payload.length)throw new Error('Invalid history header');
+    const decode=new TextDecoder('utf-8',{fatal:true}),session=decode.decode(payload.subarray(0,end));
+    if(/[\x00-\x1f\x7f]/.test(session))throw new Error('Invalid history session');
+    const length=payload[end+1]|payload[end+2]<<8,start=end+3;
+    if(length<2||length>4096||start+length>payload.length)throw new Error('Invalid history metadata length');
+    const context=JSON.parse(decode.decode(payload.subarray(start,start+length)));
+    const fields=context?.v===2?'cols,end_position,epoch,kind,partial,reason,rows,stream_id,v':'cols,epoch,kind,partial,reason,rows,v';
+    if(!context||Array.isArray(context)||Object.keys(context).sort().join(',')!==fields||![1,2].includes(context.v)
+      ||!(context.v===2?['snapshot','output','resume']:['snapshot','output']).includes(context.kind)
+      ||!Number.isInteger(context.cols)||context.cols<2||context.cols>500||!Number.isInteger(context.rows)||context.rows<1||context.rows>200
+      ||!Number.isSafeInteger(context.epoch)||context.epoch<0||typeof context.partial!=='boolean'||typeof context.reason!=='string'
+      ||!/^[a-z_]{0,64}$/.test(context.reason)||context.partial!==!!context.reason
+      ||context.v===2&&(!Number.isSafeInteger(context.end_position)||context.end_position<0
+        ||typeof context.stream_id!=='string'||!/^[a-f0-9]{24}$/.test(context.stream_id)))throw new Error('Invalid history metadata');
+    return {session,context,bytes:payload.subarray(start+length)};
+  }
+  function historyFrameBytes(context,bytes,cursor) {
+    if(context.kind==='snapshot')return {bytes,position:context.v===2?context.end_position:null,reset:true};
+    if(context.v!==2)return {bytes,position:null,reset:false};
+    if(!cursor||cursor.epoch!==context.epoch||cursor.stream_id!==context.stream_id)return null;
+    const start=context.end_position-bytes.length;
+    if(start<0||cursor.position<start)return null;
+    if(cursor.position>=context.end_position)return {bytes:new Uint8Array(),position:context.end_position,reset:false};
+    return {bytes:bytes.subarray(cursor.position-start),position:context.end_position,reset:false};
+  }
   function terminalInput(text, replaying = false) {
     if(replaying)return '';
     // ConPTY owns device negotiation. Its echoed queries must not become shell keystrokes.
@@ -254,7 +281,10 @@
     url.search = ''; url.hash = '';
     return url.toString();
   }
-  const api = {agentProfiles,commonAgentProfile,validateAgentProfile,loadAgentProfile,agentModeFromSession,highlightSpans,createHighlighter,pack, unpack, targetFrame, sessionPayload, terminalInput, cursorKey, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,
+  function updateHintRevision(message) {
+    return message?.op==='ui_update'&&typeof message.revision==='string'&&/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(message.revision)&&!message.revision.includes('..')&&Number.isSafeInteger(message.sequence)&&message.sequence>0?message.revision:'';
+  }
+  const api = {agentProfiles,commonAgentProfile,validateAgentProfile,loadAgentProfile,agentModeFromSession,highlightSpans,createHighlighter,pack, unpack, targetFrame, sessionPayload, historyPayload, historyFrameBytes, terminalInput, cursorKey, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,updateHintRevision,
     retryDelay: attempt => Math.min(15000, 500 * 2 ** Math.min(10, attempt)),
     rendererName: name => ['auto', 'dom', 'webgl'].includes(name) ? name : 'auto'};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

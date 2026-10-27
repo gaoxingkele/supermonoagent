@@ -27,7 +27,9 @@ def load(name, path):
 def relay(*, proxy=False):
     legacy = load('supermonoagent.legacy_relay_fixture', ROOT / 'tests/fixtures/legacy-relay.py')
     adapter = load('token_discovery_compat', ROOT / 'deploy/relay/token_discovery_compat.py')
-    return adapter.install(legacy, reverse_proxy_tls=proxy)()
+    service = adapter.install(legacy, reverse_proxy_tls=proxy)()
+    service.release_notifier.feed = ''
+    return service
 
 
 class LegacyDiscoveryTest(unittest.IsolatedAsyncioTestCase):
@@ -105,6 +107,18 @@ class LegacyDiscoveryTest(unittest.IsolatedAsyncioTestCase):
                     await phone.recv()
             self.assertNotIn('missing', service.rooms)
 
+    async def test_update_hint_follows_ready_without_using_terminal_queue(self):
+        service = relay()
+        service.release_notifier.feed = ''
+        async with running(service) as url, connect(url) as host:
+            await announce(host, code='pc', token='shared')
+            service.release_notifier.current = json.dumps({'op': 'ui_update', 'revision': '0.2.50', 'sequence': 50})
+            async with connect(url) as phone:
+                await phone.send(json.dumps(dict(op='phone', code='pc', token='shared')))
+                self.assertEqual(json.loads(await phone.recv())['op'], 'ready')
+                self.assertEqual(json.loads(await phone.recv())['revision'], '0.2.50')
+                self.assertEqual(service.rooms['pc'].queues[1].qsize(), 0)
+
     async def test_bounded_pending_directory_drops_revoked_identity(self):
         service = relay()
         room = service.room('pc')
@@ -117,3 +131,36 @@ class LegacyDiscoveryTest(unittest.IsolatedAsyncioTestCase):
             service._publish()
         self.assertEqual(queue.qsize(), 1)
         self.assertNotIn('Private', queue.get_nowait())
+
+    async def test_legacy_relay_flow_backport_is_bounded_and_negotiated(self):
+        service = relay()
+        room = service.room('pc')
+        room.flow_control = True
+        room.paused, room.resync = set(), set()
+        sent = []
+
+        class Host:
+            async def send(self, value):
+                sent.append(json.loads(value))
+
+        room.host = Host()
+        room.phones[1] = object()
+        room.queues[1] = asyncio.Queue(32)
+        for index in range(96):
+            service._enqueue(room, 1, bytes([index % 256]))
+        await asyncio.sleep(0)
+        self.assertEqual(room.queues[1].qsize(), 32)
+        self.assertEqual(room.paused, {1})
+        self.assertEqual(room.resync, {1})
+        self.assertEqual(sent[-1], {'op': 'pace', 'id': 1, 'paused': True, 'resync': False})
+        while room.queues[1].qsize() > 8:
+            room.queues[1].get_nowait()
+            service._phone_sent(room, 1)
+        await asyncio.sleep(0)
+        self.assertEqual(sent[-1], {'op': 'pace', 'id': 1, 'paused': False, 'resync': True})
+
+        async with running(service) as url, connect(url) as host:
+            await host.send(json.dumps({'op': 'host', 'code': 'pc-flow', 'tokens': ['shared'], 'flow_control': 1}))
+            ready = json.loads(await host.recv())
+            self.assertEqual(ready['op'], 'ready')
+            self.assertEqual(ready['flow_control'], 1)

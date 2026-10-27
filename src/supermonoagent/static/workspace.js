@@ -42,7 +42,7 @@
   }
   let accountLogin=null,accountLoginGeneration=0,workspaceAuthorization=null,connectionAuthorization=null;
   const mobile = () => matchMedia('(max-width:600px)').matches;
-  const metrics = {socketsOpened:0, receivedBytes:0, transmittedBytes:0, outputFrames:0, snapshots:0,
+  const metrics = {socketsOpened:0, receivedBytes:0, transmittedBytes:0, outputFrames:0, snapshots:0, historyResumes:0, historyRecoveries:0,
     renderMilliseconds:0, parsedBytes:0, reconnects:0, rendererFallbacks:0, lastPongMs:null};
   const key=(host,id)=>JSON.stringify([host.id,id]);
   const currentHost=()=>hosts.get(selectedHost);
@@ -102,7 +102,7 @@
   }
   function handshake(host){
     if(host.helloSent||host.ws?.readyState!==WebSocket.OPEN)return;
-    host.helloSent=true;socketSend(host,C.pack(1,encoder.encode(JSON.stringify({...(tokenlessLocal(host.config)||host.config.authMode==='account'?{}:{token:host.config.token}),multiplex:true,reliable:true,
+    host.helloSent=true;socketSend(host,C.pack(1,encoder.encode(JSON.stringify({...(tokenlessLocal(host.config)||host.config.authMode==='account'?{}:{token:host.config.token}),multiplex:true,reliable:true,history_context:1,history_resume:1,
       channel:host.id==='local'?params.get('channel')||undefined:undefined}))));
   }
   function stopHost(host){
@@ -112,6 +112,14 @@
     host.generation++;clearTimeout(host.retryTimer);clearInterval(host.pingTimer);
     if(host.ws){host.ws.onclose=null;host.ws.close();host.ws=null;}host.connected=false;host.supported=false;host.activity.clear();updateSessionDots();
     for(const pane of panes.values())if(pane.host===host){pane.ready=false;pane.term.options.disableStdin=true;clearTimeout(pane.redrawTimer);clearTimeout(pane.resizeRequest?.timer);pane.resizeRequest=null;cancelAnimationFrame(pane.followFrame);pane.followFrame=0;cancelAnimationFrame(pane.scrollIntentFrame);pane.scrollIntentFrame=0;}
+  }
+  let updateHint='',updateCheckPending=false;
+  function receiveUpdateHint(message){
+    const revision=C.updateHintRevision(message);
+    if(!revision||revision===updateHint||updateCheckPending)return;
+    updateHint=revision;
+    if(!window.NativeUpdates?.check)return;
+    updateCheckPending=true;Promise.resolve(window.NativeUpdates.check()).catch(()=>{}).finally(()=>{updateCheckPending=false;});
   }
   function connect(host){
     stopHost(host);const context=owner(host);
@@ -134,19 +142,21 @@
       try{
         metrics.receivedBytes+=host.meter.received(event.data);
         if(typeof event.data==='string'){
-          const message=JSON.parse(event.data);if(message.op==='ready')handshake(host);else if(message.error){host.error=String(message.error);updateConnection();}return;
+          const message=JSON.parse(event.data);if(message.op==='ready')handshake(host);else if(message.op==='ui_update')receiveUpdateHint(message);else if(message.error){host.error=String(message.error);updateConnection();}return;
         }
         const {op,payload}=C.unpack(new Uint8Array(event.data));
         if(op===2||op===7)sync(host,JSON.parse(decoder.decode(payload)),op===2);
         else if(op===20)receiveDaemonLogs(host,JSON.parse(decoder.decode(payload)));
-        else if(op===3||op===8){
-          if(op===8&&payload.length===0)return;
-          const data=C.sessionPayload(payload),pane=panes.get(key(host,data.session));
-          if(op===3&&data.bytes.length)host.activity.set(data.session,performance.now());
+        else if(op===3||op===8||op===23){
+          if((op===8||op===23)&&payload.length===0)return;
+          if(op===23&&host.capabilities.history_context!==1)throw new Error('Unnegotiated history context');
+          const data=op===23?C.historyPayload(payload):C.sessionPayload(payload),pane=panes.get(key(host,data.session));
+          const replay=op===8||op===23&&['snapshot','resume'].includes(data.context.kind);
+          if(!replay&&data.bytes.length)host.activity.set(data.session,performance.now());
           if(livePane(pane)){
-            const size=host.controls[data.session];
-            pane.frames.push({op,bytes:data.bytes,grid:size?{cols:size.cols,rows:size.rows}:null});
-            if(op===8){pane.replayPending++;metrics.snapshots++;}metrics.outputFrames++;drainPane(pane);
+            const size=data.context||host.controls[data.session];
+            pane.frames.push({op,bytes:data.bytes,context:data.context||null,grid:size?{cols:size.cols,rows:size.rows}:null});
+            if(replay){pane.replayPending++;if(data.context?.kind==='resume')metrics.historyResumes++;else metrics.snapshots++;}metrics.outputFrames++;drainPane(pane);
           }
         }else if(op===11){
           const reply=decoder.decode(payload),barrier=/^resize:(\d+):(.+)$/.exec(reply);
@@ -208,20 +218,38 @@
     renderTree();renderTabs();renderHosts();renderDaemonMonitor();if(layoutChanged)renderLayout();subscribe();updateConnection();updateFooter();if(greeting||host.id==='local')refreshDirectories();
     scheduleVisibleFit();
   }
+  function recoverPane(pane){
+    if(!livePane(pane))return;
+    pane.historyCursor=null;pane.historyInitialized=false;
+    if(pane.recoveryGeneration===pane.host.generation)return;
+    pane.recoveryGeneration=pane.host.generation;metrics.historyRecoveries++;
+    const sessions=openTabs.map(id=>panes.get(id)).filter(item=>item?.host===pane.host&&sessionInfo(item.sid)).map(item=>item.raw);
+    send(pane,16,{sessions,refresh:true});
+  }
   function drainPane(pane){
     if(!livePane(pane)||pane.writing||pane.resizeRequest||!pane.host.controls[pane.raw]||!pane.frames.length)return;
     // Catalog updates can arrive while an earlier write is parsing. Keep each
     // frame on the grid confirmed when it arrived, including queued erase/cursor sequences.
-    const frame=pane.frames.shift(),replay=frame.op===8,size=frame.grid||pane.host.controls[pane.raw];
+    const frame=pane.frames.shift(),replay=frame.op===8||['snapshot','resume'].includes(frame.context?.kind),size=frame.grid||pane.host.controls[pane.raw];
+    const tracked=frame.context?C.historyFrameBytes(frame.context,frame.bytes,pane.historyCursor):{bytes:frame.bytes,position:null,reset:replay};
+    if(!tracked){
+      if(replay)pane.replayPending=Math.max(0,pane.replayPending-1);
+      recoverPane(pane);drainPane(pane);return;
+    }
+    frame.bytes=tracked.bytes;
     applyGrid(pane,size);
     pane.writing=true;
     pane.questions?.beforeOutput({replay});
-    if(replay){resizeGrid(pane,size);pane.term.reset();pane.history.hidden=false;frame.bytes=C.snapshotBytes(frame.bytes,pane.raw,pane.host.capabilities.snapshot_sgr===true);}
+    if(tracked.reset){
+      resizeGrid(pane,size);pane.term.reset();pane.history.hidden=false;pane.historyCursor=null;pane.historyInitialized=false;
+      if(frame.op===8)frame.bytes=C.snapshotBytes(frame.bytes,pane.raw,pane.host.capabilities.snapshot_sgr===true);
+    }
     const before=performance.now();
     const writeGeneration=pane.generation;
     pane.term.write(frame.bytes,()=>{
       if(!livePane(pane)||pane.generation!==writeGeneration)return;
-      pane.writing=false;if(replay)pane.replayPending=Math.max(0,pane.replayPending-1);
+      pane.writing=false;if(replay){pane.replayPending=Math.max(0,pane.replayPending-1);pane.historyInitialized=true;}
+      if(frame.context?.v===2&&tracked.position!==null)pane.historyCursor={position:tracked.position,epoch:frame.context.epoch,stream_id:frame.context.stream_id};
       metrics.renderMilliseconds+=performance.now()-before;metrics.parsedBytes+=frame.bytes.length;
       if(pane.followFrame)keepFollowing(pane);
       drainPane(pane);
@@ -251,7 +279,7 @@
     });
     // Preserve readable history when a full-screen tool clears saved lines.
     term.parser.registerCsiHandler({final:'J'},params=>params[0]===3);
-    const pane={sid,host:data.win.host,raw:data.session.raw,generation:data.win.host.generation,el,screen,term,fit,history,title,own,ready:data.win.host.connected,replayPending:0,lastSize:'',renderer:'dom',webgl:null,observer:null,frames:[],writing:false,wantControl:false,redrawAfterReplay:false,redrawTimer:0,resizeRequest:null,lastAttempt:'',lastInputAt:0,repaintAt:0,composing:false};
+    const pane={sid,host:data.win.host,raw:data.session.raw,generation:data.win.host.generation,el,screen,term,fit,history,title,own,ready:data.win.host.connected,replayPending:0,lastSize:'',renderer:'dom',webgl:null,observer:null,frames:[],writing:false,wantControl:false,redrawAfterReplay:false,redrawTimer:0,resizeRequest:null,lastAttempt:'',lastInputAt:0,repaintAt:0,composing:false,historyCursor:null,historyInitialized:false,recoveryGeneration:-1};
     term.parser.registerOscHandler(7501,data=>{
       if(!livePane(pane))return false;
       const session=pane.host.catalog.flatMap(win=>win.sessions||[]).find(item=>item.id===pane.raw);if(!session||session.agent)return false;
@@ -535,9 +563,14 @@
   }
   function subscribe(){
     for(const host of hosts.values()){
-      const sessions=openTabs.map(id=>panes.get(id)).filter(pane=>pane?.host===host&&sessionInfo(pane.sid)).map(pane=>pane.raw);
-      const signature=JSON.stringify(sessions);
-      if(signature!==host.subscriptionSignature&&send(owner(host),16,{sessions}))host.subscriptionSignature=signature;
+      const panesForHost=openTabs.map(id=>panes.get(id)).filter(pane=>pane?.host===host&&sessionInfo(pane.sid)),sessions=panesForHost.map(pane=>pane.raw);
+      const signature=JSON.stringify(sessions),body={sessions};
+      if(host.capabilities.history_resume===1){
+        const historyAfter={};
+        for(const pane of panesForHost)if(pane.historyInitialized&&pane.historyCursor)historyAfter[pane.raw]={...pane.historyCursor};
+        if(Object.keys(historyAfter).length)body.history_after=historyAfter;
+      }
+      if(signature!==host.subscriptionSignature&&send(owner(host),16,body))host.subscriptionSignature=signature;
     }
   }
   function renderTabs(){

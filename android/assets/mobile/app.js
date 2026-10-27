@@ -201,6 +201,14 @@
     if(cursor&&c.capabilities?.history_resume===1){if(restoringTerms.has(term))queuedPositions.set(term,cursor);body.history_after={[session]:{position:cursor.position,epoch:cursor.epoch,stream_id:cursor.stream_id}};}
     if((refresh||c.subscription!==session)&&sendHost(c,16,body))c.subscription=session;
   }
+  let updateHint='',updateCheckPending=false;
+  function receiveUpdateHint(message){
+    const revision=C.updateHintRevision(message);
+    if(!revision||revision===updateHint||updateCheckPending)return;
+    updateHint=revision;
+    if(!window.NativeUpdates?.check)return;
+    updateCheckPending=true;Promise.resolve(window.NativeUpdates.check()).catch(()=>{}).finally(()=>{updateCheckPending=false;});
+  }
   function connect(c=selected()){
     if(paused)return;stopSocket(c);const gen=c.generation;c.lastPing=0;hostState(c,'正在连接');
     if(!roomAllowed(c.host)){hostState(c,'此房间未勾选，请返回连接设置重新选择');return;}
@@ -213,7 +221,7 @@
     ws.onmessage=event=>{
       if(!current())return;
       try{
-        if(typeof event.data==='string'){const m=JSON.parse(event.data);if(m.op==='ready')hello();else if(m.error)hostState(c,String(m.error));return;}
+        if(typeof event.data==='string'){const m=JSON.parse(event.data);if(m.op==='ready')hello();else if(m.op==='ui_update')receiveUpdateHint(m);else if(m.error)hostState(c,String(m.error));return;}
         const {op,payload}=C.unpack(event.data);metrics.frames++;metrics.bytes+=payload.length;
         if(op===2||op===7)sync(JSON.parse(decoder.decode(payload)),c);
         else if(op===3||op===8||op===23){
