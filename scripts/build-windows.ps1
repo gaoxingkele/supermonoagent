@@ -7,10 +7,18 @@ catch { throw 'Cannot acquire the Windows build lock; another build may be runni
 try {
 if (!$Python) { $Python = Join-Path $repoRoot '.venv/Scripts/python.exe' }
 if (!(Test-Path $Python)) { throw 'Create .venv and install .[desktop] plus pyinstaller before building.' }
-[xml]$releaseManifest = Get-Content -LiteralPath "$repoRoot/android/AndroidManifest.xml" -Raw
-$releaseVersion = $releaseManifest.manifest.GetAttribute('versionName', 'http://schemas.android.com/apk/res/android')
-if ($Version) { $releaseVersion = $Version }
-if ($releaseVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Android release version must be major.minor.patch.' }
+$versionSource = Get-Content -LiteralPath "$repoRoot/src/supermonoagent/__init__.py" -Raw
+$versionMatch = [regex]::Match($versionSource, '(?m)^__version__\s*=\s*"(?<version>\d+\.\d+\.\d+)"\s*$')
+if (!$versionMatch.Success) { throw 'Source release version must be major.minor.patch.' }
+$releaseVersion = $versionMatch.Groups['version'].Value
+$projectSource = Get-Content -LiteralPath "$repoRoot/pyproject.toml" -Raw
+$projectMatch = [regex]::Match($projectSource, '(?m)^version\s*=\s*"(?<version>\d+\.\d+\.\d+)"\s*$')
+if (!$projectMatch.Success -or $projectMatch.Groups['version'].Value -ne $releaseVersion) { throw 'Project metadata version does not match the source release version.' }
+if ($Version -and $Version -ne $releaseVersion) { throw 'Requested Windows version does not match the source release version.' }
+$sourceCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') { throw 'Cannot identify the source commit for this build.' }
+$sourceChanges = & git -C $repoRoot status --porcelain --untracked-files=all -- src/supermonoagent pyproject.toml scripts/build-windows.ps1
+if ($LASTEXITCODE -ne 0 -or $sourceChanges) { throw 'Commit source and version changes before building the release.' }
 if (!$OutputDir) { $OutputDir = "dist/windows/$releaseVersion" }
 $dist = [IO.Path]::GetFullPath((Join-Path $repoRoot $OutputDir))
 $outputVersion = Split-Path $dist -Leaf
@@ -93,6 +101,6 @@ $sources = @(Get-ChildItem "$repoRoot/src/supermonoagent" -File -Recurse | Where
     @{ path = $_.FullName.Substring($repoRoot.Length + 1).Replace('\', '/'); sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() }
 })
 [IO.File]::WriteAllText((Join-Path $dist 'version.txt'), $releaseVersion + "`n", [Text.Encoding]::ASCII)
-@{ version = $releaseVersion; built_at = [DateTime]::UtcNow.ToString('o'); exe_sha256 = $sha; sources = $sources } | ConvertTo-Json -Depth 4 | Set-Content "$dist/build-manifest.json" -Encoding UTF8
+@{ version = $releaseVersion; source_commit = $sourceCommit; built_at = [DateTime]::UtcNow.ToString('o'); exe_sha256 = $sha; sources = $sources } | ConvertTo-Json -Depth 4 | Set-Content "$dist/build-manifest.json" -Encoding UTF8
 Write-Host "Windows clients ready: $dist"
 } finally { $windowsBuildLock.Dispose() }

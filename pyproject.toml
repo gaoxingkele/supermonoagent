@@ -1,6 +1,6 @@
 [project]
 name = "supermonoagent"
-version = "0.1.0"
+version = "0.2.52"
 description = "Windows host for PowerShell and coding-agent CLIs, with a phone client and a splicing relay."
 requires-python = ">=3.11"
 dependencies = [
