@@ -206,9 +206,13 @@
     openButton.disabled=!W.activePane?.host?.connected;
   },200);
   function destroy(){
-    if(destroyed)return;destroyed=true;for(const item of transfers)item.controller.abort();clearInterval(timer);window.removeEventListener('beforeunload',destroy);
+    if(destroyed)return;destroyed=true;
+    try{window.SuperMonoFolderComposer?.destroy();}catch{}
+    for(const item of transfers)item.controller.abort();clearInterval(timer);window.removeEventListener('beforeunload',destroy);
     dialog.remove();openButton.remove();style.remove();drafts.length=0;current=null;delete window.SuperMonoTerminalComposer;
   }
-  window.SuperMonoTerminalComposer={open,close:dismiss,destroy,pasteClipboard,addFiles,get busy(){return transfers.size>0;}};
+  window.SuperMonoTerminalComposer={open,close:dismiss,destroy,pasteClipboard,addFiles,
+    getTarget:()=>dialog.open&&current&&active(current.target)?current.target:null,
+    isTargetLive:live,get busy(){return transfers.size>0;}};
   window.addEventListener('beforeunload',destroy,{once:true});render();
 })();

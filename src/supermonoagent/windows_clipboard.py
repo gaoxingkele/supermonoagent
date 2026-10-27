@@ -249,7 +249,7 @@ def _dib_capture_peak(header, size):
     return size + 8 * (decoded + 1024) + 4 * width * 4 + 65536
 
 
-def clipboard_sources(*, reserve_image=None, reserve_files=None, max_file_size=None):
+def clipboard_sources(*, reserve_image=None, reserve_files=None, max_file_size=None, files_only=False):
     """Return clipboard-derived Paths or (image filename, bytes), never text."""
     ctypes, user, kernel, shell = _native_apis()
     png_format = user.RegisterClipboardFormatW('PNG')
@@ -275,6 +275,8 @@ def clipboard_sources(*, reserve_image=None, reserve_files=None, max_file_size=N
                     raise OSError('Clipboard file list changed')
                 paths.append(Path(buffer.value))
             return paths
+        if files_only:
+            return []
         kind = next((kind for kind in (png_format, 17, 8)
                      if kind and user.IsClipboardFormatAvailable(kind)), None)
         if kind is None:
@@ -318,11 +320,46 @@ class _Source:
     stream: BinaryIO
     size: int
     identity: tuple | None
+    guard: object = None
 
 
 def _identity(stream):
     info = os.fstat(stream.fileno())
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _folder_info(path, directory=False):
+    info = path.lstat()
+    if (stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400
+            or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
+            or info.st_dev < 0 or info.st_ino <= 0):
+        raise ValueError('Folder source is unavailable or contains a link')
+    return (info.st_dev, info.st_ino) if directory else (
+        info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _source_guard_passes(guard):
+    try:
+        guard()
+        return True
+    except Exception:
+        # Do not retain the filesystem exception, paths or its completed frames.
+        return False
+
+
+def has_clipboard_folders():
+    """Explicit paste-time metadata check; never called by the format beacon."""
+    paths = clipboard_sources(files_only=True)
+    if not isinstance(paths, list) or len(paths) > 32:
+        raise ValueError('Invalid clipboard folder selection')
+    for path in paths:
+        if not isinstance(path, Path):
+            raise ValueError('Invalid clipboard folder selection')
+        info = path.lstat()
+        if (stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or getattr(info, 'st_file_attributes', 0) & 0x400):
+            return True
+    return False
 
 
 class ClipboardFiles:
@@ -540,6 +577,160 @@ class ClipboardFiles:
                 # when callers retain the exception traceback.
                 sources = content = source = stream = block = unregistered_stream = None
 
+    def snapshot_folder(self, root, *, cancelled=None):
+        """Snapshot a Python/native-selected root; never expose path input to JS."""
+        return self._snapshot_folders([root], cancelled=cancelled)['folders'][0]
+
+    def snapshot_clipboard_folders(self, *, cancelled=None):
+        """Explicit CF_HDROP folder capture, rejecting mixed files/folders."""
+        return self._snapshot_folders(None, cancelled=cancelled)
+
+    def _snapshot_folders(self, roots, *, cancelled=None):
+        from .file_folders import (MAX_FILES, MAX_DIRECTORIES, MAX_DEPTH,
+            MAX_TOTAL_BYTES, MAX_MANIFEST_BYTES, validate_manifest)
+        if cancelled is not None and not callable(cancelled):
+            raise ValueError('Invalid clipboard cancellation predicate')
+        with self._capture_budget(native=True) as reservation:
+            def check():
+                if cancelled is not None and cancelled():
+                    raise ValueError('Clipboard snapshot cancelled')
+                with self._budget_lock:
+                    if reservation[2] != self._capture_epoch:
+                        raise ValueError('Clipboard snapshot cancelled')
+            check()
+            if roots is None:
+                native = self._getter is clipboard_sources
+                roots = self._capture_sources({'files_only': True,
+                    'reserve_files': lambda count: self._resize_reservation(reservation, max(1, count), 0)
+                } if native else {})
+            if not isinstance(roots, list) or not 1 <= len(roots) <= 32:
+                raise ValueError('Clipboard selection must contain folders only')
+            roots = list(roots)
+            for root in roots:
+                if (not isinstance(root, Path) or not root.is_absolute()
+                        or any(part in {'.', '..'} for part in root.parts)):
+                    raise ValueError('Folder source must be an absolute native path')
+            if len({str(root).casefold() for root in roots}) != len(roots):
+                raise ValueError('Duplicate folder source')
+            self._resize_reservation(reservation, len(roots), 0)
+            inventories = []
+            total_count = total_size = total_directories = metadata_size = 0
+            # Enumerate bounded metadata before opening or hashing file contents.
+            for root in roots:
+                check()
+                directories = {path: _folder_info(path, True)
+                    for path in (*reversed(root.parents), root)}
+                directory_paths, file_paths = [], []
+                stack = [(root, ())]
+                while stack:
+                    check()
+                    parent, parts = stack.pop()
+                    if _folder_info(parent, True) != directories[parent]:
+                        raise ValueError('Folder source changed during enumeration')
+                    with os.scandir(parent) as entries:
+                        for entry in entries:
+                            check()
+                            path = parent / entry.name
+                            child = (*parts, entry.name)
+                            if len(child) > MAX_DEPTH:
+                                raise ValueError('Folder source exceeds depth limit')
+                            info = path.lstat()
+                            if stat.S_ISDIR(info.st_mode):
+                                total_directories += 1
+                                if total_directories > MAX_DIRECTORIES:
+                                    raise ValueError('Folder source contains too many directories')
+                                directories[path] = _folder_info(path, True)
+                                directory_paths.append(list(child))
+                                stack.append((path, child))
+                            else:
+                                identity = _folder_info(path)
+                                total_count += 1
+                                total_size += identity[2]
+                                if (total_count > MAX_FILES or identity[2] > self.max_file_size
+                                        or total_size > MAX_TOTAL_BYTES):
+                                    raise ValueError('Folder source exceeds file limits')
+                                self._resize_reservation(reservation, max(len(roots), total_count), total_size)
+                                file_paths.append((child, path, identity))
+                file_paths.sort(key=lambda item: item[0])
+                value = validate_manifest({'version': 1, 'root': root.name,
+                    'directories': directory_paths,
+                    'files': [{'path': list(parts), 'size': identity[2], 'sha256': '0' * 64}
+                              for parts, path, identity in file_paths]})
+                import json
+                metadata_size += len(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+                if metadata_size > MAX_MANIFEST_BYTES:
+                    raise ValueError('Folder selection metadata exceeds limits')
+                inventories.append((root, directories, file_paths, value))
+            check()
+            created = []
+            unregistered = block = None
+            with self._lock:
+                try:
+                    folders = []
+                    for root, directories, file_paths, value in inventories:
+                        def directory_guard(directories=directories):
+                            check()
+                            for path, expected in directories.items():
+                                if _folder_info(path, True) != expected:
+                                    raise ValueError('Folder source directory changed')
+                        directory_guard()
+                        cards = []
+                        for index, (parts, path, identity) in enumerate(file_paths):
+                            directory_guard()
+                            if _folder_info(path) != identity:
+                                raise ValueError('Folder source file changed')
+                            unregistered = path.open('rb')
+                            opened_identity = _identity(unregistered)
+                            # Windows/Python can expose birth time via path
+                            # lstat().st_ctime but change time via fstat().st_ctime.
+                            # Compare shared identity/size/mtime across APIs;
+                            # retain each API's full tuple for later same-API checks.
+                            if opened_identity[:4] != identity[:4] or _folder_info(path) != identity:
+                                raise ValueError('Folder source file changed before open')
+                            def guard(path=path, identity=identity, directory_guard=directory_guard):
+                                directory_guard()
+                                if _folder_info(path) != identity:
+                                    raise ValueError('Folder source file changed')
+                            source_id = secrets.token_hex(24)
+                            source = _Source(unregistered, identity[2], opened_identity, guard)
+                            self._register_source(reservation, source_id, source)
+                            created.append(source_id)
+                            unregistered = None
+                            digest = hashlib.sha256()
+                            received = 0
+                            while True:
+                                guard()
+                                block = source.stream.read(CHUNK_SIZE)
+                                guard()
+                                if not block:
+                                    break
+                                received += len(block)
+                                if received > identity[2]:
+                                    raise ValueError('Folder source grew during snapshot')
+                                digest.update(block)
+                            if received != identity[2] or _identity(source.stream) != source.identity:
+                                raise ValueError('Folder source changed during snapshot')
+                            source.stream.seek(0)
+                            value['files'][index]['sha256'] = digest.hexdigest()
+                            cards.append({'id': source_id, 'index': index, 'name': parts[-1],
+                                          'size': identity[2], 'sha256': digest.hexdigest()})
+                        directory_guard()
+                        manifest = validate_manifest(value)
+                        folders.append({'kind': 'folder', 'manifest': manifest, 'items': cards})
+                    check()
+                    return {'kind': 'folders', 'folders': folders}
+                except BaseException:
+                    for source_id in created:
+                        try:
+                            self.release(source_id)
+                        except Exception:
+                            pass  # Failed closes remain charged and reachable.
+                    if unregistered is not None:
+                        unregistered.close()
+                    raise
+                finally:
+                    unregistered = block = source = None
+
     def read(self, source_id, offset):
         with self._lock:
             item = self._items.get(source_id) if isinstance(source_id, str) else None
@@ -547,11 +738,19 @@ class ClipboardFiles:
                 raise ValueError('Clipboard file ID expired or unavailable')
             if type(offset) is not int or not 0 <= offset <= item.size:
                 raise ValueError('Invalid clipboard read offset')
+            if item.guard is not None and not _source_guard_passes(item.guard):
+                self.release(source_id)
+                item = None
+                raise ValueError('Clipboard folder source changed after snapshot')
             if item.identity is not None and _identity(item.stream) != item.identity:
                 self.release(source_id)
                 raise ValueError('Clipboard source changed after snapshot')
             item.stream.seek(offset)
             data = item.stream.read(min(CHUNK_SIZE, item.size - offset))
+            if item.guard is not None and not _source_guard_passes(item.guard):
+                self.release(source_id)
+                item = data = None
+                raise ValueError('Clipboard folder source changed during read')
             if (len(data) != min(CHUNK_SIZE, item.size - offset)
                     or item.identity is not None and _identity(item.stream) != item.identity):
                 self.release(source_id)

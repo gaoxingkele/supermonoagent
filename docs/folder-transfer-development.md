@@ -1,8 +1,8 @@
 # Folder transfer development
 
-Status: receiving foundations only. The public 0.2.51 installer and services do
-not advertise folder support. Ordinary files continue through their existing
-protocol and single-file receiver unchanged.
+Status: Windows source integration is reviewed; not packaged or deployed. The
+public 0.2.51 installer and services do not advertise folder support. Ordinary
+files continue through their existing protocol and single-file receiver.
 
 The requested result is a folder selected or pasted on Windows/Android, staged
 through the relay and downloaded into the selected terminal host's project
@@ -26,16 +26,38 @@ and immediately before publication. Snapshot identities use decimal strings;
 reopen accepts a separately trusted exchange root and an exact bounded snapshot.
 Cancellation keeps saved files and does not recursively remove receiving roots.
 
+## Integrated and verified in isolated fixtures
+
+The broker/helper now persist batches, immutable manifests, project bindings,
+entry identities and receipts. Lost ACKs are reconciled without duplicate files;
+restart recovery checks existing content and records its receipt before ACK.
+Cancellation retires only uncommitted uploads, persists pending controls across
+disconnects and prevents a late preparation from consuming receiving quota.
+Already accepted jobs remain eligible and saved files are preserved.
+
+Windows source APIs select a native directory or snapshot clipboard folders,
+retaining bounded source handles and rejecting links or changed identities. The
+editor adds explicit folder selection/paste, upload, state queries and stopping a
+batch. Selection remains tied to its original connection even after reopening.
+The existing signed workspace resource includes the new scripts without changing
+the 17-file UI archive format.
+
+Evidence is from owned files, mocked native selection and real local HTTP/helper
+fixtures: backend regression 270 passed / 2 skipped; native/source/editor group
+87 passed / 1 skipped; independent client/editor review 7 passed, including six
+actual broker/helper browser scenarios. These are separate runs, not a single
+combined-suite count. Independent backend recheck passed 8 targeted tests.
+
 ## Integration gates still open
 
-- Persist authenticated batches and manifest digests in broker/helper journals.
-- Pin host/window/session/epoch/project binding across every entry and HTTP job.
-- Reconcile lost begin/finish ACKs without creating duplicate roots or deliveries.
-- Reserve quotas for pending folder entries without double-counting file uploads.
-- Add actual Windows folder clipboard/picker enumeration and Android granted-tree
-  streams, plus selection/progress/partial-result UI.
-- Verify nested folders, reconnect, cancellation, cross-owner rejection, target
-  changes and exact public HTTPS download into project `tmp` end to end.
+- Real Windows clipboard/directory dialog acceptance remains unverified after the
+  user stopped desktop control. Automatic terminal Ctrl+V routing for folders is
+  separate from the editor's explicit folder-paste button.
+- Android granted-tree folder selection and the broker UI consumer remain open.
+- Verify upgrade activation for an already running older V2 helper, and actual
+  public HTTPS folder delivery without affecting existing user jobs.
+- Run a single combined release suite after integrating the reviewed history
+  branch; the separate source groups above do not replace this gate.
 - Build and publish a new numeric release after integration and regression QA.
 
 These modules do not authenticate a session or select its current project. The

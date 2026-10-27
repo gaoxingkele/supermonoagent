@@ -10,6 +10,7 @@ import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import http.client
@@ -30,9 +31,11 @@ from urllib.request import build_opener, ProxyHandler, HTTPRedirectHandler
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
-from .file_broker import enrollment_proof, PROTOCOL, FILE_PROTOCOL, FILE_PROTOCOL_QUERY, MAX_FRAME
+from .file_broker import enrollment_proof, PROTOCOL, FILE_PROTOCOL, FILE_PROTOCOL_QUERY, MAX_FRAME, validate_folder_status_budget
 from .file_transfer import TransferStore, MAX_CHUNK, _plain_directory, _validate_name
-from .file_workspaces import FileWorkspaces, ProjectSelectionRequired, RevisionConflict, _directory, directory_binding
+from .file_workspaces import FileWorkspaces, ProjectSelectionRequired, RevisionConflict, _directory, directory_binding, timestamped_name
+from .file_folders import validate_manifest, manifest_digest, MAX_FILES, MAX_DIRECTORIES, MAX_TOTAL_BYTES
+from .file_folder_store import FolderReceiveStore
 from .protocol import pack, unpack, pack_json
 
 _TRANSPORT_LOG = logging.getLogger('supermonoagent.file_companion.private_transport')
@@ -346,7 +349,12 @@ class FileCompanion:
     """
     def __init__(self, backend, broker_url, room, state_dir, owner_token_file,
                  enrollment_key_file, *, broker_token_file=None,
-                 default_mylib_root=None, download_mode='http', download_base_url=None):
+                 default_mylib_root=None, download_mode='http', download_base_url=None,
+                 max_folder_batches=64, max_active_folder_batches=8):
+        if (type(max_folder_batches) is not int or not 1 <= max_folder_batches <= 64
+                or type(max_active_folder_batches) is not int or not 1 <= max_active_folder_batches <= 8):
+            raise CompanionError('invalid_folder_limit')
+        self.max_folder_batches, self.max_active_folder_batches = max_folder_batches, max_active_folder_batches
         self.backend = _endpoint(backend, backend=True)
         self.broker_url = _endpoint(broker_url)
         if download_mode not in {'http', 'ws'}:
@@ -371,6 +379,8 @@ class FileCompanion:
         self._send_lock = asyncio.Lock()
         self._db_lock = threading.RLock()
         self._db = None
+        self._folders = {}
+        self._folder_lock = threading.RLock()
         self._lease = None
         self.progress = {}
         self.status_id = ''
@@ -449,6 +459,42 @@ class FileCompanion:
         self._db.execute('CREATE TABLE IF NOT EXISTS deliveries(file_id TEXT PRIMARY KEY, binding TEXT, target TEXT, partial TEXT, receipt TEXT)')
         if 'target_binding' not in {row[1] for row in self._db.execute('PRAGMA table_info(deliveries)')}:
             self._db.execute('ALTER TABLE deliveries ADD COLUMN target_binding TEXT')
+        self._db.execute('''CREATE TABLE IF NOT EXISTS folders(batch_id TEXT PRIMARY KEY,
+            binding TEXT,manifest TEXT,name TEXT,state TEXT,snapshot TEXT,target_binding TEXT)''')
+        self._db.execute('''CREATE TABLE IF NOT EXISTS folder_files(batch_id TEXT,entry_index INTEGER,file_id TEXT,
+            PRIMARY KEY(batch_id,entry_index))''')
+        self._db.execute('''CREATE TABLE IF NOT EXISTS folder_nonces(session TEXT,nonce TEXT,batch_id TEXT UNIQUE,
+            request TEXT,PRIMARY KEY(session,nonce))''')
+        self._db.execute('''CREATE TABLE IF NOT EXISTS folder_cancellations(batch_id TEXT PRIMARY KEY,
+            session TEXT,digest TEXT)''')
+        cancellations = self._db.execute('SELECT batch_id,session,digest FROM folder_cancellations LIMIT 65').fetchall()
+        if len(cancellations) > 64 or any(
+                not isinstance(batch_id, str) or not re.fullmatch('[a-f0-9]{48}', batch_id)
+                or not isinstance(session, str) or not re.fullmatch('[A-Za-z0-9_-]{1,64}', session)
+                or not isinstance(digest, str) or not re.fullmatch('[a-f0-9]{64}', digest)
+                for batch_id, session, digest in cancellations):
+            raise CompanionError('invalid_journal')
+        # Retain nonce uniqueness independently of a broker's batch registry.
+        # The helper has a hard 64-root journal bound; never adopt an unrecorded
+        # directory if a different broker batch ID repeats an already used nonce.
+        folders = self._db.execute('SELECT batch_id,binding FROM folders LIMIT 65').fetchall()
+        if len(folders) > 64:
+            raise CompanionError('invalid_journal')
+        for batch_id, raw in folders:
+            try:
+                document = _json(raw); request = document['request']; session = document['parent']['session_id']
+                if (not isinstance(session, str) or not re.fullmatch('[A-Za-z0-9_-]{1,64}', session)
+                        or not isinstance(request['nonce'], str) or not re.fullmatch('[a-f0-9]{32}', request['nonce'])
+                        or request['batch_id'] != batch_id):
+                    raise CompanionError('invalid_journal')
+            except (KeyError, TypeError):
+                raise CompanionError('invalid_journal') from None
+            encoded = json.dumps(request, sort_keys=True, separators=(',', ':'))
+            old = self._db.execute('SELECT batch_id,request FROM folder_nonces WHERE session=? AND nonce=?',
+                (session, request['nonce'])).fetchone()
+            if old and old != (batch_id, encoded):
+                raise CompanionError('invalid_journal')
+            self._db.execute('INSERT OR IGNORE INTO folder_nonces VALUES(?,?,?,?)', (session, request['nonce'], batch_id, encoded))
         self._db.commit()
         self._recover_partials()
         return value
@@ -467,6 +513,14 @@ class FileCompanion:
             path = Path(target)
             if path.name != job['name']:
                 raise CompanionError('invalid_journal')
+            if 'folder' in job:
+                # A folder partial is retired only through its persisted full
+                # hierarchy/partial identity snapshot, never a bare path.
+                folder, _ = self._folder_store(job['folder']['batch_id'])
+                expected = folder.entry_path(job['folder']['entry_index'])
+                if path != expected:
+                    raise CompanionError('invalid_journal')
+                folder.check()
             _, status = _directory(path.parent)
             directory = path.parent / '.supermono-partials'
             if status != 'missing' and _present(directory):
@@ -481,6 +535,9 @@ class FileCompanion:
                 self._db.execute('UPDATE deliveries SET partial=NULL WHERE file_id=?', (file_id,))
 
     def _release(self):
+        for store in self._folders.values():
+            store.close()
+        self._folders.clear()
         if self._lease:
             self._lease.close()
             self._lease = None
@@ -525,9 +582,23 @@ class FileCompanion:
             session, action, data = body.get('session'), body.get('action'), body.get('data')
             if not isinstance(data, dict) or not isinstance(session, str) or not re.fullmatch('[A-Za-z0-9_-]{1,64}', session):
                 raise CompanionError('invalid_request')
+            if action == 'folder.cancel':
+                # This authenticated broker control changes only private batch
+                # metadata. A closed original SID must not prevent cancellation
+                # replay; it grants no filesystem or terminal authority.
+                result = await self.io(self._folder_cancel, session, data)
+                await self._send({'type': 'host_response', 'id': identity, 'ok': True, 'result': result}, generation)
+                return
             binding = await self.inspector.fresh(session)
             if action == 'workspace.get' and not data:
                 result = await self._workspace(session)
+            elif action == 'folder.capabilities' and not data:
+                result = {'version': 1, 'max_files': MAX_FILES, 'max_directories': MAX_DIRECTORIES,
+                          'max_total_bytes': MAX_TOTAL_BYTES}
+            elif action == 'folder.prepare':
+                result = await self.io(self._folder_prepare, binding, data)
+            elif action in {'folder.check', 'folder.finish', 'folder.cancel'}:
+                result = await self.io(self._folder_control, binding, action, data)
             elif action == 'workspace.browse' and set(data) <= {'path', 'offset', 'limit'}:
                 result = await self.io(self.workspaces.browse, data.get('path'), offset=data.get('offset', 0), limit=data.get('limit', 100))
             elif action == 'workspace.set' and set(data) == {'project_dir', 'exchange_dir', 'expected_revision'}:
@@ -553,12 +624,202 @@ class FileCompanion:
                         'target_changed': 'target_changed', 'invalid_request': 'invalid_request'}.get(str(error), 'unavailable')
             await self._send({'type': 'host_response', 'id': identity, 'ok': False, 'error': code}, generation)
 
+    def _folder_record(self, batch_id):
+        if not isinstance(batch_id, str) or not re.fullmatch('[a-f0-9]{48}', batch_id):
+            raise CompanionError('invalid_request')
+        with self._db_lock:
+            row = self._db.execute('SELECT binding,manifest,name,state,snapshot,target_binding FROM folders WHERE batch_id=?', (batch_id,)).fetchone()
+        if row is None:
+            raise CompanionError('folder_unavailable')
+        document = _json(row[0]); manifest = validate_manifest(_json(row[1]))
+        if (set(document) != {'request', 'parent', 'exchange'}
+                or document['request']['batch_id'] != batch_id
+                or document['request']['manifest_digest'] != manifest_digest(manifest)):
+            raise CompanionError('invalid_journal')
+        return row, document, manifest
+
+    def _folder_store(self, batch_id):
+        row, document, manifest = self._folder_record(batch_id)
+        if row[4] is None:
+            raise CompanionError('folder_unavailable')
+        store = self._folders.get(batch_id)
+        if store is None:
+            store = FolderReceiveStore.reopen(document['exchange'], _json(row[4]), manifest)
+            self._folders[batch_id] = store
+        store.check()
+        return store, document
+
+    def _folder_guard(self, batch_id, binding):
+        row, document, manifest = self._folder_record(batch_id)
+        if any(binding[key] != document['parent'][key] for key in ('window_id', 'session_id', 'daemon_epoch', 'cwd')):
+            raise CompanionError('target_changed')
+        cfg = self.workspaces.guard(binding['window_id'], binding['cwd'], document['request']['workspace_revision'])
+        if cfg['exchange_dir'] != document['exchange']:
+            raise CompanionError('target_changed')
+        if not isinstance(row[5], str) or not hmac.compare_digest(self._project_binding(binding, cfg), row[5]):
+            raise CompanionError('project_binding_changed')
+        store, _ = self._folder_store(batch_id)
+        return row, document, manifest, cfg, store
+
+    def _folder_prepare(self, binding, data):
+        with self._folder_lock:
+            return self._folder_prepare_locked(binding, data)
+
+    def _folder_prepare_locked(self, binding, data):
+        fields = {'nonce', 'manifest', 'window_id', 'daemon_epoch', 'workspace_revision', 'project_binding',
+                  'timezone_offset_minutes', 'batch_id', 'manifest_digest', 'host_id'}
+        if (set(data) != fields or not isinstance(data['nonce'], str) or not re.fullmatch('[a-f0-9]{32}', data['nonce'])
+                or not isinstance(data['batch_id'], str) or not re.fullmatch('[a-f0-9]{48}', data['batch_id'])
+                or data['host_id'] != self.identity['host_id']
+                or type(data['timezone_offset_minutes']) is not int or not -840 <= data['timezone_offset_minutes'] <= 840
+                or type(data['workspace_revision']) is not int or not 0 <= data['workspace_revision'] <= 9007199254740991):
+            raise CompanionError('invalid_request')
+        manifest = validate_manifest(data['manifest'])
+        if data['manifest_digest'] != manifest_digest(manifest):
+            raise CompanionError('invalid_request')
+        if data['window_id'] != binding['window_id'] or data['daemon_epoch'] != binding['daemon_epoch']:
+            raise CompanionError('target_changed')
+        request = {key: value for key, value in data.items() if key != 'manifest'}
+        nonce_request = json.dumps(request, sort_keys=True, separators=(',', ':'))
+        with self._db_lock:
+            cancelled = self._db.execute('SELECT session,digest FROM folder_cancellations WHERE batch_id=?', (data['batch_id'],)).fetchone()
+            if cancelled is not None:
+                if cancelled != (binding['session_id'], data['manifest_digest']):
+                    raise CompanionError('invalid_request')
+                raise CompanionError('folder_cancelled')
+            reserved = self._db.execute('SELECT batch_id,request FROM folder_nonces WHERE session=? AND nonce=?',
+                (binding['session_id'], data['nonce'])).fetchone()
+            if reserved and reserved != (data['batch_id'], nonce_request):
+                raise CompanionError('folder_conflict')
+            old = self._db.execute('SELECT binding FROM folders WHERE batch_id=?', (data['batch_id'],)).fetchone()
+        if old:
+            if _json(old[0])['request'] != request:
+                raise CompanionError('folder_conflict')
+            row, _, _, _, store = self._folder_guard(data['batch_id'], binding)
+            return {'batch_id': data['batch_id'], 'manifest_digest': data['manifest_digest'], 'root_path': str(store.root), 'name': row[2]}
+        cfg = self.workspaces.guard(binding['window_id'], binding['cwd'], data['workspace_revision'])
+        before = directory_binding(cfg)
+        if not isinstance(data['project_binding'], str) or not hmac.compare_digest(self._project_binding(binding, cfg, before), data['project_binding']):
+            raise CompanionError('project_binding_changed')
+        stamp = datetime.now(timezone(timedelta(minutes=data['timezone_offset_minutes'])))
+        name = timestamped_name(manifest['root'], stamp)
+        base = Path(name)
+        for number in range(10000):
+            chosen = name if number == 0 else f'{base.stem} ({number}){base.suffix}'
+            if not _present(Path(cfg['exchange_dir']) / chosen):
+                name = chosen; break
+        else:
+            raise CompanionError('folder_unavailable')
+        document = {'request': request, 'parent': {key: binding[key] for key in ('window_id', 'session_id', 'daemon_epoch', 'cwd')},
+                    'exchange': cfg['exchange_dir']}
+        validate_folder_status_budget(manifest, request, {'batch_id': data['batch_id'],
+            'manifest_digest': data['manifest_digest'], 'root_path': str(Path(cfg['exchange_dir']) / name), 'name': name})
+        # Persist reservation before either creating tmp or allocating the root.
+        # A crash without the final snapshot remains an explicit unknown outcome.
+        with self._db_lock, self._db:
+            if (self._db.execute('SELECT COUNT(*) FROM folders').fetchone()[0] >= self.max_folder_batches
+                    or self._db.execute("SELECT COUNT(*) FROM folders WHERE state IN ('preparing','ready')").fetchone()[0] >= self.max_active_folder_batches):
+                raise CompanionError('folder_unavailable')
+            self._db.execute('INSERT INTO folders VALUES(?,?,?, ?,\'preparing\',NULL,NULL)',
+                (data['batch_id'], json.dumps(document, sort_keys=True), json.dumps(manifest), name))
+            self._db.execute('INSERT INTO folder_nonces VALUES(?,?,?,?)',
+                (binding['session_id'], data['nonce'], data['batch_id'], nonce_request))
+        TransferStore(cfg['exchange_dir'])
+        created = directory_binding(cfg)
+        if created['directories'][:len(before['directories'])] != before['directories']:
+            raise CompanionError('project_binding_changed')
+        store = FolderReceiveStore.create(cfg['exchange_dir'], name, manifest)
+        try:
+            if not self.inspector.current(binding):
+                raise CompanionError('target_changed')
+            if directory_binding(cfg) != created:
+                raise CompanionError('project_binding_changed')
+            target_binding = self._project_binding(binding, cfg, created)
+            with self._db_lock, self._db:
+                self._db.execute("UPDATE folders SET state='ready',snapshot=?,target_binding=? WHERE batch_id=?",
+                    (json.dumps(store.snapshot()), target_binding, data['batch_id']))
+            self._folders[data['batch_id']] = store
+        except BaseException:
+            store.close()
+            raise
+        return {'batch_id': data['batch_id'], 'manifest_digest': data['manifest_digest'], 'root_path': str(store.root), 'name': name}
+
+    def _folder_control(self, binding, action, data):
+        with self._folder_lock:
+            return self._folder_control_locked(binding, action, data)
+
+    def _folder_cancel(self, session, data):
+        if (set(data) != {'batch_id', 'manifest_digest'}
+                or not isinstance(session, str) or not re.fullmatch('[A-Za-z0-9_-]{1,64}', session)
+                or not isinstance(data['batch_id'], str) or not re.fullmatch('[a-f0-9]{48}', data['batch_id'])
+                or not isinstance(data['manifest_digest'], str) or not re.fullmatch('[a-f0-9]{64}', data['manifest_digest'])):
+            raise CompanionError('invalid_request')
+        with self._folder_lock, self._db_lock, self._db:
+            known = self._db.execute('SELECT batch_id FROM folders WHERE batch_id=?', (data['batch_id'],)).fetchone()
+            if known:
+                _, document, _ = self._folder_record(data['batch_id'])
+                if document['parent']['session_id'] != session or document['request']['manifest_digest'] != data['manifest_digest']:
+                    raise CompanionError('invalid_request')
+            previous = self._db.execute('SELECT session,digest FROM folder_cancellations WHERE batch_id=?', (data['batch_id'],)).fetchone()
+            if previous is not None and previous != (session, data['manifest_digest']):
+                raise CompanionError('invalid_request')
+            if previous is None:
+                if self._db.execute('SELECT COUNT(*) FROM folder_cancellations').fetchone()[0] >= 64:
+                    raise CompanionError('folder_unavailable')
+                self._db.execute('INSERT INTO folder_cancellations VALUES(?,?,?)', (data['batch_id'], session, data['manifest_digest']))
+            self._db.execute("UPDATE folders SET state='cancelled' WHERE batch_id=? AND state!='complete'", (data['batch_id'],))
+        return {'batch_id': data['batch_id'], 'manifest_digest': data['manifest_digest']}
+
+    def _folder_control_locked(self, binding, action, data):
+        if set(data) != {'batch_id', 'manifest_digest'}:
+            raise CompanionError('invalid_request')
+        if action == 'folder.cancel':
+            return self._folder_cancel(binding['session_id'], data)
+        row, document, manifest, cfg, store = self._folder_guard(data['batch_id'], binding)
+        if data['manifest_digest'] != document['request']['manifest_digest']:
+            raise CompanionError('invalid_request')
+        if action == 'folder.finish':
+            if row[3] == 'cancelled':
+                raise CompanionError('folder_unavailable')
+            with self._db_lock:
+                entries = self._db.execute('SELECT entry_index,file_id FROM folder_files WHERE batch_id=?', (data['batch_id'],)).fetchall()
+                if len(entries) != len(manifest['files']):
+                    raise CompanionError('folder_incomplete')
+                records = []
+                for index, file_id in entries:
+                    delivered = self._db.execute('SELECT binding,target,receipt FROM deliveries WHERE file_id=?', (file_id,)).fetchone()
+                    if delivered is None or delivered[2] is None:
+                        raise CompanionError('folder_incomplete')
+                    records.append((index, delivered))
+            # Hashing may take time. Do not hold the shared journal lock while
+            # reading user files, and recheck the original authority afterwards.
+            for index, delivered in records:
+                job = self._job(_json(delivered[0]))
+                reference = {'batch_id': data['batch_id'], 'manifest_digest': data['manifest_digest'], 'entry_index': index}
+                if job.get('folder') != reference or store.entry_path(index) != Path(delivered[1]):
+                    raise CompanionError('target_changed')
+                expected_receipt = {key: job[key] for key in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision', 'project_binding', 'folder')}
+                expected_receipt['path'] = delivered[1]
+                if _json(delivered[2]) != expected_receipt:
+                    raise CompanionError('journal_mismatch')
+                self._verify_file(Path(delivered[1]), job)
+            self._folder_guard(data['batch_id'], binding)
+            if not self.inspector.current(binding):
+                raise CompanionError('target_changed')
+            with self._db_lock, self._db:
+                self._db.execute("UPDATE folders SET state='complete' WHERE batch_id=?", (data['batch_id'],))
+        elif row[3] != 'ready':
+            raise CompanionError('folder_unavailable')
+        return {'batch_id': data['batch_id'], 'manifest_digest': data['manifest_digest']}
+
     @staticmethod
     def _job(job, *, _legacy_cleanup=False):
         legacy = _legacy_cleanup and isinstance(job, dict) and 'project_binding' not in job
         if isinstance(job, dict) and 'project_binding' not in job and not legacy:
             raise CompanionError('project_binding_required')
         expected = {'file_id', 'name', 'size', 'sha256', 'window_id', 'session_id', 'daemon_epoch', 'workspace_revision', 'project_binding'}
+        if isinstance(job, dict) and 'folder' in job:
+            expected.add('folder')
         if legacy:
             expected.remove('project_binding')
         if not isinstance(job, dict) or set(job) != expected:
@@ -569,6 +830,13 @@ class FileCompanion:
             if not isinstance(job[field], str) or not re.fullmatch(pattern, job[field]):
                 raise CompanionError('invalid_job')
         _validate_name(job['name'])
+        if 'folder' in job:
+            folder = job['folder']
+            if (not isinstance(folder, dict) or set(folder) != {'batch_id', 'manifest_digest', 'entry_index'}
+                    or not isinstance(folder['batch_id'], str) or not re.fullmatch('[a-f0-9]{48}', folder['batch_id'])
+                    or not isinstance(folder['manifest_digest'], str) or not re.fullmatch('[a-f0-9]{64}', folder['manifest_digest'])
+                    or type(folder['entry_index']) is not int or not 0 <= folder['entry_index'] < MAX_FILES):
+                raise CompanionError('invalid_job')
         if type(job['size']) is not int or not 0 <= job['size'] <= 512 * 1024**2 or type(job['workspace_revision']) is not int or not 0 <= job['workspace_revision'] <= 9007199254740991:
             raise CompanionError('invalid_job')
         return job
@@ -611,7 +879,110 @@ class FileCompanion:
         if digest.hexdigest() != job['sha256']:
             raise CompanionError('saved_file_changed')
 
+    def _begin_folder(self, job, binding):
+        with self._folder_lock:
+            return self._begin_folder_locked(job, binding)
+
+    def _begin_folder_locked(self, job, binding):
+        reference = job['folder']
+        folder_row, document, manifest, cfg, store = self._folder_guard(reference['batch_id'], binding)
+        request = document['request']
+        index = reference['entry_index']
+        if (index >= len(manifest['files']) or reference['manifest_digest'] != request['manifest_digest']
+                or any(job[key] != request[key] for key in ('window_id', 'daemon_epoch', 'workspace_revision', 'project_binding'))):
+            raise CompanionError('invalid_job')
+        entry = manifest['files'][index]
+        if (job['name'] != entry['path'][-1] or job['size'] != entry['size'] or job['sha256'] != entry['sha256']):
+            raise CompanionError('invalid_job')
+        target = store.entry_path(index)
+        row = self._row(job)
+        with self._db_lock:
+            known = self._db.execute('SELECT file_id FROM folder_files WHERE batch_id=? AND entry_index=?', (reference['batch_id'], index)).fetchone()
+        if known and known[0] != job['file_id']:
+            raise CompanionError('journal_mismatch')
+        if row:
+            if row[1] != str(target) or row[4] != folder_row[5]:
+                raise CompanionError('target_changed')
+            if _present(target):
+                self._verify_file(target, job)
+                return None, None, str(target)
+            if row[3]:
+                raise CompanionError('saved_file_changed')
+            if row[2]:
+                if not isinstance(row[2], str) or not re.fullmatch('[a-f0-9]{48}', row[2]):
+                    raise CompanionError('invalid_journal')
+                old = target.parent / '.supermono-partials' / (row[2] + '.part')
+                if _present(old):
+                    store.check()
+                    info = old.lstat()
+                    if not stat.S_ISREG(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                        raise CompanionError('invalid_partial')
+                    old.unlink()
+        elif _present(target):
+            raise CompanionError('target_conflict')
+        if folder_row[3] == 'complete':
+            raise CompanionError('folder_unavailable')
+        transfer = store.begin(self.identity['host_id'], job['session_id'], index)
+        try:
+            snapshot = store.snapshot()
+            with self._db_lock, self._db:
+                self._db.execute('INSERT OR REPLACE INTO deliveries VALUES(?,?,?, ?,NULL,?)',
+                    (job['file_id'], json.dumps(job, sort_keys=True, separators=(',', ':')), str(target), transfer, folder_row[5]))
+                self._db.execute('INSERT OR REPLACE INTO folder_files VALUES(?,?,?)', (reference['batch_id'], index, job['file_id']))
+                # A restart must never adopt a newly replaced partial directory.
+                self._db.execute('UPDATE folders SET snapshot=? WHERE batch_id=?', (json.dumps(snapshot), reference['batch_id']))
+        except BaseException:
+            store.cancel(self.identity['host_id'], transfer)
+            raise
+        return store, transfer, None
+
+    def _finish_folder(self, store, transfer, job, binding, generation):
+        with self._folder_lock:
+            return self._finish_folder_locked(store, transfer, job, binding, generation)
+
+    def _record_recovered_folder_receipt(self, job, receipt, binding, generation):
+        # The hard link can exist after a process stops before its journal ACK.
+        # Verify it against the original batch, then persist that proof before
+        # acknowledging the relay; otherwise folder.finish could never complete.
+        with self._folder_lock, self.workspaces.publish_guard(binding['window_id'], binding['cwd'], job['workspace_revision']) as cfg:
+            self._check_project(job, binding, cfg)
+            _, _, _, _, store = self._folder_guard(job['folder']['batch_id'], binding)
+            target = store.entry_path(job['folder']['entry_index'])
+            if receipt['path'] != str(target):
+                raise CompanionError('target_changed')
+            self._verify_file(target, job)
+            self._folder_guard(job['folder']['batch_id'], binding)
+            if generation != self._generation or self._closed or not self.inspector.current(binding):
+                raise CompanionError('target_changed')
+            with self._db_lock, self._db:
+                self._db.execute('UPDATE deliveries SET partial=NULL,receipt=? WHERE file_id=?', (json.dumps(receipt), job['file_id']))
+
+    def _finish_folder_locked(self, store, transfer, job, binding, generation):
+        reference = job['folder']
+        with self.workspaces.publish_guard(binding['window_id'], binding['cwd'], job['workspace_revision']) as cfg:
+            self._check_project(job, binding, cfg)
+            _, _, _, _, expected_store = self._folder_guard(reference['batch_id'], binding)
+            if store is not expected_store:
+                raise CompanionError('target_changed')
+            target = store.entry_path(reference['entry_index'])
+            if _present(target):
+                raise CompanionError('target_conflict')
+            def allowed():
+                self._check_project(job, binding, cfg)
+                self._folder_guard(reference['batch_id'], binding)
+                return generation == self._generation and self.inspector.current(binding) and not self._closed
+            path = store.finish(self.identity['host_id'], transfer, can_publish=allowed)
+            if path != str(target):
+                raise CompanionError('target_conflict')
+            receipt = {key: job[key] for key in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision', 'project_binding', 'folder')}
+            receipt['path'] = path
+            with self._db_lock, self._db:
+                self._db.execute('UPDATE deliveries SET partial=NULL,receipt=? WHERE file_id=?', (json.dumps(receipt), job['file_id']))
+            return receipt
+
     def _begin(self, job, binding):
+        if 'folder' in job:
+            return self._begin_folder(job, binding)
         cfg = self.workspaces.guard(binding['window_id'], binding['cwd'], job['workspace_revision'])
         target = Path(cfg['exchange_dir']) / job['name']
         row = self._row(job)
@@ -657,6 +1028,8 @@ class FileCompanion:
         return store, transfer, None
 
     def _finish(self, store, transfer, job, binding, generation):
+        if 'folder' in job:
+            return self._finish_folder(store, transfer, job, binding, generation)
         with self.workspaces.publish_guard(binding['window_id'], binding['cwd'], job['workspace_revision']) as cfg:
             self._check_project(job, binding, cfg)
             expected = Path(cfg['exchange_dir']) / job['name']
@@ -686,7 +1059,11 @@ class FileCompanion:
     def _http_open(self, job, ticket, binding, generation):
         self._check_project(job, binding)
         path = '/file/download/' + job['file_id']
-        if (not isinstance(ticket, dict) or set(ticket) != {'download_path', 'ticket', 'expires_at', 'size', 'sha256', 'name'}
+        expected = {'download_path', 'ticket', 'expires_at', 'size', 'sha256', 'name'}
+        if 'folder' in job:
+            expected.add('folder')
+        if (not isinstance(ticket, dict) or set(ticket) != expected
+                or 'folder' in job and ticket.get('folder') != job['folder']
                 or ticket['download_path'] != path or ticket['size'] != job['size']
                 or ticket['sha256'] != job['sha256'] or ticket['name'] != job['name']
                 or not isinstance(ticket['ticket'], str) or not re.fullmatch('[A-Za-z0-9_-]{16,128}', ticket['ticket'])
@@ -791,6 +1168,9 @@ class FileCompanion:
                 await self.io(self._check_project, job, binding)
                 receipt = {name: job[name] for name in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision', 'project_binding')}
                 receipt['path'] = saved
+                if 'folder' in job:
+                    receipt['folder'] = job['folder']
+                    await self.io(self._record_recovered_folder_receipt, job, receipt, binding, generation)
             else:
                 offset = 0
                 await self.io(self._check_project, job, binding)
@@ -848,7 +1228,10 @@ class FileCompanion:
                 finally:
                     if store is not None and transfer is not None:
                         try:
-                            await self.io(store.cancel_owner, self.identity['host_id'])
+                            if isinstance(store, FolderReceiveStore):
+                                await self.io(store.cancel, self.identity['host_id'], transfer)
+                            else:
+                                await self.io(store.cancel_owner, self.identity['host_id'])
                         except (ValueError, OSError):
                             pass
             cleanup_task = asyncio.create_task(cleanup())

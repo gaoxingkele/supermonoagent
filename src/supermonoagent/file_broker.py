@@ -35,12 +35,13 @@ from websockets.protocol import State
 
 from .file_transfer import TransferStore, MAX_CHUNK, _plain_directory, _validate_name
 from .file_workspaces import timestamped_name
+from .file_folders import validate_manifest, manifest_digest
 
 PROTOCOL = 'sma-files-1'
 FILE_PROTOCOL = 2
 FILE_PROTOCOL_QUERY = 'file_protocol=2'
 MAX_FRAME = 262144
-_ROUTED = frozenset({'workspace.get', 'workspace.browse', 'workspace.set', 'library.get', 'library.set'})
+_ROUTED = frozenset({'workspace.get', 'workspace.browse', 'workspace.set', 'library.get', 'library.set', 'folder.capabilities'})
 _HOST_ERRORS = frozenset({'invalid_request', 'session_unavailable', 'unauthorized', 'revision_conflict',
                           'target_changed', 'directory_unavailable', 'unavailable', 'permission_denied', 'project_required'})
 _ID = re.compile(r'[A-Za-z0-9_-]{1,64}\Z')
@@ -52,6 +53,34 @@ def _stream_sha256(source):
     for chunk in iter(lambda: source.read(1024 * 1024), b''):
         digest.update(chunk)
     return digest.hexdigest()
+
+
+def validate_folder_status_budget(manifest, target, receipt):
+    """Reject a folder whose complete, unpaginated status cannot fit one frame.
+
+    Called by the host before allocating directories and by the broker before
+    acknowledging preparation. No receipts may be silently dropped later.
+    """
+    separator = '\\' if '\\' in receipt['root_path'] else '/'
+    digest = manifest_digest(manifest)
+    entries = []
+    for index, entry in enumerate(manifest['files']):
+        path = receipt['root_path'] + separator + separator.join(entry['path'])
+        if len(path) > 4096:
+            raise ValueError('Folder receipt path is too large')
+        saved = {'file_id': 'f' * 48, 'name': entry['path'][-1], 'path': path,
+                 'size': entry['size'], 'sha256': entry['sha256'],
+                 'daemon_epoch': target['daemon_epoch'], 'workspace_revision': target['workspace_revision'],
+                 'project_binding': target['project_binding'],
+                 'folder': {'batch_id': receipt['batch_id'], 'manifest_digest': digest, 'entry_index': index}}
+        entries.append({'entry_index': index, 'state': 'saved', 'file_id': saved['file_id'], 'receipt': saved})
+    status = {'batch_id': receipt['batch_id'], 'manifest_digest': digest, 'manifest': manifest,
+              'state': 'complete', 'entries': entries, 'receipt': receipt}
+    frame = {'type': 'response', 'id': 'r' * 64, 'ok': True, 'result': status}
+    raw = json.dumps(frame, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf8')
+    if len(raw) > MAX_FRAME - 2048:
+        raise ValueError('Folder status is too large')
+    return len(raw)
 
 
 class BrokerError(ValueError):
@@ -172,11 +201,13 @@ class Broker:
                  max_file_size=512 * 1024**2, max_total_bytes=2 * 1024**3,
                  max_files=4096, max_active=16, upload_ttl=300, route_timeout=15,
                  io_workers=2, max_connections=128, max_routes=64, max_hosts=1024,
-                 ticket_ttl=60, max_tickets=4096, http_workers=8):
+                 ticket_ttl=60, max_tickets=4096, http_workers=8,
+                 max_folder_batches=1024, max_room_folder_batches=64, max_active_folder_batches=8):
         for value, low, high in [(max_file_size, 0, 2**40), (max_total_bytes, 0, 2**50),
                 (max_files, 1, 100000), (max_active, 1, 1024), (io_workers, 1, 16),
                 (max_connections, 1, 4096), (max_routes, 1, 1024), (max_hosts, 1, 100000),
-                (max_tickets, 1, 100000), (http_workers, 1, 64)]:
+                (max_tickets, 1, 100000), (http_workers, 1, 64),
+                (max_folder_batches, 1, 1024), (max_room_folder_batches, 1, 64), (max_active_folder_batches, 1, 8)]:
             _integer(value, low, high)
         for value in (upload_ttl, route_timeout, ticket_ttl):
             if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 3600:
@@ -226,6 +257,23 @@ class Broker:
                 CREATE INDEX IF NOT EXISTS room_jobs ON jobs(scope,room,state);''')
             if 'project_binding' not in {row[1] for row in self._db.execute('PRAGMA table_info(jobs)')}:
                 self._db.execute('ALTER TABLE jobs ADD COLUMN project_binding TEXT')
+            for column in ('storage_name', 'folder'):
+                if column not in {row[1] for row in self._db.execute('PRAGMA table_info(jobs)')}:
+                    self._db.execute('ALTER TABLE jobs ADD COLUMN '+column+' TEXT')
+            self._db.executescript('''
+                CREATE TABLE IF NOT EXISTS folder_batches(batch_id TEXT PRIMARY KEY,
+                    scope TEXT,room TEXT,session TEXT,nonce TEXT,request TEXT,manifest TEXT,
+                    digest TEXT,host_id TEXT,state TEXT,receipt TEXT,
+                    UNIQUE(scope,room,session,nonce));
+                CREATE TABLE IF NOT EXISTS folder_entries(batch_id TEXT,entry_index INTEGER,
+                    size INTEGER,upload_id TEXT,file_id TEXT,
+                    PRIMARY KEY(batch_id,entry_index));''')
+            if 'cancel_pending' not in {row[1] for row in self._db.execute('PRAGMA table_info(folder_batches)')}:
+                self._db.execute('ALTER TABLE folder_batches ADD COLUMN cancel_pending INTEGER NOT NULL DEFAULT 0')
+                self._db.execute("UPDATE folder_batches SET cancel_pending=1 WHERE state='cancelled'")
+            # No uncommitted upload survives a broker restart. Committed file IDs
+            # remain recorded, including a failed/stale job, and are never retried.
+            self._db.execute('UPDATE folder_entries SET upload_id=NULL WHERE file_id IS NULL')
             self._db.execute("UPDATE jobs SET state='failed',error='project_binding_required' WHERE project_binding IS NULL AND state IN ('staged','queued','downloading')")
             self._db.commit()
         except BaseException:
@@ -236,6 +284,9 @@ class Broker:
         self.clock = clock
         self.max_file_size, self.max_total_bytes = max_file_size, max_total_bytes
         self.max_files, self.max_active, self.max_hosts = max_files, max_active, max_hosts
+        self.max_folder_batches = max_folder_batches
+        self.max_room_folder_batches = max_room_folder_batches
+        self.max_active_folder_batches = max_active_folder_batches
         self.upload_ttl, self.route_timeout = upload_ttl, route_timeout
         self.max_connections, self.max_routes = max_connections, max_routes
         self._stores, self._uploads = {}, {}
@@ -313,11 +364,12 @@ class Broker:
             return _stream_sha256(source)
 
     def _job_path(self, row):
-        _validate_name(row['name'])
+        name = row['storage_name'] or row['name']
+        _validate_name(name)
         directory = self._directory(row['scope'], row['room'])
         for ancestor in (*reversed(directory.parents), directory):
             _plain_directory(ancestor)
-        path = directory / row['name']
+        path = directory / name
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
             _fail('file_unavailable')
@@ -526,6 +578,8 @@ class Broker:
         if connection.role == 'client':
             if action in _ROUTED:
                 return await self._route(connection, action, session, data)
+            if action.startswith('folder.'):
+                return await self._folder_dispatch(connection, action, session, data)
             if action == 'upload.begin':
                 if not isinstance(data.get('project_binding'), str) or not _HEX.fullmatch(data['project_binding']):
                     _fail('project_binding_required')
@@ -571,12 +625,262 @@ class Broker:
             return await self._io(self._host_file, connection, action, session, data)
         _fail('action_forbidden')
 
-    def _begin(self, connection, session, data):
+    def _folder_reserved(self):
+        row = self._db.execute('''SELECT COALESCE(SUM(e.size),0),COUNT(*) FROM folder_entries e
+            JOIN folder_batches b ON b.batch_id=e.batch_id WHERE b.state IN ('preparing','ready')
+            AND e.file_id IS NULL AND e.upload_id IS NULL''').fetchone()
+        return row[0], row[1]
+
+    def _folder_row(self, connection, session, batch_id=None, nonce=None):
+        with self._lock:
+            field, value = ('batch_id', batch_id) if batch_id is not None else ('nonce', nonce)
+            if not isinstance(value, str) or not re.fullmatch('[a-f0-9]{48}' if field == 'batch_id' else '[a-f0-9]{32}', value):
+                _fail('unknown_folder')
+            row = self._db.execute('SELECT * FROM folder_batches WHERE '+field+'=? AND scope=? AND room=? AND session=?',
+                (value, connection.scope, connection.room, session)).fetchone()
+            if row is None:
+                _fail('unknown_folder')
+            return dict(row)
+
+    def _folder_status(self, connection, session, batch_id):
+        with self._lock:
+            row = self._folder_row(connection, session, batch_id)
+            entries = []
+            for item in self._db.execute('SELECT * FROM folder_entries WHERE batch_id=? ORDER BY entry_index', (batch_id,)):
+                state = 'pending'
+                entry = {'entry_index': item['entry_index']}
+                if item['file_id']:
+                    job = self._db.execute('SELECT * FROM jobs WHERE file_id=?', (item['file_id'],)).fetchone()
+                    state = job['state'] if job else 'failed'
+                    entry['file_id'] = item['file_id']
+                    if job and job['receipt']:
+                        entry['receipt'] = json.loads(job['receipt'])
+                elif item['upload_id']:
+                    state = 'uploading'
+                entries.append({**entry, 'state': state})
+            result = {'batch_id': batch_id, 'manifest_digest': row['digest'], 'manifest': json.loads(row['manifest']),
+                      'state': row['state'], 'entries': entries}
+            if row['receipt']:
+                result['receipt'] = json.loads(row['receipt'])
+            return result
+
+    def _folder_reserve(self, connection, session, data, target):
+        with self._lock:
+            pinned = self._db.execute('SELECT host_id FROM hosts WHERE scope=? AND room=?',
+                (connection.scope, connection.room)).fetchone()
+            if pinned is None or target.get('host_id') != pinned['host_id']:
+                _fail('target_changed')
+            encoded = json.dumps(data, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+            old = self._db.execute('SELECT * FROM folder_batches WHERE scope=? AND room=? AND session=? AND nonce=?',
+                (connection.scope, connection.room, session, data['nonce'])).fetchone()
+            if old:
+                if old['request'] != encoded or old['host_id'] != target['host_id']:
+                    _fail('folder_conflict')
+                return dict(old)
+            if (self._db.execute('SELECT COUNT(*) FROM folder_batches').fetchone()[0] >= self.max_folder_batches
+                    or self._db.execute('SELECT COUNT(*) FROM folder_batches WHERE scope=? AND room=?',
+                        (connection.scope, connection.room)).fetchone()[0] >= self.max_room_folder_batches
+                    or self._db.execute("SELECT COUNT(*) FROM folder_batches WHERE scope=? AND room=? AND state IN ('preparing','ready')",
+                        (connection.scope, connection.room)).fetchone()[0] >= self.max_active_folder_batches):
+                _fail('quota_exceeded')
+            manifest = data['manifest']
+            if any(entry['size'] > self.max_file_size for entry in manifest['files']):
+                _fail('quota_exceeded')
+            size = sum(entry['size'] for entry in manifest['files'])
+            pending_bytes, pending_count = self._folder_reserved()
+            if (self._disk_bytes + sum(upload['size'] for upload in self._uploads.values()) + pending_bytes + size > self.max_total_bytes
+                    or self._disk_files + len(self._uploads) + pending_count + len(manifest['files']) > self.max_files):
+                _fail('quota_exceeded')
+            batch_id = secrets.token_hex(24)
+            with self._db:
+                self._db.execute('INSERT INTO folder_batches(batch_id,scope,room,session,nonce,request,manifest,digest,host_id,state,receipt) VALUES(?,?,?,?,?,?,?,?,?,?,NULL)',
+                    (batch_id, connection.scope, connection.room, session, data['nonce'], encoded,
+                     json.dumps(manifest, ensure_ascii=False, separators=(',', ':')), manifest_digest(manifest), target['host_id'], 'preparing'))
+                self._db.executemany('INSERT INTO folder_entries VALUES(?,?,?,NULL,NULL)',
+                    [(batch_id, index, entry['size']) for index, entry in enumerate(manifest['files'])])
+            return self._folder_row(connection, session, batch_id)
+
+    async def _folder_target(self, connection, session, row):
+        def pinned():
+            with self._lock:
+                value = self._db.execute('SELECT host_id FROM hosts WHERE scope=? AND room=?',
+                    (connection.scope, connection.room)).fetchone()
+                return value is not None and value['host_id'] == row['host_id']
+        if not pinned():
+            _fail('target_changed')
+        target = await self._route(connection, 'workspace.get', session, {})
+        original = json.loads(row['request'])
+        if (not pinned() or target.get('host_id') != row['host_id'] or target.get('window_id') != original['window_id']
+                or target.get('session_id') != session or target.get('daemon_epoch') != original['daemon_epoch']
+                or type(target.get('revision')) is not int or target['revision'] != original['workspace_revision']):
+            _fail('target_changed')
+        return target
+
+    async def _folder_dispatch(self, connection, action, session, data):
+        if action == 'folder.begin':
+            if set(data) != {'nonce', 'manifest', 'window_id', 'daemon_epoch', 'workspace_revision', 'project_binding', 'timezone_offset_minutes'}:
+                _fail()
+            if not isinstance(data['nonce'], str) or not re.fullmatch('[a-f0-9]{32}', data['nonce']):
+                _fail()
+            data = {**data, 'manifest': validate_manifest(data['manifest'])}
+            _label(data['window_id'], 64); _label(data['daemon_epoch'], 128)
+            _integer(data['workspace_revision']); _integer(data['timezone_offset_minutes'], -840, 840)
+            if not isinstance(data['project_binding'], str) or not _HEX.fullmatch(data['project_binding']):
+                _fail('project_binding_required')
+            capability = await self._route(connection, 'folder.capabilities', session, {})
+            if type(capability.get('version')) is not int or capability['version'] != 1:
+                _fail('folder_unsupported')
+            target = await self._route(connection, 'workspace.get', session, {})
+            if target.get('project_status') == 'selection_required':
+                _fail('project_required')
+            if not isinstance(target.get('project_binding'), str) or not _HEX.fullmatch(target['project_binding']):
+                _fail('project_binding_required')
+            try:
+                old = await self._io(self._folder_row, connection, session, None, data['nonce'])
+            except BrokerError:
+                old = None
+            if old is None and (target.get('window_id') != data['window_id'] or target.get('session_id') != session
+                    or target.get('daemon_epoch') != data['daemon_epoch'] or type(target.get('revision')) is not int
+                    or target['revision'] != data['workspace_revision']
+                    or not hmac.compare_digest(target.get('project_binding', ''), data['project_binding'])):
+                _fail('project_binding_changed')
+            row = await self._io(self._folder_reserve, connection, session, data, target)
+            await self._folder_target(connection, session, row)
+            if row['state'] == 'preparing':
+                preparation = {**data, 'batch_id': row['batch_id'], 'manifest_digest': row['digest'], 'host_id': row['host_id']}
+                try:
+                    receipt = await self._route(connection, 'folder.prepare', session, preparation)
+                except BrokerError:
+                    current = await self._io(self._folder_row, connection, session, row['batch_id'])
+                    if current['state'] != 'cancelled':
+                        raise
+                    await self._forward_folder_cancel(current)
+                    return await self._io(self._folder_status, connection, session, row['batch_id'])
+                if (set(receipt) != {'batch_id', 'manifest_digest', 'root_path', 'name'}
+                        or receipt['batch_id'] != row['batch_id'] or receipt['manifest_digest'] != row['digest']
+                        or not isinstance(receipt['root_path'], str) or len(receipt['root_path']) > 4096
+                        or receipt['root_path'].replace('\\', '/').rsplit('/', 1)[-1] != receipt['name']):
+                    _fail('receipt_mismatch')
+                _validate_name(receipt['name'])
+                _label(receipt['root_path'], 4096)
+                if '://' in receipt['root_path']:
+                    _fail('receipt_mismatch')
+                validate_folder_status_budget(data['manifest'], data, receipt)
+                await self._io(self._folder_ready, row['batch_id'], receipt)
+                current = await self._io(self._folder_row, connection, session, row['batch_id'])
+                if current['state'] == 'cancelled':
+                    await self._forward_folder_cancel(current)
+            return await self._io(self._folder_status, connection, session, row['batch_id'])
+        if action == 'folder.lookup' and set(data) == {'nonce'}:
+            row = await self._io(self._folder_row, connection, session, None, data['nonce'])
+            return await self._io(self._folder_status, connection, session, row['batch_id'])
+        expected = {'batch_id', 'entry_index'} if action == 'folder.file.begin' else {'batch_id'}
+        if set(data) != expected or action not in {'folder.file.begin', 'folder.status', 'folder.finish', 'folder.cancel'}:
+            _fail('action_forbidden')
+        row = await self._io(self._folder_row, connection, session, data['batch_id'])
+        if action == 'folder.status':
+            return await self._io(self._folder_status, connection, session, row['batch_id'])
+        reference = {'batch_id': row['batch_id'], 'manifest_digest': row['digest']}
+        if action == 'folder.cancel':
+            # Stop admission durably even when the receiving host is offline or
+            # preparation has an unknown outcome. Never delete received files.
+            await self._io(self._folder_state, row['batch_id'], 'cancelled')
+            current = await self._io(self._folder_row, connection, session, row['batch_id'])
+            await self._forward_folder_cancel(current)
+        elif action == 'folder.finish':
+            await self._folder_target(connection, session, row)
+            status = await self._io(self._folder_status, connection, session, row['batch_id'])
+            if (row['state'] not in {'ready', 'complete'} or not row['receipt']
+                    or any(entry['state'] != 'saved' for entry in status['entries'])):
+                _fail('folder_incomplete')
+            await self._route(connection, 'folder.finish', session, reference)
+            await self._io(self._folder_state, row['batch_id'], 'complete')
+        else:
+            await self._folder_target(connection, session, row)
+            if row['state'] != 'ready':
+                _fail('folder_unavailable')
+            index = _integer(data['entry_index'], 0, len(json.loads(row['manifest'])['files']) - 1)
+            await self._route(connection, 'folder.check', session, reference)
+            return await self._io(self._folder_file_begin, connection, session, row, index)
+        return await self._io(self._folder_status, connection, session, row['batch_id'])
+
+    def _folder_ready(self, batch_id, receipt):
+        with self._lock, self._db:
+            self._db.execute("UPDATE folder_batches SET state='ready',receipt=? WHERE batch_id=? AND state='preparing'",
+                             (json.dumps(receipt, sort_keys=True), batch_id))
+
+    def _folder_state(self, batch_id, state):
+        with self._lock, self._db:
+            if state == 'cancelled':
+                self._db.execute("UPDATE folder_batches SET state='cancelled',cancel_pending=1 WHERE batch_id=? AND state!='complete'", (batch_id,))
+                for upload_id, upload in list(self._uploads.items()):
+                    if upload.get('folder', {}).get('batch_id') == batch_id:
+                        self._discard(upload_id)
+            else:
+                self._db.execute("UPDATE folder_batches SET state=? WHERE batch_id=? AND state!='complete'", (state, batch_id))
+
+    def _folder_cancel_ack(self, row):
+        with self._lock, self._db:
+            pinned = self._db.execute('SELECT host_id FROM hosts WHERE scope=? AND room=?', (row['scope'], row['room'])).fetchone()
+            if pinned is not None and pinned['host_id'] == row['host_id']:
+                self._db.execute("UPDATE folder_batches SET cancel_pending=0 WHERE batch_id=? AND digest=? AND host_id=? AND state='cancelled'",
+                    (row['batch_id'], row['digest'], row['host_id']))
+
+    async def _forward_folder_cancel(self, row):
+        if row['state'] != 'cancelled' or not row['cancel_pending']:
+            return
+        host = self._hosts.get((row['scope'], row['room']))
+        with self._lock:
+            pinned = self._db.execute('SELECT host_id FROM hosts WHERE scope=? AND room=?', (row['scope'], row['room'])).fetchone()
+        if host is None or pinned is None or pinned['host_id'] != row['host_id']:
+            return
+        reference = {'batch_id': row['batch_id'], 'manifest_digest': row['digest']}
+        try:
+            # Cancellation is already durable and is independent of the client
+            # socket's lifetime. Only this authenticated pinned host receives it.
+            result = await self._route(host, 'folder.cancel', row['session'], reference)
+        except BrokerError:
+            return
+        if result == reference:
+            await self._io(self._folder_cancel_ack, row)
+
+    def _pending_folder_cancels(self, host):
+        with self._lock:
+            return [dict(row) for row in self._db.execute("SELECT * FROM folder_batches WHERE scope=? AND room=? AND state='cancelled' AND cancel_pending=1 LIMIT 64",
+                (host.scope, host.room))]
+
+    def _folder_file_begin(self, connection, session, row, index):
+        with self._lock:
+            row = self._folder_row(connection, session, row['batch_id'])
+            if row['state'] != 'ready':
+                _fail('folder_unavailable')
+            entry = self._db.execute('SELECT * FROM folder_entries WHERE batch_id=? AND entry_index=?', (row['batch_id'], index)).fetchone()
+            if entry['file_id']:
+                job = self._db.execute('SELECT state FROM jobs WHERE file_id=?', (entry['file_id'],)).fetchone()
+                return {'file_id': entry['file_id'], 'state': job['state'] if job else 'failed'}
+            if entry['upload_id']:
+                upload = self._uploads.get(entry['upload_id'])
+                if upload is not None:
+                    if upload['owner'] != connection.identity:
+                        _fail('folder_entry_busy')
+                    return {'upload_id': entry['upload_id'], 'name': upload['name']}
+                _fail('folder_unavailable')
+            original = json.loads(row['request'])
+            item = original['manifest']['files'][index]
+            data = {key: original[key] for key in ('window_id', 'daemon_epoch', 'workspace_revision', 'project_binding', 'timezone_offset_minutes')}
+            data.update(original_name=item['path'][-1], size=item['size'], sha256=item['sha256'])
+            reference = {'batch_id': row['batch_id'], 'manifest_digest': row['digest'], 'entry_index': index}
+            return self._begin(connection, session, data, reference)
+
+    def _begin(self, connection, session, data, folder=None):
         with self._lock:
             self._expire()
             reserved = sum(upload['size'] for upload in self._uploads.values())
-            if (len(self._uploads) >= self.max_active or self._disk_files + len(self._uploads) >= self.max_files
-                    or self._disk_bytes + reserved + data['size'] > self.max_total_bytes):
+            folder_bytes, folder_files = self._folder_reserved()
+            if folder is not None:
+                folder_bytes -= data['size']; folder_files -= 1
+            if (len(self._uploads) >= self.max_active or self._disk_files + len(self._uploads) + folder_files >= self.max_files
+                    or self._disk_bytes + reserved + folder_bytes + data['size'] > self.max_total_bytes):
                 _fail('quota_exceeded')
             stamp = datetime.fromtimestamp(self.clock(), timezone(timedelta(minutes=data['timezone_offset_minutes'])))
             name = timestamped_name(data['original_name'], stamp)
@@ -595,6 +899,11 @@ class Broker:
             transfer = store.begin(connection.identity, session, name, data['size'], data['sha256'])
             self._uploads[transfer] = {**data, 'scope': connection.scope, 'room': connection.room,
                 'owner': connection.identity, 'session': session, 'name': name, 'touched': self.clock(), 'store': store}
+            if folder is not None:
+                self._uploads[transfer]['folder'] = folder
+                with self._db:
+                    self._db.execute('UPDATE folder_entries SET upload_id=? WHERE batch_id=? AND entry_index=?',
+                        (transfer, folder['batch_id'], folder['entry_index']))
             return {'upload_id': transfer, 'name': name}
 
     def _upload(self, connection, action, session, data):
@@ -608,6 +917,11 @@ class Broker:
             if (upload is None or upload['owner'] != connection.identity or upload['session'] != session
                     or upload['scope'] != connection.scope or upload['room'] != connection.room):
                 _fail('unknown_upload')
+            if upload.get('folder') and action != 'upload.cancel':
+                batch = self._folder_row(connection, session, upload['folder']['batch_id'])
+                if batch['state'] != 'ready':
+                    self._discard(upload_id)
+                    _fail('folder_unavailable')
             store = upload['store']
             if action == 'upload.cancel':
                 self._discard(upload_id)
@@ -623,9 +937,15 @@ class Broker:
             file_id = secrets.token_hex(24)
             try:
                 with self._db:
-                    self._db.execute('INSERT INTO jobs(file_id,scope,room,session,window_id,daemon_epoch,revision,name,size,sha256,state,receipt,error,project_binding) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    folder = upload.get('folder')
+                    display = upload['original_name'] if folder else upload['name']
+                    self._db.execute('INSERT INTO jobs(file_id,scope,room,session,window_id,daemon_epoch,revision,name,size,sha256,state,receipt,error,project_binding,storage_name,folder) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                         (file_id, upload['scope'], upload['room'], session, upload['window_id'], upload['daemon_epoch'],
-                         upload['workspace_revision'], upload['name'], upload['size'], upload['sha256'], 'staged', None, None, upload['project_binding']))
+                         upload['workspace_revision'], display, upload['size'], upload['sha256'], 'staged', None, None, upload['project_binding'],
+                         upload['name'] if folder else None, json.dumps(folder, sort_keys=True) if folder else None))
+                    if folder:
+                        self._db.execute('UPDATE folder_entries SET file_id=?,upload_id=NULL WHERE batch_id=? AND entry_index=?',
+                            (file_id, folder['batch_id'], folder['entry_index']))
                 path = store.finish(connection.identity, upload_id)
                 self._disk_files += 1
                 self._disk_bytes += upload['size']
@@ -683,7 +1003,10 @@ class Broker:
                 with self._db:
                     self._db.execute("UPDATE jobs SET state='failed',error=? WHERE file_id=?", (code, row['file_id']))
                 return {'file_id': row['file_id'], 'state': 'failed'}
-            if set(data) != {'file_id', 'name', 'path', 'size', 'sha256', 'daemon_epoch', 'workspace_revision', 'project_binding'}:
+            expected = {'file_id', 'name', 'path', 'size', 'sha256', 'daemon_epoch', 'workspace_revision', 'project_binding'}
+            if row['folder']:
+                expected.add('folder')
+            if set(data) != expected or row['folder'] and data.get('folder') != json.loads(row['folder']):
                 _fail()
             if (data['name'] != row['name'] or type(data['size']) is not int or data['size'] != row['size']
                     or data['sha256'] != row['sha256'] or data['daemon_epoch'] != row['daemon_epoch']
@@ -712,7 +1035,7 @@ class Broker:
         if pinned is None:
             _fail('unauthorized')
         ticket = {key: row[key] for key in ('file_id', 'scope', 'room', 'session', 'daemon_epoch',
-                                           'revision', 'size', 'sha256', 'name', 'project_binding')}
+                                           'revision', 'size', 'sha256', 'name', 'project_binding', 'folder')}
         ticket.update(host_identity=connection.identity, token_digest=connection.token_digest,
                       host_id=pinned['host_id'], host_secret_hash=pinned['secret'],
                       expires_at=self.clock() + self.ticket_ttl, deadline=time.monotonic() + self.ticket_ttl)
@@ -729,8 +1052,11 @@ class Broker:
         ticket['identity'] = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
         raw = secrets.token_urlsafe(32)
         self._tickets[hashlib.sha256(raw.encode()).hexdigest()] = ticket
-        return {'download_path': '/file/download/' + row['file_id'], 'ticket': raw,
+        result = {'download_path': '/file/download/' + row['file_id'], 'ticket': raw,
                 'expires_at': ticket['expires_at'], 'size': row['size'], 'sha256': row['sha256'], 'name': row['name']}
+        if row['folder']:
+            result['folder'] = json.loads(row['folder'])
+        return result
 
     def _ticket_job(self, ticket, file_id):
         if (self._closed or self._http_stopping.is_set() or ticket['file_id'] != file_id
@@ -753,7 +1079,7 @@ class Broker:
         if row is None or row['state'] not in {'queued', 'downloading', 'saved'}:
             _fail('unauthorized')
         if any(row[key] != ticket[key] for key in ('scope', 'room', 'session', 'daemon_epoch',
-                                                   'revision', 'size', 'sha256', 'name', 'project_binding')):
+                                                   'revision', 'size', 'sha256', 'name', 'project_binding', 'folder')):
             _fail('unauthorized')
         return row
 
@@ -955,6 +1281,9 @@ class Broker:
     def _discard(self, upload_id):
         upload = self._uploads.pop(upload_id, None)
         if upload:
+            if upload.get('folder'):
+                with self._db:
+                    self._db.execute('UPDATE folder_entries SET upload_id=NULL WHERE upload_id=? AND file_id IS NULL', (upload_id,))
             try:
                 upload['store'].cancel(upload['owner'], upload_id)
             except (ValueError, OSError):
@@ -988,6 +1317,8 @@ class Broker:
             return
         job = {key: row[key] for key in ('file_id', 'name', 'size', 'sha256', 'window_id', 'daemon_epoch')}
         job.update(session_id=row['session'], workspace_revision=row['revision'], project_binding=row['project_binding'])
+        if row['folder']:
+            job['folder'] = json.loads(row['folder'])
         try:
             await self._send(host, {'type': 'delivery', 'id': row['file_id'], 'job': job})
         except (ConnectionClosed, TimeoutError):
@@ -1003,6 +1334,8 @@ class Broker:
         try:
             for row in await self._io(self._queued, host.scope, host.room):
                 await self._delivery(host, row)
+            for row in await self._io(self._pending_folder_cancels, host):
+                await self._forward_folder_cancel(row)
         except (ConnectionClosed, TimeoutError, asyncio.CancelledError):
             pass
 

@@ -3,7 +3,8 @@ from pathlib import Path
 import threading
 from urllib.parse import urlsplit
 
-from .windows_clipboard import ClipboardFiles, has_clipboard_sources, read_clipboard_text, write_clipboard_text
+from .windows_clipboard import (ClipboardFiles, has_clipboard_sources,
+    has_clipboard_folders, read_clipboard_text, write_clipboard_text)
 
 
 class DesktopFiles:
@@ -15,9 +16,11 @@ class DesktopFiles:
         self._thread = None
         self._page_generation = 0
         self._retire_thread = None
+        self._folder_picker_lock = threading.Lock()
         self._script = (Path(__file__).parent / 'static' / 'clipboard-files.js').read_text(encoding='utf-8')
         window.expose(self.clipboard_files, self.clipboard_chunk, self.clipboard_release, self.clipboard_has_files,
-                      self.file_exchange_config, self.clipboard_read_text, self.clipboard_write_text)
+                      self.file_exchange_config, self.clipboard_read_text, self.clipboard_write_text,
+                      self.choose_folder, self.clipboard_folders, self.clipboard_has_folders)
         window.events.loaded += self._loaded
         window.events.closed += self._close
 
@@ -58,6 +61,77 @@ class DesktopFiles:
     def clipboard_has_files(self):
         self._check()
         return has_clipboard_sources()
+
+    def clipboard_has_folders(self):
+        """Explicit paste-time metadata only; no directory polling/beacon."""
+        self._check()
+        generation = self._page_generation
+        result = has_clipboard_folders()
+        self._check()
+        if generation != self._page_generation:
+            raise ValueError('Clipboard page changed during folder check')
+        return result
+
+    def _release_folder_result(self, result):
+        folders = result.get('folders', []) if isinstance(result, dict) else []
+        if isinstance(result, dict) and result.get('kind') == 'folder':
+            folders = [result]
+        for folder in folders:
+            for item in folder.get('items', []):
+                try:
+                    self._files.release(item['id'])
+                except (OSError, ValueError):
+                    pass  # Failed closes remain reachable in the shared pool.
+
+    def _folder_capture(self, capture):
+        self._check()
+        retirement = self._retire_thread
+        if retirement is not None and retirement.is_alive():
+            retirement.join()
+        self._check()
+        generation = self._page_generation
+        def cancelled():
+            return self._closed.is_set() or generation != self._page_generation
+        result = None
+        try:
+            result = capture(cancelled)
+            self._check()
+            if cancelled():
+                raise ValueError('Clipboard page changed during folder snapshot')
+            return result
+        except BaseException:
+            self._release_folder_result(result)
+            raise
+
+    def clipboard_folders(self):
+        """Capture folder paths from the current OS clipboard, never JS paths."""
+        return self._folder_capture(lambda cancelled:
+            self._files.snapshot_clipboard_folders(cancelled=cancelled))
+
+    def choose_folder(self):
+        """Open the native picker; the webpage cannot supply a local path."""
+        def choose(cancelled):
+            import webview
+            kind = getattr(getattr(webview, 'FileDialog', None), 'FOLDER', None)
+            if kind is None:
+                kind = webview.FOLDER_DIALOG  # Older supported pywebview releases.
+            selected = self._window.create_file_dialog(kind,
+                                                       allow_multiple=False)
+            self._check()
+            if cancelled():
+                raise ValueError('Clipboard page changed during folder selection')
+            if not selected:
+                return {'kind': 'empty', 'items': []}
+            if (not isinstance(selected, (tuple, list)) or len(selected) != 1
+                    or not isinstance(selected[0], str) or len(selected[0]) > 32767):
+                raise ValueError('Invalid native folder selection')
+            return self._files.snapshot_folder(Path(selected[0]), cancelled=cancelled)
+        if not self._folder_picker_lock.acquire(blocking=False):
+            raise ValueError('Folder selection is already in progress')
+        try:
+            return self._folder_capture(choose)
+        finally:
+            self._folder_picker_lock.release()
 
     def _clipboard_text(self, operation, *args):
         try:
