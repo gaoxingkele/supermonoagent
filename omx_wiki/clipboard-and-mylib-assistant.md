@@ -1,9 +1,22 @@
 ---
 type: decision
-updated: 2026-10-25
+updated: 2026-10-27
+links: ["windows-release-0.2.52.md"]
 ---
 
 # 文件粘贴与 mylib 助理的隔离边界
+
+最新发布与后续接手边界见 [Windows 0.2.52 发布交接](windows-release-0.2.52.md)。本页保留各阶段的原始验收记录。
+
+## 右键菜单与异步剪贴板
+
+xterm 的隐藏 textarea 属于终端输入路径，不能按普通文本框处理。普通文本框的异步粘贴必须重新验证窗口、连接代次、原文本、选区和只读状态，避免用户移动光标后贴到旧位置。菜单放在当前 modal dialog 内，Esc 仅关闭菜单并返回输入焦点；复制选中的终端内容不能向 PTY 发送 Ctrl+C。
+
+source_path: `src/supermonoagent/static/clipboard-context-menu.js`, `tests/test_clipboard_context_menu.py`, `tests/test_six_cli_clipboard_keys.py`
+
+本次七项菜单／六种模式测试共 13 passed，使用自有浏览器与 PTY、模拟原生剪贴板。它证明菜单路由与生命周期保护，不证明已发布或六个真实 CLI 的系统剪贴板验收通过。
+
+source_path: `.omx/artifacts/six-cli/clipboard-context-menu.xml`, `docs/TODO.md`
 
 终端稳定性优先。文件和助理请求不能进入 PTY 输入，也不能使同连接的输入、心跳等待慢文件系统。实现用每连接有界侧栏任务队列及独立执行器，保留既有终端处理路径。
 
@@ -30,6 +43,12 @@ OP22 只读目标终端启动目录内的固定 metaRSI wiki 页面及目标技�
 source_path: `src/supermonoagent/assistant_context.py`, `D:/aicoding/mylib/skills/meta-rsi/SKILL.md`, `tests/test_daemon_assistant_context.py`
 
 ## 验收边界
+
+2026-10-27 的实际桌面检查补充：安装目录的 EXE 为 0.2.48，编辑框真实 Ctrl+C／Ctrl+V 可用，选中文字后未出现右键菜单。隔离的 0.2.51 WebView2（显式 `--url`，未启用原生桥接）已实测右键菜单、复制及授权后粘贴，快捷键复制粘贴也通过；假 PTY 写入数为 0。首次浏览器剪贴板权限确认后，最初一次读取仍失败，需要再次粘贴，具体原因未证实，不能称为原生桥接通过。
+
+用户随后按物理 Escape 停止桌面控制。两个自有验证窗口均已清理，原生桥接模式尚未交互验收；不因自动目标继续而恢复桌面控制。上述证明不涵盖真实文件／图片剪贴板，也不涵盖六种 CLI 的完整输入与光标验收。
+
+source_path: `.omx/artifacts/six-cli/clipboard-cua-20261027.json`, `.omx/artifacts/six-cli/live-native-51-cleanup.json`, `.omx/artifacts/six-cli/live-native-bridge-51-cleanup.json`, `.omx/artifacts/six-cli/release-feature-audit-summary.md`
 
 真实隐藏 WebView2、pywebview 原生桥接和测试文件源已完成 192000 字节上传及 SHA-256 核对，假 PTY 输入为 0，测试子进程无残留。该证据不能替代真实系统剪贴板读取：当前环境创建私有窗口站、只读打开剪贴板均被系统拒绝，没有覆盖用户剪贴板。
 

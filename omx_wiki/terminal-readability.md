@@ -1,3 +1,14 @@
+---
+title: "Terminal readability and discovery"
+type: Decision
+category: decision
+status: active
+created: 2026-10-23
+updated: 2026-10-27
+tags: [terminal, rendering, discovery, history]
+links: ["windows-release-0.2.52.md"]
+---
+
 # Terminal readability and discovery
 
 Type: decision
