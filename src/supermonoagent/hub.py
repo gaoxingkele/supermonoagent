@@ -19,6 +19,7 @@ from .protocol import (
     OP_SESSIONS,
     OP_SNAPSHOT,
     OP_TASK_EVENT,
+    ProtocolError,
     fit_payload,
     pack,
     pack_feed,
@@ -26,6 +27,7 @@ from .protocol import (
 )
 from .pty import PtyClosed, WinPty, default_cwd, shell_command
 from .pump import OutputPump
+from .history_context import pack_history_context
 from .task_events import DEFAULT_SUMMARY, TaskEventStore, TaskStateDetector
 
 
@@ -82,6 +84,9 @@ class Client:
     task_subscribed: bool = False
     pending_replays: dict[str, None] = field(default_factory=dict)
     replay_drain_credit: int = 0
+    history_context: bool = False
+    history_resume: bool = False
+    history_after: dict[str, dict[str, int | str]] = field(default_factory=dict)
 
 
 class _ReplaySnapshot(bytes):
@@ -179,6 +184,7 @@ class Hub:
             client = self.clients.pop(key, None)
             if client is not None:
                 client.pending_replays.clear()
+                client.history_after.clear()
                 client.replay_drain_credit = 0
             for session in self.sessions.values():
                 if session.resize_owner == key:
@@ -187,7 +193,7 @@ class Hub:
         if released:
             self._catalog()
 
-    def summary(self, owner: str | None = None) -> dict:
+    def summary(self, owner: str | None = None, *, history_context: bool = False) -> dict:
         groups = list(self.groups.values())
         if owner is not None:
             groups = [group for group in groups if group.owner == owner]
@@ -204,6 +210,7 @@ class Hub:
                     "focused": window.focused,
                     "sessions": [
                         {"id": item.id, "shell": item.shell, "cwd": item.cwd,
+                         **({"output_age_ms": item.pump.output_age_ms()} if history_context else {}),
                          **({"agent": item.task_detector.app} if item.task_detector.app else {})}
                         for item in window.sessions.values()
                     ],
@@ -445,6 +452,7 @@ class Hub:
             cwd=workdir,
             pty=pty,
         )
+        session.pump.mark_grid(session.cols, session.rows)
         with self._lock:
             window.sessions[session.id] = session
             window.focused = session.id
@@ -487,7 +495,8 @@ class Hub:
             if self.view(client) is session:
                 session.pty.write(data)
 
-    def set_subscriptions(self, client: Client, session_ids: list[str]) -> None:
+    def set_subscriptions(self, client: Client, session_ids: list[str], *, replay: bool = True,
+                          history_after: dict | None = None) -> None:
         if not client.multiplex or client.failure:
             return
         selected = {
@@ -503,6 +512,7 @@ class Hub:
         released = False
         for sid in removed:
             client.pending_replays.pop(sid, None)
+            client.history_after.pop(sid, None)
             client.feed_offsets.pop(sid, None)
             session = self.sessions.get(sid)
             if session is not None and session.resize_owner == client.key:
@@ -512,7 +522,12 @@ class Hub:
             session = self.sessions[sid]
             # Keep interactive output batches short without one wakeup per read.
             session.pump.coalesce_s = min(session.pump.coalesce_s, 0.004)
-            client.pending_replays[sid] = None
+            if replay:
+                if client.history_resume and history_after and sid in history_after:
+                    client.history_after[sid] = dict(history_after[sid])
+                client.pending_replays[sid] = None
+            else:
+                client.feed_offsets[sid] = session.pump.position()
         self.pump_replays(client)
         if released:
             self._catalog()
@@ -523,6 +538,7 @@ class Hub:
         for sid in sorted(selected):
             session = self.subscribed_session(client, sid)
             if session is not None:
+                client.history_after.pop(sid, None)
                 client.pending_replays[sid] = None
         self.pump_replays(client)
 
@@ -531,6 +547,7 @@ class Hub:
         if self.clients.get(client.key) is not client or client.failure or (
                 client.authorize is not None and not client.authorize()):
             client.pending_replays.clear()
+            client.history_after.clear()
             client.replay_drain_credit = 0
             return
         if not client.pending_replays:
@@ -554,6 +571,7 @@ class Hub:
                 self._send(client, self._session_snapshot(client, session))
                 client.replay_drain_credit = 0
                 return
+            client.history_after.pop(sid, None)
         client.replay_drain_credit = 0
 
     def subscribed_session(self, client: Client, session_id: str) -> Session | None:
@@ -587,7 +605,10 @@ class Hub:
             cols, rows = self._terminal_size(cols, rows)
             changed = (session.cols, session.rows, session.resize_owner) != (cols, rows, client.key)
             if (session.cols, session.rows) != (cols, rows):
+                session.pump.begin_resize()
                 session.pty.resize(cols, rows)
+                session.cols, session.rows = cols, rows
+                session.pump.mark_grid(cols, rows)
             if self.clients.get(client.key) is not client:
                 return False
             session.resize_owner = client.key
@@ -603,7 +624,8 @@ class Hub:
     def controls(self, client: Client) -> dict:
         return {
             sid: {"cols": session.cols, "rows": session.rows, "owner": session.resize_owner == client.key,
-                  "busy": session.resize_owner not in {None, client.key}}
+                  "busy": session.resize_owner not in {None, client.key},
+                  **({"history_epoch": session.pump.history_context()["epoch"]} if client.history_context else {})}
             for sid in client.subscriptions
             if (session := self.sessions.get(sid)) is not None and self._channel_ok(client, session)
         }
@@ -618,8 +640,10 @@ class Hub:
             cols, rows = self._terminal_size(cols, rows)
             changed = (session.cols, session.rows) != (cols, rows)
             if changed:
+                session.pump.begin_resize()
                 session.pty.resize(cols, rows)
                 session.cols, session.rows = cols, rows
+                session.pump.mark_grid(cols, rows)
         if changed:
             self._catalog()
 
@@ -639,6 +663,7 @@ class Hub:
                 for client in self.clients.values():
                     client.subscriptions.discard(session_id)
                     client.pending_replays.pop(session_id, None)
+                    client.history_after.pop(session_id, None)
                     if not client.pending_replays:
                         client.replay_drain_credit = 0
                     client.feed_offsets.pop(session_id, None)
@@ -717,7 +742,7 @@ class Hub:
     def _hello(self, client: Client) -> bytes:
         return pack_json(
             OP_HELLO_OK,
-            {**self.summary(client.token), "selected": client.window_id or "", "session": client.session_id or "",
+            {**(self.summary(client.token, history_context=True) if client.history_context else self.summary(client.token)), "selected": client.window_id or "", "session": client.session_id or "",
              **({"controls": self.controls(client)} if client.multiplex else {})},
         )
 
@@ -790,6 +815,27 @@ class Hub:
         return self._session_snapshot(client, session)
 
     def _session_snapshot(self, client: Client, session: Session) -> bytes:
+        if client.multiplex and client.history_context:
+            session.pump.mark_grid(session.cols, session.rows)
+            cursor = client.history_after.pop(session.id, None)
+            if not client.history_resume:
+                cursor = None
+            if cursor is not None:
+                data, position, context = session.pump.history_resume_position(cursor['position'], cursor['epoch'], cursor['stream_id'])
+                try:
+                    frame = pack_history_context(session.id, context, data)
+                except ProtocolError:
+                    # An exact delta cannot be cropped to fit the envelope budget.
+                    data, position, context = session.pump.history_snapshot_position()
+                else:
+                    client.feed_offsets[session.id] = position
+                    return _ReplaySnapshot(frame, session)
+            else:
+                data, position, context = session.pump.history_snapshot_position()
+            if client.history_resume:
+                context.update(v=2, end_position=position, stream_id=session.pump.stream_id)
+            client.feed_offsets[session.id] = position
+            return _ReplaySnapshot(pack_history_context(session.id, context, data), session)
         data, position = session.pump.snapshot_position()
         if client.multiplex:
             client.feed_offsets[session.id] = position
@@ -845,11 +891,25 @@ class Hub:
                     continue
                 chunk = data[max(0, seen - (end - len(data))):]
                 client.feed_offsets[session_id] = end
-            self._send(client, self._feed_frame(client, op, session_id, chunk))
+            if client.multiplex and client.history_context:
+                try:
+                    if overflow:
+                        frame = self._session_snapshot(client, session)
+                    else:
+                        context = session.pump.flushed_history_context()
+                        if client.history_resume:
+                            context.update(v=2, end_position=end, stream_id=session.pump.stream_id)
+                        frame = pack_history_context(session_id, context, chunk)
+                except ProtocolError:
+                    self.fail_client(client, 'History output frame overflow; reconnect for bounded replay')
+                    continue
+                self._send(client, frame)
+            else:
+                self._send(client, self._feed_frame(client, op, session_id, chunk))
 
     def _catalog(self) -> None:
         for client in list(self.clients.values()):
-            summary = self.summary(client.token)
+            summary = self.summary(client.token, history_context=True) if client.history_context else self.summary(client.token)
             if client.multiplex:
                 summary["controls"] = self.controls(client)
             self._send(client, pack_json(OP_SESSIONS, summary))

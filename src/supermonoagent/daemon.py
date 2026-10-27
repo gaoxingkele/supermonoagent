@@ -26,6 +26,7 @@ from .security import request_allowed, tls_context, transport_options, loopback,
 from .accounts import Accounts
 from .defaults import migrate_legacy_relay
 from .hub import Hub
+from .history_context import unpack_history_context, valid_stream_id
 from .task_events import TaskEventStore
 
 from .protocol import (
@@ -33,6 +34,7 @@ from .protocol import (
     OP_DAEMON_LOGS,
     OP_FILE_TRANSFER,
     OP_ASSISTANT_CONTEXT,
+    OP_HISTORY_CONTEXT,
     OP_FOCUS,
     OP_GROUP,
     OP_HELLO,
@@ -64,10 +66,11 @@ QUEUE_FRAMES = 32
 
 class _FooterSnapshot(bytes):
     """Tiny replay identity; never retains the history payload."""
-    def __new__(cls, frame, sid, session, generation, mode):
+    def __new__(cls, frame, sid, session, generation, mode, context=None):
         value = super().__new__(cls, frame)
         value.sid, value.session, value.output_generation = sid, session, generation
         value.pty, value.dimensions, value.mode = session.pty, (session.cols, session.rows), mode
+        value.history_context = dict(context) if context is not None else None
         return value
 
 
@@ -600,10 +603,20 @@ class Daemon:
             return None
         try:
             opcode, payload = unpack(frame)
-            if opcode != OP_SNAPSHOT:
+            context = None
+            if opcode == OP_HISTORY_CONTEXT:
+                sid, context, _ = unpack_history_context(payload)
+                if (context['kind'] not in ('snapshot', 'resume') or not client.history_context
+                        or not client.multiplex or (context['v'] == 2 and not client.history_resume)):
+                    return None
+                session = self.hub.sessions.get(sid)
+            elif opcode != OP_SNAPSHOT:
                 return None
             mode = (client.multiplex, client.key.startswith('relay-'))
-            if any(mode):
+            if context is not None:
+                if session is None or (session.cols, session.rows) != (context['cols'], context['rows']):
+                    return None
+            elif any(mode):
                 raw_sid, separator, _ = payload.partition(b'\0')
                 if not separator:
                     return None
@@ -616,17 +629,21 @@ class Daemon:
                 return None
             minimal = self.hub._feed_frame(client, OP_SNAPSHOT, sid, b'')
             return _FooterSnapshot(minimal, sid, session,
-                                   getattr(frame, 'output_generation', session.output_generation), mode)
+                                   getattr(frame, 'output_generation', session.output_generation), mode, context)
         except Exception:
             return None
 
     def _footer_current(self, client, stamp):
         sid, session = stamp.sid, stamp.session
+        context = stamp.history_context
         return (not self._footer_closed and not getattr(client, '_footer_recovery_closed', False)
                 and self.client_authorized(client) and self.hub.sessions.get(sid) is session
                 and session.output_generation == stamp.output_generation and sid not in client.pending_replays
                 and session.pty is stamp.pty and (session.cols, session.rows) == stamp.dimensions
                 and (client.multiplex, client.key.startswith('relay-')) == stamp.mode
+                and (context is None or (client.multiplex and client.history_context
+                     and (context['v'] == 1 or (client.history_resume and session.pump.stream_id == context['stream_id']))
+                     and session.pump.history_context()['epoch'] == context['epoch']))
                 and self.hub._channel_ok(client, session)
                 and (sid in client.subscriptions if client.multiplex else
                      stamp.mode[1] or self.hub.view(client) is session))
@@ -743,6 +760,8 @@ class Daemon:
                 return [], 4001
             client.multiplex = body.get("multiplex") is True
             client.reliable = body.get("reliable") is True
+            client.history_context = client.multiplex and type(body.get('history_context')) is int and body['history_context'] == 1
+            client.history_resume = client.history_context and type(body.get('history_resume')) is int and body['history_resume'] == 1
             self.hub.ensure_owner(client.token)
             if body.get("channel") is not None:
                 self.hub.subscribe(client, str(body.get("channel") or ""))
@@ -760,8 +779,24 @@ class Daemon:
             body = unpack_json(payload)
             sessions = body.get("sessions")
             if isinstance(sessions, list) and len(sessions) <= 256:
+                history_after = None
+                if 'history_after' in body and client.history_resume:
+                    history_after = body['history_after']
+                    if (not isinstance(history_after, dict) or len(history_after) > 256
+                            or any(not isinstance(sid, str) or not sid
+                                   or any(ord(char) < 32 or ord(char) == 127 or 0xd800 <= ord(char) <= 0xdfff for char in sid)
+                                   or len(sid.encode('utf-8')) > 256
+                                   or not isinstance(cursor, dict) or set(cursor) != {'position', 'epoch', 'stream_id'}
+                                   or not valid_stream_id(cursor['stream_id'])
+                                   or any(type(cursor[key]) is not int or not 0 <= cursor[key] <= 9007199254740991
+                                          for key in ('position', 'epoch'))
+                                   for sid, cursor in history_after.items())):
+                        raise ProtocolError('Invalid history cursor')
                 existing = set(client.subscriptions) if body.get("refresh") is True else None
-                self.hub.set_subscriptions(client, sessions)
+                if body.get('replay') is False and existing is None:
+                    self.hub.set_subscriptions(client, sessions, replay=False)
+                else:
+                    self.hub.set_subscriptions(client, sessions, history_after=history_after)
                 if existing is not None:
                     # Newly added sessions already received their initial snapshot above.
                     self.hub.refresh_subscriptions(client, existing)
@@ -987,7 +1022,7 @@ class Daemon:
             self.hub._send(client, self._state(client))
 
     def _state(self, client, error: str | None = None, resize_ack: dict | None = None) -> bytes:
-        visible = self.hub.summary(client.token)
+        visible = self.hub.summary(client.token, history_context=True) if client.history_context else self.hub.summary(client.token)
         service = self.service_status()
         service['owner_authenticated'] = client.token == self.token and not client.delegated
         if client.token == self.token and not client.delegated:
