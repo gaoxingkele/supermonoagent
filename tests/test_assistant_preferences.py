@@ -21,6 +21,20 @@ def test_missing_settings_return_default_without_creating_parent(tmp_path):
     assert preferences.get()["preferences"]["provider"] == "unconfigured"
 
 
+def test_library_root_migration_and_validation(tmp_path):
+    path = tmp_path / 'preferences.json'
+    legacy = {key: value for key, value in DEFAULTS.items() if key != 'library_root'}
+    path.write_text(json.dumps({'schema': 1, 'preferences': legacy}), encoding='utf-8')
+    assert AssistantPreferences(path).get()['preferences']['library_root'] == 'D:/aicoding/mylib'
+    store = AssistantPreferences(path)
+    value = settings(library_root='C:/owned/mylib')
+    assert store.save(value)['preferences'] == value
+    assert AssistantPreferences(path).get()['preferences']['library_root'] == 'C:/owned/mylib'
+    for invalid in ('relative/mylib', 'C:/', 'D:/', '', None, 1):
+        with pytest.raises(ValueError):
+            store.save(settings(library_root=invalid))
+
+
 def test_roundtrip_and_provider_change(tmp_path):
     path = tmp_path / "settings" / "preferences.json"
     store = AssistantPreferences(path)

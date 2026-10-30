@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EDGE = Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
 
 
-@pytest.mark.parametrize('renderer', ['dom', 'webgl'])
+@pytest.mark.parametrize('renderer', ['dom', 'webgl', 'auto'])
 def test_mobile_highlights_preserve_terminal_bytes_and_native_colors(renderer):
     playwright = pytest.importorskip('playwright.async_api')
     if not EDGE.exists():
@@ -89,9 +89,10 @@ async def check_highlights(playwright, renderer):
                         assert await page.evaluate("MobileTerminal.terminal.buffer.active.getLine(0).translateToString(true)") == '中文😀 app.py 42 "text"'
                         assert await page.evaluate('MobileTerminal.terminal.buffer.active.getLine(1).getCell(0).getFgColor()') == 0x0c2238
                         assert not await page.evaluate('highlightDecorations.some(d=>!d.isDisposed&&d.marker.line===1)')
-                        if renderer == 'dom':
+                        if renderer != 'webgl':
                             await page.wait_for_function("""() => [...document.querySelector('.xterm-rows > div').querySelectorAll('span')]
                               .filter(s=>getComputedStyle(s).color==='rgb(229, 192, 123)').map(s=>s.textContent).join('').includes('app.py')""")
+                            assert 'DOM' in await page.locator('#render-status').text_content()
                         else:
                             assert await page.locator('#renderer').input_value() == 'webgl'
                             assert 'WEBGL' in await page.locator('#render-status').text_content()

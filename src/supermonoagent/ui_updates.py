@@ -1,4 +1,4 @@
-﻿"""Signed UI-only updates. Windows verification uses CNG; native trust stays bundled."""
+"""Signed UI-only updates. Windows verification uses CNG; native trust stays bundled."""
 from __future__ import annotations
 
 import base64
@@ -33,7 +33,7 @@ MAX_SNAPSHOT = 5 * 1024 * 1024
 MAX_FILE = 4 * 1024 * 1024
 FILES = {
     'desktop': frozenset(('workspace.html','workspace.js','workspace.css','terminal-client.js','tab-themes.js','tab-themes.css','xterm.js','xterm.css','xterm-fit.js','xterm-unicode11.js','xterm-webgl.js','agent-modes/codex.json','agent-modes/claude-code.json','agent-modes/grok.json','agent-modes/kimi.json','agent-modes/pi-dev.json','agent-modes/cursor-cli.json')),
-    'android': frozenset(('mobile/index.html','mobile/app.js','mobile/app.css','mobile/mobile-core.js','mobile/vendor/xterm.js','mobile/vendor/xterm.css','mobile/vendor/xterm-fit.js','mobile/vendor/xterm-unicode11.js','mobile/vendor/xterm-webgl.js','mobile/vendor/terminal-client.js','mobile/agent-modes/codex.json','mobile/agent-modes/claude-code.json','mobile/agent-modes/grok.json','mobile/agent-modes/kimi.json','mobile/agent-modes/pi-dev.json','mobile/agent-modes/cursor-cli.json')),
+    'android': frozenset(('mobile/index.html','mobile/app.js','mobile/app.css','mobile/mobile-core.js','mobile/vendor/xterm.js','mobile/vendor/xterm.css','mobile/vendor/xterm-fit.js','mobile/vendor/xterm-unicode11.js','mobile/vendor/xterm-webgl.js','mobile/vendor/terminal-client.js','mobile/vendor/file-client.js','mobile/vendor/file-upload.js','mobile/agent-modes/codex.json','mobile/agent-modes/claude-code.json','mobile/agent-modes/grok.json','mobile/agent-modes/kimi.json','mobile/agent-modes/pi-dev.json','mobile/agent-modes/cursor-cli.json')),
 }
 _LOCKS = {}
 _LOCKS_GUARD = threading.Lock()

@@ -58,6 +58,10 @@ dialog input,dialog select{min-width:0;max-width:100%}
 #keys{display:grid;grid-template-columns:repeat(8,minmax(0,1fr))}
 #keys #model{grid-column:span 2}
 #keys #mode,#keys #github{grid-column:span 3}
+#quick-composer{display:flex;align-items:flex-end;gap:6px;padding:5px;background:var(--panel);border-top:1px solid var(--line);flex:none}
+#quick-draft{flex:1;min-width:0;min-height:40px;max-height:96px;padding:8px 10px;line-height:1.4}
+#tools-toggle{flex:none;min-width:56px;min-height:40px;padding:6px 8px}
+#quick-send{flex:none;min-width:64px;min-height:40px;background:#d8eadf;color:#11261a;border-color:#b5d6c1}
 @media(min-width:600px){#keys{display:flex}}
 @media(max-height:430px){#composer{padding:10px}#composer .dialog-heading{margin-bottom:6px}#composer #draft{min-height:52px;max-height:25dvh}#composer-status{min-height:0}#composer .form-actions{margin-top:6px}}
 

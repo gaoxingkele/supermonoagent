@@ -85,16 +85,35 @@ async def check_mobile(playwright,intercepted):
                         await page.wait_for_function("document.querySelectorAll('#session-list .session')[0]?.dataset.state==='waiting'")
                         await page.locator('#sessions-close').tap()
                         assert await page.evaluate('document.activeElement.tagName') not in ('TEXTAREA','INPUT')
+                        height_before=await page.locator('#screen').evaluate('e=>e.clientHeight')
+                        await page.locator('#tools-toggle').tap()
+                        assert await page.locator('#terminal-actions').is_hidden() and await page.locator('#keys').is_hidden()
+                        assert await page.locator('#quick-composer').is_visible() and await page.locator('#quick-send').is_visible()
+                        assert await page.locator('#tools-toggle').inner_text()=='展开'
+                        await page.evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))')
+                        assert await page.locator('#screen').evaluate('e=>e.clientHeight')>height_before
+                        assert await page.evaluate("localStorage.getItem('sma.mobile.tools-collapsed')")=='1'
+                        await page.locator('#tools-toggle').tap()
+                        assert await page.locator('#terminal-actions').is_visible() and await page.locator('#keys').is_visible()
+                        assert await page.locator('#quick-composer').is_visible()
+                        assert await page.evaluate("localStorage.getItem('sma.mobile.tools-collapsed')")=='0'
                         before_tap = bytes(first.pty.written)
                         await page.tap('#screen')
                         await page.keyboard.insert_text('中文')
                         await asyncio.sleep(.05)
                         assert bytes(first.pty.written) == before_tap, 'The viewport must not become an IME input field'
                         assert await page.locator('#screen .xterm-helper-textarea').evaluate('e=>e.readOnly&&e.inputMode==="none"')
+                        await page.locator('#quick-draft').fill('快捷中文')
+                        assert await page.locator('#draft').input_value() == '快捷中文'
+                        assert not await page.locator('#quick-draft').evaluate('e=>e.readOnly')
+                        await page.locator('#quick-draft').press('Enter')
+                        await wait_bytes(first.pty,'快捷中文'.encode()+b'\r')
+                        await page.wait_for_function('document.getElementById("quick-draft").value===""&&document.getElementById("draft").value===""')
                         await page.locator('#mode').tap()
                         await page.locator('#draft').fill('中文')
                         await page.locator('#draft').press('Enter')
-                        await wait_bytes(first.pty,'中文'.encode())
+                        assert not await page.locator('#composer').evaluate('e=>e.open'), 'Editor must close as soon as input is accepted'
+                        await wait_bytes(first.pty,'中文'.encode()+b'\r')
                         await page.wait_for_function('!document.getElementById("composer").open')
                         # An explicitly focused hardware-key path still supports Ctrl.
                         await page.locator('#screen .xterm-helper-textarea').focus()
@@ -182,9 +201,12 @@ async def check_mobile(playwright,intercepted):
                         desktop.multiplex=True;desktop.subscriptions={first.id}
                         assert daemon.hub.resize_session(desktop,first.id,120,30,True)
                         await page.wait_for_function('MobileTerminal.terminal.cols===120&&MobileTerminal.terminal.rows===30',timeout=5000)
+                        history_samples_before=await page.evaluate('MobileTerminal.metrics.historySamples')
                         for i in range(300):
                             first.pty.inbox.put((f'\x1b[H\x1b[2J\x1b[1;100HRIGHT_{i:03}\x1b[10;30HMIDDLE_{i:03}\x1b[28;1HBOTTOM_{i:03}').encode())
                         await page.wait_for_function("MobileTerminal.terminal.buffer.active.getLine(MobileTerminal.terminal.buffer.active.baseY)?.translateToString().slice(99).startsWith('RIGHT_299')")
+                        history_samples=await page.evaluate('MobileTerminal.metrics.historySamples')-history_samples_before
+                        assert history_samples<=20, f'Full-screen history must be sampled, not rebuilt for every output: {history_samples}'
                         for width,height in ((280,653),(841,673),(390,844)):
                             await page.set_viewport_size({'width':width,'height':height})
                             await page.evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))')

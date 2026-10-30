@@ -83,7 +83,7 @@
     };
   }
   function alternateScroll(rows,application){return '\x1b'+(application?'O':'[')+(rows<0?'A':'B');}
-  function closeForRecovery(socket,reason){if(socket)socket.close(4001,reason);}
+  function closeForRecovery(socket,reason){if(socket)socket.close(4000,reason);}
   function sessionState(connected,lastOutput,now){
     return !connected?'disconnected':lastOutput!==undefined&&now-lastOutput<1800?'refreshing':'waiting';
   }
@@ -94,6 +94,11 @@
       for(const [pattern,label] of [[/\bcodex\b/i,'Codex'],[/\bclaude(?:[ _-]code)?\b/i,'Claude Code'],[/\bgrok\b/i,'Grok'],[/\bkimi\b/i,'Kimi'],[/\bpi[._ -]dev\b/i,'pi.dev'],[/\bcursor[-_ ]cli\b/i,'Cursor CLI'],[/\bgemini\b/i,'Gemini'],[/\bopen[ -]?code\b/i,'OpenCode'],[/\bcopilot\b/i,'Copilot'],[/\baider\b/i,'Aider']])if(pattern.test(text))return label;
     }
     return '其他';
+  }
+  function codexOwnedPaging(session={}){
+    const declared=session.agent||session.learnedAgent;
+    const executable=value=>String(Array.isArray(value)?value[0]||'':value||'').trim().replace(/^"|"$/g,'').split(/[\\/]/).pop();
+    return declared?/^codex$/i.test(declared):[session.shell,session.command,session.argv].some(value=>/^codex(?:\.(?:exe|cmd|js))?$/i.test(executable(value)));
   }
   function debugGridPage(rows,page,capacity){
     capacity=capacity===9?9:capacity===25?25:16;
@@ -287,6 +292,28 @@
     }catch(error){if(finishing)error.uncertain=true;throw error;}
     finally{if(id)try{await request({action:'cancel',id},true);}catch{}}
   }
-  const api={highlightSpans,createHighlighter,createWriter,createGesture,controlKey,terminalInput,composerAction,createComposerSubmitter,createComposerEcho,alternateScroll,closeForRecovery,sessionState,agentType,debugGridPage,debugSortEntries,debugSwipePage,debugRecoveryFeed,debugPrompt,createDebugPreview,createScreenHistory,uploadAttachment,visibleBufferLine,historyPayload,safeHistoryReplay};
+  async function uploadExchangeAttachment(file,{target,signal,isCurrent,onProgress=()=>{}}){
+    if(!file||typeof file.name!=='string'||!file.name||file.name.length>200||/[\\/\x00-\x1f\x7f]/.test(file.name)||!Number.isSafeInteger(file.size)||file.size<0||file.size>32*1024*1024)throw Error('单个附件限 32 MiB，文件名不能包含路径或控制字符。');
+    const F=root.SuperMonoFileClient,U=root.SuperMonoFileUpload;
+    if(!F||!U||!target)throw Error('当前客户端缺少项目中继上传入口。');
+    const client=F.createClient({url:F.brokerURL(target.endpoint),room:target.code,token:target.token});
+    try{
+      let bytes;
+      const source={name:file.name,size:file.size,prepare:async()=>{
+        bytes=new Uint8Array(await file.arrayBuffer());
+        if(bytes.length!==file.size)throw Error('文件大小发生变化，请重新选择。');
+        const digest=new Uint8Array(await root.crypto.subtle.digest('SHA-256',bytes));
+        return [...digest].map(value=>value.toString(16).padStart(2,'0')).join('');
+      },read:async offset=>{
+        const part=bytes.subarray(offset,offset+96*1024);let binary='';
+        for(let at=0;at<part.length;at+=8192)binary+=String.fromCharCode(...part.subarray(at,at+8192));
+        return {data:root.btoa(binary),next:offset+part.length};
+      },dropPrepared:()=>{bytes=null;}};
+      const receipts=await U.upload({session:target.session,getWorkspace:()=>client.request('workspace.get',target.session,{}),
+        request:(action,data)=>client.request(action,target.session,data),sources:[source],signal,isCurrent,onProgress:value=>onProgress(value.loaded,value.size,value)});
+      return receipts[0];
+    }finally{client.close();}
+  }
+  const api={highlightSpans,createHighlighter,createWriter,createGesture,controlKey,terminalInput,composerAction,createComposerSubmitter,createComposerEcho,alternateScroll,closeForRecovery,sessionState,agentType,codexOwnedPaging,debugGridPage,debugSortEntries,debugSwipePage,debugRecoveryFeed,debugPrompt,createDebugPreview,createScreenHistory,uploadAttachment,uploadExchangeAttachment,visibleBufferLine,historyPayload,safeHistoryReplay};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.MobileCore=api;
 })(typeof window==='undefined'?globalThis:window);

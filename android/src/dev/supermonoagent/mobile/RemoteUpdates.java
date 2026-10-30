@@ -24,6 +24,7 @@ public final class RemoteUpdates {
         "mobile/index.html","mobile/app.js","mobile/app.css","mobile/mobile-core.js",
         "mobile/vendor/xterm.js","mobile/vendor/xterm.css","mobile/vendor/xterm-fit.js",
         "mobile/vendor/xterm-unicode11.js","mobile/vendor/xterm-webgl.js","mobile/vendor/terminal-client.js",
+        "mobile/vendor/file-client.js","mobile/vendor/file-upload.js",
         "mobile/agent-modes/codex.json","mobile/agent-modes/claude-code.json","mobile/agent-modes/grok.json",
         "mobile/agent-modes/kimi.json","mobile/agent-modes/pi-dev.json","mobile/agent-modes/cursor-cli.json"));
     private RemoteUpdates() { }

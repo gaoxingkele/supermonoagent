@@ -93,7 +93,7 @@ class PublisherTest(unittest.TestCase):
             value=release.verify_local(folder,self.trust,self.tool)
             self.assertEqual(release.NATIVE_API,2)
             self.assertEqual(len(release.DESKTOP),17)
-            self.assertEqual(len(release.ANDROID),16)
+            self.assertEqual(len(release.ANDROID),18)
             self.assertTrue(all(item['native_api']==2 for item in value['artifacts'].values()))
             self.assertLessEqual(value['sequence'],release.SAFE_INTEGER)
             for platform,allowed in [('desktop',release.DESKTOP),('android',release.ANDROID)]:

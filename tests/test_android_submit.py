@@ -95,7 +95,8 @@ async def check_composer(playwright, action):
         os.environ, {"SUPERMONO_STATE_DIR": temporary}
     ), patch("supermonoagent.daemon.STATE", Path(temporary)):
         command = [shutil.which("codex"), "--no-daemon", "--no-alt-screen", "--disable", "hooks",
-                   "-c", "notify=[]", "-c", f"projects.{json.dumps(temporary)}.trust_level=\"trusted\"", "-C", temporary]
+                   "-c", "notify=[]", "-c", "check_for_update_on_startup=false",
+                   "-c", f"projects.{json.dumps(temporary)}.trust_level=\"trusted\"", "-C", temporary]
         daemon = Daemon("isolated-composer-token")
         daemon.hub.persist = False
         daemon.hub.pty_factory = lambda *_: NegotiatingPty(command, temporary, 100, 28)
@@ -126,10 +127,13 @@ async def check_composer(playwright, action):
                         page.on("pageerror", lambda error: errors.append(str(error)))
                         await page.goto(f"http://127.0.0.1:{port}/mobile/index.html#" + quote(json.dumps(config)))
                         await page.wait_for_function("MobileTerminal.ready", timeout=10000)
-                        await page.wait_for_function(r"""() => {
-                          const b=MobileTerminal.terminal.buffer.active;
-                          return Array.from({length:b.length},(_,i)=>b.getLine(i)?.translateToString()||'').some(line=>/context.*left/i.test(line));
-                        }""", timeout=15000)
+                        try:
+                            await page.wait_for_function(r"""() => {
+                              const b=MobileTerminal.terminal.buffer.active;
+                              return Array.from({length:b.length},(_,i)=>b.getLine(i)?.translateToString()||'').some(line=>/context.*left/i.test(line));
+                            }""", timeout=15000)
+                        except Exception as error:
+                            raise AssertionError({'stage':'codex_startup','alive':session.pty.alive(),'frontend_errors':errors,'output_tail':session.pump.snapshot()[-4000:].decode('utf-8','replace')}) from error
                         # The first welcome footer can precede Codex input-loop startup.
                         # Wait for its explicit idle notification, not a fixed startup sleep.
                         async with asyncio.timeout(15):

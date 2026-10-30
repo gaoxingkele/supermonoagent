@@ -76,6 +76,27 @@ def test_gateway_forwards_only_empty_tools_and_buffers_response(attack):
         thread.join(timeout=2)
 
 
+def test_early_rejection_delivers_response_when_body_arrives_later():
+    import socket
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+    gateway = ResponsesGateway(time.monotonic() + 5, _test_upstream=f"http://127.0.0.1:{upstream.server_port}/responses", _tls=False)
+    gateway.mode = "apiKey"
+    connection = socket.create_connection(("127.0.0.1", gateway.server.server_port), timeout=3)
+    try:
+        body = json.dumps({"model": "owned-fixture", "input": [], "tools": []}).encode()
+        connection.sendall(f"POST /{gateway.nonce}/v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n".encode())
+        time.sleep(.1)
+        connection.sendall(body)
+        response = connection.makefile("rb").read()
+        assert response.startswith(b"HTTP/1.0 502") and response.endswith(b"\r\n\r\n")
+        assert gateway.rejected.is_set()
+    finally:
+        connection.close()
+        gateway.close()
+        upstream.server_close()
+
+
 def test_test_upstream_cannot_be_remote():
     with pytest.raises(ValueError):
         ResponsesGateway(time.monotonic() + 1, _test_upstream="http://remote.invalid/responses")

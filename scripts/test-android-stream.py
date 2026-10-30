@@ -72,6 +72,9 @@ async def exercise(page, device, daemon, first, second, window, output, report):
     """All input-producing actions happen after the fake session ID is confirmed."""
     await wait_page(page, "sid=>MobileTerminal.ready&&MobileTerminal.active===sid", arg=first.id, timeout=12000)
     report["fake_host_authenticated"] = True
+    if await page.locator('#tools-toggle').get_attribute('aria-expanded') == 'false':
+        await page.locator('#tools-toggle').click()
+    assert await page.locator('#terminal-actions').is_visible() and await page.locator('#keys').is_visible()
     fixture_host=json.loads(await page.evaluate('MobileTerminal.activeKey'))[0]
     fixture_rows=f'#session-list .session[data-host="{fixture_host}"]'
     await page.locator("#options").click()
@@ -84,6 +87,10 @@ async def exercise(page, device, daemon, first, second, window, output, report):
         if not daemon.hub.resize_session(desktop, first.id, 120, 30, True):
             raise AssertionError("Fake desktop could not acquire the resize lease")
         await wait_page(page, "MobileTerminal.terminal?.cols===120&&MobileTerminal.terminal.rows===30", timeout=8000)
+        profiler=await page.context.new_cdp_session(page)
+        await profiler.send('Profiler.enable');await profiler.send('Profiler.setSamplingInterval',{'interval':1000})
+        await profiler.send('Profiler.start')
+        history_samples_before=await page.evaluate('MobileTerminal.metrics.historySamples')
         for index in range(300):
             first.pty.inbox.put((f"\x1b[H\x1b[2J\x1b[1;100HRIGHT_{index:03}"
                                  f"\x1b[10;30HMIDDLE_{index:03}\x1b[28;1HBOTTOM_{index:03}").encode())
@@ -93,14 +100,24 @@ async def exercise(page, device, daemon, first, second, window, output, report):
             b.getLine(b.baseY+9)?.translateToString().slice(29).startsWith('MIDDLE_299')&&
             b.getLine(b.baseY+27)?.translateToString().startsWith('BOTTOM_299');
         }""", timeout=15000)
+        profile=(await profiler.send('Profiler.stop'))['profile']
         if (first.cols, first.rows) != (120, 30):
             raise AssertionError("Shared server grid changed during renderer stress")
         geometry = await UI.stable_geometry(page)
         if geometry["violations"]:
             raise AssertionError("Shared renderer geometry: " + ", ".join(geometry["violations"]))
+        history_samples=await page.evaluate('MobileTerminal.metrics.historySamples')-history_samples_before
+        if history_samples>20:
+            raise AssertionError(f"Full-screen history was rebuilt for every output: {history_samples}")
+        hits=[]
+        for node in profile['nodes']:
+            if node.get('hitCount'):
+                frame=node['callFrame']
+                hits.append((node['hitCount'],frame.get('functionName') or '(anonymous)',frame.get('url','').rsplit('/',1)[-1],frame.get('lineNumber',-1)+1))
+        top=[{'samples':count,'function':function,'asset':asset,'line':line} for count,function,asset,line in sorted(hits,reverse=True)[:15]]
         report["render_stress"] = {"updates": 300, "grid": {"cols": first.cols, "rows": first.rows},
                                    "right_marker": True, "middle_marker": True, "bottom_marker": True,
-                                   "geometry": geometry}
+                                   "history_samples": history_samples, "top_self_samples": top, "geometry": geometry}
         await page.screenshot(path=str(output / "fake-stream-webview.png"))
         device.screenshot(output / "fake-stream-device.png")
 
@@ -148,23 +165,97 @@ async def exercise(page, device, daemon, first, second, window, output, report):
             raise AssertionError('Enter button sent more than one carriage return')
         report['navigation_buttons']={'page_up_down':True,'top_bottom':True,'refresh_local_only':True,
                                       'desktop_grid_preserved':True,'enter_exactly_once':True}
+        first.task_detector.app='codex';daemon.hub._catalog()
+        first.pty.inbox.put(b'\x1b[?1049h')
+        await wait_page(page,"MobileTerminal.terminal.buffer.active.type==='alternate'")
+        before=bytes(first.pty.written)
+        await page.locator('#page-up').click()
+        await wait_bytes(first.pty,before+b'\x1b[5~')
+        before=bytes(first.pty.written)
+        x=bounds['x']+bounds['width']/2;y=bounds['y']+bounds['height']/2-40
+        await touch.send('Input.dispatchTouchEvent',{'type':'touchStart','touchPoints':[{'x':x,'y':y}]})
+        await touch.send('Input.dispatchTouchEvent',{'type':'touchMove','touchPoints':[{'x':x,'y':y+80}]})
+        await touch.send('Input.dispatchTouchEvent',{'type':'touchEnd','touchPoints':[]})
+        await wait_bytes(first.pty,before+b'\x1b[5~')
+        report['codex_paging']={'button_exactly_once':True,'touch_swipe_exactly_once':True}
+        first.pty.inbox.put(b'\x1b[?1049l')
+        await wait_page(page,"MobileTerminal.terminal.buffer.active.type==='normal'")
+        first.task_detector.app='';daemon.hub._catalog()
         await page.locator('#history-bottom').click()
+        await page.locator('#tools-toggle').click()
+        assert await page.locator('#terminal-actions').is_hidden() and await page.locator('#keys').is_hidden()
+        assert await page.locator('#quick-composer').is_visible() and await page.locator('#quick-send').is_visible()
+        await page.locator('#tools-toggle').click()
+        assert await page.locator('#terminal-actions').is_visible() and await page.locator('#keys').is_visible()
+        report['collapsible_toolbars']={'collapse':True,'expand':True,'quick_input_always_visible':True}
+        quick='12345'
+        before = bytes(first.pty.written)
+        fields=[node for node in device.native_nodes() if node.get('resource-id')=='quick-draft']
+        if len(fields)!=1:
+            raise AssertionError('Could not uniquely locate the native quick input field')
+        package=fields[0].get('package')
+        bounds=re.fullmatch(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]',fields[0].get('bounds',''))
+        left,top,right,bottom=map(int,bounds.groups())
+        device.run('shell','input','tap',str((left+right)//2),str((top+bottom)//2))
+        await asyncio.sleep(.4)
+        for char in quick:
+            device.run('shell','input','text',char)
+            await asyncio.sleep(.04)
+        await asyncio.sleep(.2)
+        if bytes(first.pty.written) != before:
+            raise AssertionError('Quick composer sent its unfinished draft')
+        report['native_ime_field']=await page.locator('#quick-draft').input_value()
+        if report['native_ime_field']!=quick:
+            raise AssertionError('Native IME did not commit the expected text: '+repr(report['native_ime_field']))
+        device.native_find_and_tap('发送')
+        await asyncio.sleep(.25)
+        report['native_ime_written_tail']=bytes(first.pty.written)[len(before):].decode('utf-8','replace')
+        await wait_bytes(first.pty, quick.encode())
+        await wait_page(page,"document.getElementById('quick-draft').value===''&&document.getElementById('draft').value===''",timeout=6000)
+        actual=bytes(first.pty.written)[len(before):]
+        assert actual in (quick.encode()+b'\r', b'\x1b[200~'+quick.encode()+b'\x1b[201~\r'), repr(actual)
+        report['stage']='native_ime_sent'
+        device.run('shell','am','start','-n',package+'/.MainActivity','--ez','ui_probe','true','--ez','hide_keyboard','true')
+        await page.evaluate('document.activeElement?.blur()')
+        quick='USB_QUICK_中文'
+        before = bytes(first.pty.written)
+        await page.locator('#quick-draft').fill(quick)
+        if bytes(first.pty.written) != before:
+            raise AssertionError('Quick composer sent its unfinished Unicode draft')
+        await page.locator('#quick-draft').press('Enter')
+        await wait_bytes(first.pty, quick.encode())
+        await wait_page(page,"document.getElementById('quick-draft').value===''&&document.getElementById('draft').value===''",timeout=6000)
+        actual=bytes(first.pty.written)[len(before):]
+        assert actual in (quick.encode()+b'\r', b'\x1b[200~'+quick.encode()+b'\x1b[201~\r'), repr(actual)
+        report['stage']='unicode_sent'
+        if await page.locator('#quick-draft').input_value() or await page.locator('#draft').input_value():
+            raise AssertionError('Quick composer did not clear both draft fields')
         before = bytes(first.pty.written)
         await page.locator("#mode").click()
         await page.locator("#draft").fill(expected)
         if bytes(first.pty.written) != before:
             raise AssertionError("Composer sent its unfinished draft")
         await page.locator("#send").click()
+        if await page.locator('#composer').evaluate('e=>e.open'):
+            raise AssertionError('Editor did not close after accepting input')
         await wait_bytes(first.pty, expected.encode() + b"\r")
+        report['stage']='modal_sent'
         if bytes(first.pty.written)[len(before):] != expected.encode() + b"\r":
             raise AssertionError("Composer output was duplicated or corrupted")
         if await page.locator("#draft").input_value():
             raise AssertionError("Composer did not clear the submitted draft")
-        await page.locator("#screen").tap()  # Focus only the fake terminal after the editor closes.
+        bounds=await page.locator('#screen').bounding_box()
+        x=bounds['x']+bounds['width']/2;y=bounds['y']+bounds['height']/2
+        await touch.send('Input.dispatchTouchEvent',{'type':'touchStart','touchPoints':[{'x':x,'y':y}]})
+        await touch.send('Input.dispatchTouchEvent',{'type':'touchEnd','touchPoints':[]})
+        await page.locator('.xterm-helper-textarea').focus()
         await page.locator("#ctrl").click()
         await page.keyboard.press("c")
         await wait_bytes(first.pty, b"\x03")
-        report["fake_input"] = {"ascii_utf8_exact": True, "unfinished_draft_not_sent": True,
+        report['stage']='ctrl_c_sent'
+        report["fake_input"] = {"ascii_utf8_exact": True, "quick_direct_input": True,
+                                "native_ime_tap_and_send": True, "unicode_input": True,
+                                "editor_closed_on_accept": True, "unfinished_draft_not_sent": True,
                                 "submitted_once": True, "ctrl_c_received": True,
                                 "real_shell_process_started": False}
 

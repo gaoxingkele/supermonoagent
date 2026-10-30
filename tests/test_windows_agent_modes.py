@@ -1,4 +1,4 @@
-﻿"""Isolated Windows workspace agent profiles through actual browser asset routes."""
+"""Isolated Windows workspace agent profiles through actual browser asset routes."""
 import asyncio
 from contextlib import asynccontextmanager
 import json
@@ -16,7 +16,7 @@ from test_desktop_ui_updates import wait_ui
 
 EDGE = Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
 MODES = ['codex', 'claude-code', 'grok', 'kimi', 'pi-dev', 'cursor-cli']
-FIXTURE = b'\x1b[38;2;240;180;210mNATIVE Error 123\x1b[0m\r\nError "quoted" sample.py 123 Thinking Working Plan Codex Claude Grok Kimi Cursor\r\n'
+FIXTURE = b'\x1b[38;2;240;180;210mNATIVE Error 123\x1b[0m\r\nError "quoted" sample.py 123 Thinking Working Plan Codex Claude Grok Kimi Cursor\r\nRead(src/review.md:12) Ran git status https://example.test/review\r\nWarning: check evidence\r\n'
 ARTIFACTS = Path(__file__).parents[1] / '.omx/artifacts/windows-agent-modes'
 SCREEN = "p=>Array.from({length:p.term.buffer.active.length},(_,i)=>p.term.buffer.active.getLine(i).translateToString(true)).join('\\n')"
 
@@ -98,7 +98,10 @@ async def check_profiles(tmp_path,frontend,playwright):
                     ARTIFACTS.mkdir(parents=True,exist_ok=True)
                     await page.screenshot(path=str(ARTIFACTS/f'{"frontend" if frontend else "source"}-{mode}.png'))
                 assert len(set(themes))==1
-                assert len(set(decoration_sets))==1,decoration_sets
+                baseline_colors=set(decoration_sets[0])
+                for mode,colors in zip(MODES,decoration_sets):
+                    expected=baseline_colors|({'#c678dd','#56b6c2'} if mode in {'grok','claude-code','cursor-cli'} else set())
+                    assert set(colors)==expected,(mode,colors,expected)
                 assert resizes==baseline
                 assert all(not session.pty.written for session in sessions)
                 # Another window starts automatic, and its explicit selection remains independent.

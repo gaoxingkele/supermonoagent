@@ -10,8 +10,9 @@ from urllib.parse import urlsplit
 
 
 MAX_BYTES = 16 * 1024
+DEFAULT_LIBRARY_ROOT = "D:/aicoding/mylib"
 DEFAULTS = {"provider": "unconfigured", "model": "", "endpoint": "",
-            "auto_context": False, "max_context_chars": 8192}
+            "auto_context": False, "max_context_chars": 8192, "library_root": DEFAULT_LIBRARY_ROOT}
 _PROVIDERS = frozenset({"unconfigured", "codex", "api"})
 
 
@@ -29,7 +30,12 @@ def _unique_object(pairs):
 
 
 def _validate(payload):
-    if not isinstance(payload, dict) or set(payload) != set(DEFAULTS):
+    if not isinstance(payload, dict):
+        raise _invalid()
+    payload = dict(payload)
+    if set(payload) == set(DEFAULTS) - {"library_root"}:
+        payload["library_root"] = DEFAULT_LIBRARY_ROOT
+    if set(payload) != set(DEFAULTS):
         raise _invalid()
     provider, model, endpoint = (payload[key] for key in ("provider", "model", "endpoint"))
     if (not isinstance(provider, str) or provider not in _PROVIDERS
@@ -40,6 +46,19 @@ def _validate(payload):
             or type(payload["max_context_chars"]) is not int
             or not 512 <= payload["max_context_chars"] <= 32768):
         raise _invalid()
+    root = payload["library_root"]
+    if not isinstance(root, str) or not root.strip() or len(root) > 4096 or not root.isprintable() or "\0" in root:
+        raise _invalid()
+    try:
+        path = Path(root)
+        if not path.is_absolute():
+            raise _invalid()
+        path = path.absolute()
+        if path == Path(path.anchor):
+            raise _invalid()
+        payload["library_root"] = root
+    except (OSError, ValueError, TypeError):
+        raise _invalid() from None
     if provider != "api":
         if endpoint:
             raise _invalid()

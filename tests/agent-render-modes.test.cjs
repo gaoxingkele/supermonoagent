@@ -38,6 +38,31 @@ test('six modes and auto assign identical semantic colors without making ordinar
   }finally{term.dispose();}
 });
 
+test('Grok Claude Code and Cursor CLI distinguish tools commands links and warnings without painting prose',async()=>{
+  const term=new Terminal({cols:160,rows:10,allowProposedApi:true});
+  function expectSpan(profile,row,token,color){
+    const line=term.buffer.active.getLine(row),x=line.translateToString(true).indexOf(token);
+    assert.ok(x>=0,profile.id+' missing fixture '+token);
+    const spans=C.highlightSpans(line,term.cols,profile);
+    assert.ok(spans.some(span=>span.x===x&&span.width===token.length&&span.foregroundColor===color),
+      profile.id+' '+token+' '+JSON.stringify(spans));
+  }
+  try{
+    for(const id of ['grok','claude-code','cursor-cli']){
+      const status=id==='grok'?'Reasoning':id==='claude-code'?'Thinking':'Working',tool=id==='grok'?'run_command(':'TodoWrite(',p=profile(id);
+      await write(term,`${status} Read(src/review.md:12) ${tool})\r\nRan git status; pytest https://example.test/review\r\nWarning: check evidence\r\nError: failed\r\n普通中文正文，不包含代码标记。\r\n\x1b[38;2;240;180;210mRead(src/review.md:12) Warning\x1b[0m\r\n\x1b[2mRead(src/review.md:12)\x1b[0m\r\n`);
+      const first=id==='grok'?0:id==='claude-code'?7:14;
+      expectSpan(p,first,status,'#82cfff');expectSpan(p,first,'Read(','#c678dd');expectSpan(p,first,tool,'#c678dd');
+      expectSpan(p,first,'src/review.md:12','#e5c07b');
+      for(const token of ['Ran','git','pytest','https://example.test/review'])expectSpan(p,first+1,token,'#56b6c2');
+      expectSpan(p,first+2,'Warning','#e5c07b');expectSpan(p,first+3,'Error','#e06c75');
+      assert.deepEqual(C.highlightSpans(term.buffer.active.getLine(first+4),term.cols,p),[],id+' must not paint ordinary prose');
+      for(const row of [first+5,first+6])assert.deepEqual(C.highlightSpans(term.buffer.active.getLine(row),term.cols,p),[],id+' changed native styling');
+      assert.equal(term.buffer.active.getLine(first+4).translateToString(true),'普通中文正文，不包含代码标记。');
+    }
+  }finally{term.dispose();}
+});
+
 test('profiles load individually with exact identity and bounded same-origin fetch',async()=>{
   const beforeFetch=globalThis.fetch,beforeLocation=globalThis.location;let calls=0;
   globalThis.location={href:'https://ui.example/workspace',origin:'https://ui.example'};
@@ -174,7 +199,7 @@ test('setProfile disposes and repaints without PTY writes; dispose releases list
   try{
     flush();const original=decorations.slice();assert.ok(original.length);
     h.setProfile(profile('claude-code'));assert.ok(original.every(d=>d.isDisposed));flush();
-    assert.ok(decorations.some(d=>!d.isDisposed&&d.options.foregroundColor===profile('claude-code').tokens[3].color));
+    assert.ok(decorations.some(d=>!d.isDisposed&&d.options.foregroundColor===profile('claude-code').tokens.find(token=>token.pattern.includes('(?:py|js')).color));
     h.setEnabled(false);flush();assert.ok(decorations.every(d=>d.isDisposed));
     h.setEnabled(true);flush();markers.at(-1).isDisposed=true;events.write();flush();
     events.resize();assert.equal(jobs.size,1);h.dispose();h.dispose();

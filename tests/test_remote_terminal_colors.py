@@ -138,14 +138,15 @@ async def _exercise(playwright, renderer):
                                     await page.goto('about:blank')
                                     await page.goto(urls[platform])
                                 await page.wait_for_function("platform => {const t=platform==='desktop'?window.smaWorkspace?.terminal:window.MobileTerminal?.terminal;return t&&Array.from({length:t.buffer.active.length},(_,i)=>t.buffer.active.getLine(i).translateToString(true)).join('\\n').includes('REMOTE-COLOR-END');}", arg=platform)
-                                await page.wait_for_function("colorDecorations.some(d=>!d.isDisposed&&d.options.foregroundColor==='#ffcb6b')", timeout=3000)
+                                await page.wait_for_function("colorDecorations.some(d=>!d.isDisposed&&d.options.foregroundColor===TerminalClient.commonAgentProfile.tokens[2].color)", timeout=3000)
                                 report = await page.evaluate(CELL_REPORT, platform)
                                 assert renderer.upper() in report['renderer'].upper(), report['renderer']
                                 _assert_cells(report)
                                 plain = next(row for row in report['lines'] if row['text']=='app.py 42 "text"')
                                 assert all(cell['defaultFg'] for cell in plain['cells'])
                                 marks = [mark for mark in report['decorations'] if mark['line']==plain['line']]
-                                assert any(mark['color']=='#ffcb6b' for mark in marks)
+                                expected_color = await page.evaluate('TerminalClient.commonAgentProfile.tokens[2].color')
+                                assert any(mark['color']==expected_color for mark in marks)
                                 reports[platform+'_'+phase] = report
                                 await page.screenshot(path=str(ARTIFACTS/f'{renderer}-{platform}-{phase}.png'))
                         desktop = pages['desktop']
@@ -162,14 +163,14 @@ async def _exercise(playwright, renderer):
                         assert await desktop.evaluate('colorDecorations.every(d=>d.isDisposed)')
                         _assert_cells(await desktop.evaluate(CELL_REPORT, 'desktop'))
                         await toggle.click()
-                        await desktop.wait_for_function("colorDecorations.some(d=>!d.isDisposed&&d.options.foregroundColor==='#ffcb6b')")
+                        await desktop.wait_for_function("colorDecorations.some(d=>!d.isDisposed&&d.options.foregroundColor===TerminalClient.commonAgentProfile.tokens[2].color)")
                         _assert_cells(await desktop.evaluate(CELL_REPORT, 'desktop'))
                         await desktop.evaluate("() => {window.closedDecorations=colorDecorations.filter(d=>!d.isDisposed);smaWorkspace.closeView(smaWorkspace.activeSession);}")
                         assert await desktop.evaluate('closedDecorations.length>0&&closedDecorations.every(d=>d.isDisposed)')
                         assert await desktop.evaluate('smaWorkspace.panes.size') == 0
                         assert session.id in daemon.hub.sessions
                         await desktop.evaluate('sid=>smaWorkspace.openSession(sid,false)', session.id)
-                        await desktop.wait_for_function("colorDecorations.some(d=>!d.isDisposed&&d.options.foregroundColor==='#ffcb6b')")
+                        await desktop.wait_for_function("colorDecorations.some(d=>!d.isDisposed&&d.options.foregroundColor===TerminalClient.commonAgentProfile.tokens[2].color)")
                         _assert_cells(await desktop.evaluate(CELL_REPORT, 'desktop'))
                         reports['desktop_toggle_and_reload_preserved'] = True
                         reports['desktop_closed_view_disposed_decorations'] = True

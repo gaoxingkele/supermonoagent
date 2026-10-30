@@ -79,6 +79,7 @@ async def browser_page(playwright, url='ws://127.0.0.1:8819/file/ws', *, enabled
               if(cfg.enabled)window.SuperMonoFileWorkspaceConfig={enabled:true,broker_url:cfg.url,local_room:'A'};
             }''', {'url': url, 'enabled': enabled, 'token': token})
             await page.evaluate(CLIENT.read_text(encoding='utf-8'))
+            await page.evaluate((STATIC / 'file-upload.js').read_text(encoding='utf-8'))
             await page.evaluate(UI.read_text(encoding='utf-8'))
             yield page, errors, sockets
         finally:

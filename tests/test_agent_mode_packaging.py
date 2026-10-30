@@ -17,7 +17,7 @@ MODES=('codex','claude-code','grok','kimi','pi-dev','cursor-cli')
 def test_fixed_profile_resources_and_api2_catalogs():
     assert ui_updates.NATIVE_API==NATIVE_UPDATE_API==2
     assert len(ui_updates.FILES['desktop'])==len(UI_FILES)==17
-    assert len(ui_updates.FILES['android'])==16
+    assert len(ui_updates.FILES['android'])==18
     assert set(UI_FILES)==ui_updates.FILES['desktop']
     for mode in MODES:
         path='agent-modes/'+mode+'.json'

@@ -126,7 +126,7 @@
     host.helloSent=false;host.subscriptionSignature='';host.phase='connecting';host.error='';host.meter.reset(performance.now(),host.retry);host.rates={tx:0,rx:0};host.pingSentAt=null;
     for(const pane of panes.values())if(pane.host===host){
       pane.resumeControl=pane.resumeControl||host.controls[pane.raw]?.owner===true;
-      pane.generation=host.generation;pane.bindHeader();pane.bindInput();pane.bindObserver();pane.writing=false;pane.lastSize='';pane.lastAttempt='';pane.limitedSize=null;pane.resizePaused=false;pane.frames=[];pane.replayPending=0;
+      pane.generation=host.generation;pane.bindHeader();pane.bindInput();pane.bindObserver();pane.writing=false;pane.lastSize='';pane.lastAttempt='';pane.limitedSize=null;pane.resizePaused=false;pane.frames=[];pane.replayPending=0;pane.recoveryPending=false;
     }
     let url;try{url=C.socketURL(host.config.relay,location.origin);const safe=new URL(url);safe.searchParams.delete('token');url=safe.toString();}
     catch(error){host.error=error.message;host.phase='invalid';updateConnection();renderHosts();return;}
@@ -221,20 +221,29 @@
   function recoverPane(pane){
     if(!livePane(pane))return;
     pane.historyCursor=null;pane.historyInitialized=false;
-    if(pane.recoveryGeneration===pane.host.generation)return;
-    pane.recoveryGeneration=pane.host.generation;metrics.historyRecoveries++;
+    if(pane.replayPending||pane.recoveryPending)return;
+    pane.recoveryPending=true;pane.recoveryGeneration=pane.host.generation;
     const sessions=openTabs.map(id=>panes.get(id)).filter(item=>item?.host===pane.host&&sessionInfo(item.sid)).map(item=>item.raw);
-    send(pane,16,{sessions,refresh:true});
+    if(send(pane,16,{sessions,refresh:true}))metrics.historyRecoveries++;
+    else pane.recoveryPending=false;
   }
   function drainPane(pane){
     if(!livePane(pane)||pane.writing||pane.resizeRequest||!pane.host.controls[pane.raw]||!pane.frames.length)return;
     // Catalog updates can arrive while an earlier write is parsing. Keep each
     // frame on the grid confirmed when it arrived, including queued erase/cursor sequences.
-    const frame=pane.frames.shift(),replay=frame.op===8||['snapshot','resume'].includes(frame.context?.kind),size=frame.grid||pane.host.controls[pane.raw];
+    const frame=pane.frames.shift(),replay=frame.op===8||['snapshot','resume'].includes(frame.context?.kind),size=frame.grid||pane.host.controls[pane.raw],buffer=pane.term.buffer.active;
+    const readingDistance=!pane.followOutput&&buffer.type==='normal'&&Number.isFinite(buffer.viewportY)?Math.max(0,buffer.baseY-buffer.viewportY):null;
     const tracked=frame.context?C.historyFrameBytes(frame.context,frame.bytes,pane.historyCursor):{bytes:frame.bytes,position:null,reset:replay};
     if(!tracked){
       if(replay)pane.replayPending=Math.max(0,pane.replayPending-1);
       recoverPane(pane);drainPane(pane);return;
+    }
+    if(tracked.reset&&readingDistance!==null&&buffer.baseY>0){
+      if(replay)pane.replayPending=Math.max(0,pane.replayPending-1);
+      pane.recoveryPending=false;pane.historyInitialized=true;
+      if(frame.context?.v===2&&tracked.position!==null)pane.historyCursor={position:tracked.position,epoch:frame.context.epoch,stream_id:frame.context.stream_id};
+      pane.pendingRefreshOnFollow=true;pane.history.textContent='正在阅读历史，返回底部后同步当前画面';pane.history.hidden=false;
+      drainPane(pane);return;
     }
     frame.bytes=tracked.bytes;
     applyGrid(pane,size);
@@ -248,8 +257,11 @@
     const writeGeneration=pane.generation;
     pane.term.write(frame.bytes,()=>{
       if(!livePane(pane)||pane.generation!==writeGeneration)return;
-      pane.writing=false;if(replay){pane.replayPending=Math.max(0,pane.replayPending-1);pane.historyInitialized=true;}
+      pane.writing=false;if(replay){pane.replayPending=Math.max(0,pane.replayPending-1);pane.historyInitialized=true;if(!pane.replayPending)pane.recoveryPending=false;}
       if(frame.context?.v===2&&tracked.position!==null)pane.historyCursor={position:tracked.position,epoch:frame.context.epoch,stream_id:frame.context.stream_id};
+      if(readingDistance!==null&&pane.term.buffer.active.type==='normal'){
+        pane.followingProgrammatically=true;pane.term.scrollToLine(Math.max(0,pane.term.buffer.active.baseY-readingDistance));pane.followingProgrammatically=false;
+      }
       metrics.renderMilliseconds+=performance.now()-before;metrics.parsedBytes+=frame.bytes.length;
       if(pane.followFrame)keepFollowing(pane);
       drainPane(pane);
@@ -415,6 +427,7 @@
   }
   function keepFollowing(pane){
     if(!livePane(pane)||!pane.followOutput)return;
+    if(pane.pendingRefreshOnFollow){pane.pendingRefreshOnFollow=false;recoverPane(pane);}
     if(pane.followFrame)return;
     const context=owner(pane.host);let settled=0;
     const follow=()=>{
@@ -428,10 +441,11 @@
     pane.followFrame=requestAnimationFrame(follow);
   }
   function resizeGrid(pane,size){
-    const term=pane.term;
+    const term=pane.term,buffer=term.buffer.active,distance=!pane.followOutput&&buffer.type==='normal'&&Number.isFinite(buffer.viewportY)?Math.max(0,buffer.baseY-buffer.viewportY):null;
     if(term.cols!==size.cols||term.rows!==size.rows){
-      pane.followingProgrammatically=true;term.resize(size.cols,size.rows);pane.followingProgrammatically=false;
-      keepFollowing(pane);
+      pane.followingProgrammatically=true;term.resize(size.cols,size.rows);
+      if(distance!==null&&term.buffer.active.type==='normal')term.scrollToLine(Math.max(0,term.buffer.active.baseY-distance));
+      pane.followingProgrammatically=false;keepFollowing(pane);
     }else if(pane.followGeometry!==viewportGeometry(pane))keepFollowing(pane);
   }
   function applyGrid(pane,grid=null){
@@ -977,7 +991,8 @@
   $('rename-cancel').onclick=()=>$('rename-dialog').close();$('rename-form').onsubmit=e=>{e.preventDefault();send(renameWindow,15,{action:'title',window:renameWindow?.id,title:$('rename-value').value.trim()});$('rename-dialog').close();};
   $('terminate-cancel').onclick=()=>$('terminate-dialog').close();$('terminate-form').onsubmit=async e=>{
     e.preventDefault();const context=terminateSession,host=context?.host,dialog=$('terminate-dialog'),message=dialog.querySelector('p'),submit=dialog.querySelector('.danger');
-    if(!validOwner(context)||!host.connected||!send(context,9,{session:context.id})){message.textContent='当前电脑未连接，结束指令未发送。请恢复连接后重试。';return;}
+    if(!validOwner(context)){dialog.close();return;}
+    if(!host.connected||!send(context,9,{session:context.id})){message.textContent='当前电脑未连接，结束指令未发送。请恢复连接后重试。';return;}
     submit.disabled=true;message.textContent='正在等待后台确认结束会话…';
     try{
       const exists=()=>host.catalog.some(win=>(win.sessions||[]).some(session=>session.id===context.id)),deadline=performance.now()+8000;
@@ -1169,7 +1184,7 @@
   function renderAuthField(prefix){
     const workspace=prefix==='workspace',auth=$(workspace?'workspace-auth':'connection-auth'),input=$(workspace?'workspace-token':'access-token'),remember=$(workspace?'workspace-remember':'remember-token');
     const settings={relay:$(workspace?'workspace-relay':'relay-url').value,code:$(workspace?'workspace-code':'relay-code').value},account=accountFor(settings.relay),using=auth.value==='account';
-    const local=tokenlessLocal(settings);
+    const local=tokenlessLocal(settings)&&(!workspace?endpoint(settings)===connectionOwner?.target:true);
     input.closest('label').hidden=local;remember.closest('label').hidden=local;auth.closest('label').hidden=local;
     if(!workspace)$('relay-code').closest('label').hidden=local;
     if(local){$(workspace?'workspace-account-status':'connection-account-status').textContent='本机 127.0.0.1 直连无需 Token 和房间号。';return;}
@@ -1184,6 +1199,7 @@
     }else connectionAuthorization=null;
     renderAuthField('connection');
   };
+  $('relay-url').addEventListener('input',()=>renderAuthField('connection'));
   function renderAccountPanel(){
     let account=null,message='';try{const url=accountTransport($('account-relay-url').value||$('default-relay').value);account=accountFor(url);message=account?'已登录 '+account.account.email+' · '+(account.phase==='connected'?'授权电脑目录已连接':account.phase):'登录后仅显示管理员授予此账号的电脑。';}catch(error){message=error.message;}
     $('relay-account-status').textContent=message;$('relay-account-logout').disabled=!account;$('relay-account-computers').disabled=!account?.hosts.some(host=>host.online);

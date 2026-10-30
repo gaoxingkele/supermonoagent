@@ -49,7 +49,9 @@ def fixture(tmp_path, signer, monkeypatch):
     static = root / 'src/supermonoagent/static'
     static.mkdir(parents=True)
     (static / 'update-trust.json').write_text(json.dumps(signer[3]))
-    for name in list(release.DESKTOP) + ['clipboard-files.js', 'mylib-assistant.js', 'assistant-chat.js']:
+    auxiliary = ['file-client.js', 'file-upload.js', 'file-workspace-ui.js', 'clipboard-files.js', 'terminal-composer.js',
+                 'terminal-questions.js', 'clipboard-context-menu.js', 'mylib-assistant.js', 'assistant-chat.js']
+    for name in list(release.DESKTOP) + auxiliary:
         path = static / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(('NEW desktop ' + name).encode())
@@ -103,7 +105,7 @@ def test_reuse_preserves_exact_android_bytes_catalog_and_api_despite_dirty_sourc
     expected['url'] = 'releases/0.2.39/android.zip'
     assert payload['artifacts']['android'] == expected
     assert len(payload['artifacts']['desktop']['files']) == 17
-    assert len(payload['artifacts']['android']['files']) == 16
+    assert len(payload['artifacts']['android']['files']) == 18
     assert all(item['native_api'] == 2 for item in payload['artifacts'].values())
     assert set(path.name for path in folder.iterdir()) == {'desktop.zip', 'android.zip', 'manifest.json'}
 

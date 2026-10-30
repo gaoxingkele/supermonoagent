@@ -1,4 +1,4 @@
-﻿"""Unified relay login/discovery through the real desktop UI and isolated PTYs."""
+"""Unified relay login/discovery through the real desktop UI and isolated PTYs."""
 import asyncio
 from contextlib import asynccontextmanager
 import json
@@ -382,11 +382,37 @@ async def _check_direct_account_switch(playwright):
                 await login(page,relay_url)
                 await page.wait_for_function("document.querySelector('#workspace-dialog').open")
                 await choose_account_host(page,relay_url,'room-remote')
+                await page.evaluate("""() => {
+                  window.accountHistoryFrames=[];
+                  const original=TerminalClient.historyPayload;
+                  TerminalClient.historyPayload=payload=>{
+                    const frame=original(payload);
+                    accountHistoryFrames.push({context:frame.context,
+                      text:new TextDecoder().decode(frame.bytes)});
+                    return frame;
+                  };
+                }""")
                 await page.locator('#workspace-form').evaluate('(form)=>form.requestSubmit()')
                 await page.wait_for_function("smaWorkspace.activeHost.config.code==='room-remote'&&smaWorkspace.activeHost.connected&&smaWorkspace.terminal")
                 host_id=await page.evaluate('smaWorkspace.activeHost.id')
                 sessions[1].pty.inbox.put(b'ACCOUNT-A-PRIVATE-CONTENT\r\n')
-                await page.wait_for_function("(()=>{const t=smaWorkspace.terminal;return Array.from({length:t.buffer.active.length},(_,i)=>t.buffer.active.getLine(i)?.translateToString(true)||'').join('\\n').includes('ACCOUNT-A-PRIVATE-CONTENT');})()")
+                try:
+                    await page.wait_for_function("(()=>{const t=smaWorkspace.terminal;return Array.from({length:t.buffer.active.length},(_,i)=>t.buffer.active.getLine(i)?.translateToString(true)||'').join('\\n').includes('ACCOUNT-A-PRIVATE-CONTENT');})()")
+                except Exception:
+                    print('ACCOUNT_SWITCH_STATE', await page.evaluate("""() => {
+                      const w=smaWorkspace,p=w.activePane,h=w.activeHost;
+                      return {host:h.id,connected:h.connected,phase:h.phase,error:h.error,
+                        controls:h.controls,catalog:h.catalog.map(win=>({id:win.id,sessions:win.sessions.map(s=>s.id)})),
+                        active:w.activeSession,ready:p?.ready,writing:p?.writing,frames:p?.frames.length,
+                        replay:p?.replayPending,recovery:p?.recoveryPending,cursor:p?.historyCursor,
+                        follow:p?.followOutput,initialized:p?.historyInitialized,pendingRefresh:p?.pendingRefreshOnFollow,
+                        baseY:p?.term.buffer.active.baseY,viewportY:p?.term.buffer.active.viewportY,
+                        bufferType:p?.term.buffer.active.type,geometry:p?.followGeometry,userScrollUntil:p?.userScrollUntil,
+                        metrics:w.metrics,resize:p?.resizeRequest&&{id:p.resizeRequest.id,stage:p.resizeRequest.stage},
+                        historyFrames:window.accountHistoryFrames,
+                        lines:p?Array.from({length:p.term.buffer.active.length},(_,i)=>p.term.buffer.active.getLine(i)?.translateToString(true)||''):[]};
+                    }"""))
+                    raise
                 await page.evaluate('()=>{window.originalAccountPane=smaWorkspace.activePane;}')
                 await page.locator('#connect-button').click()
                 await page.locator('#relay-profiles-dialog summary').click()

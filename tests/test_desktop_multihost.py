@@ -1,4 +1,4 @@
-﻿"""Desktop identity routing against two isolated daemons on one loopback relay."""
+"""Desktop identity routing against two isolated daemons on one loopback relay."""
 import asyncio
 import json
 from pathlib import Path
@@ -133,6 +133,7 @@ async def _parallel_hosts(playwright):
                         await page.evaluate("smaWorkspace.connections.get('office:machine:one').ws.close()")
                         await page.wait_for_function("smaWorkspace.connections.get('office:machine:one').connected && smaWorkspace.connections.get('office:machine:one').generation>3")
                         await page.locator('#terminate-form').evaluate('(form)=>form.requestSubmit()')
+                        assert not await page.locator('#terminate-dialog').evaluate('dialog=>dialog.open')
                         assert right_session.id in remote.hub.sessions
                         # The healthy host still renders and accepts input throughout remote reconnects.
                         left_session.pty.inbox.put(b'LOCAL-AFTER-DROP\r\n')

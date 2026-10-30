@@ -76,7 +76,7 @@
 
 OP16/17/5 都受 Token 所有权与订阅约束。OP18 的回放按 Token 所有权过滤，relay 客户端还按频道过滤；OP19 只发给已订阅且仍有权限的连接。客户端内部的 host/session 元组键不能放进线协议；不同 daemon 的相同 raw ID 由其所属连接隔离。关闭标签页只从 OP16 订阅集移除该 ID，不发送 OP9。
 
-HELLO 可协商 `history_context:1` 和 `history_resume:1`。OP16 的 `history_after` 按会话携带 `{position,epoch,stream_id}`；daemon 仅在保留区间、尺寸 epoch 和流身份都匹配时发送 `kind:resume` 的 OP23，否则回退 `kind:snapshot`。桌面与 Android 只在 xterm 写回调确认后推进游标；缺口或身份不匹配必须请求新快照，不得续接损坏的 ANSI 流。旧 daemon/客户端继续使用 OP3/OP8。
+HELLO 可协商 `history_context:1` 和 `history_resume:1`。OP16 的 `history_after` 按会话携带 `{position,epoch,stream_id}`；daemon 仅在保留区间、尺寸 epoch 和流身份都匹配时发送 `kind:resume` 的 OP23，否则回退 `kind:snapshot`。桌面与 Android 只在 xterm 写回调确认后推进游标；同一流的连续实时输出可以跨尺寸 epoch，流身份变化或字节位置缺口必须请求新快照，不得续接损坏的 ANSI 流。旧 daemon/客户端继续使用 OP3/OP8。
 
 ### 任务完成事件
 

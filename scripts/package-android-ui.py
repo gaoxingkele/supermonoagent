@@ -9,7 +9,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 MOBILE_FILES = ("index.html", "app.js", "app.css", "mobile-core.js")
-VENDOR_FILES = ("xterm.js", "xterm.css", "xterm-fit.js", "xterm-unicode11.js", "xterm-webgl.js", "terminal-client.js")
+VENDOR_FILES = ("xterm.js", "xterm.css", "xterm-fit.js", "xterm-unicode11.js", "xterm-webgl.js", "terminal-client.js", "file-client.js", "file-upload.js")
 AGENT_MODES = ("codex", "claude-code", "grok", "kimi", "pi-dev", "cursor-cli")
 MAX_BYTES = 5 * 1024 * 1024
 
@@ -17,7 +17,7 @@ MAX_BYTES = 5 * 1024 * 1024
 def package(output_root=None, revision=None):
     sources = {f"mobile/{name}": ROOT / "android/assets/mobile" / name for name in MOBILE_FILES}
     sources.update({f"mobile/vendor/{name}": ROOT / "src/supermonoagent/static" / name for name in VENDOR_FILES})
-    sources.update({f"mobile/agent-modes/{name}.json": ROOT / "android/assets/mobile/agent-modes" / (name+".json") for name in AGENT_MODES})
+    sources.update({f"mobile/agent-modes/{name}.json": ROOT / "src/supermonoagent/static/agent-modes" / (name+".json") for name in AGENT_MODES})
     payloads = {path: source.read_bytes() for path, source in sources.items()}
     if sum(map(len, payloads.values())) > MAX_BYTES:
         raise ValueError("Mobile UI bundle exceeds the 5 MiB limit")

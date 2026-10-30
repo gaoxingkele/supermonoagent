@@ -12,9 +12,11 @@ test('session dots follow live output, idle timeout and disconnection',()=>{
   assert.equal(M.agentType({title:'Task',shell:'claude'}),'Claude Code');
   assert.equal(M.agentType({title:'Build',shell:'cmd'}),'其他');
 });
-test('recovery uses a close code accepted by the actual WebSocket API',()=>{
+test('recoverable transport faults use a retryable close code accepted by WebSocket',()=>{
   const ws=new WebSocket('ws://127.0.0.1:9');ws.addEventListener('error',()=>{});
   assert.doesNotThrow(()=>M.closeForRecovery(ws,'output backlog'));
+  const calls=[],fake={close:(...args)=>calls.push(args)};M.closeForRecovery(fake,'output backlog');
+  assert.deepEqual(calls,[[4000,'output backlog']]);
   const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'../android/assets/mobile/app.js'),'utf8');
   assert.ok(!source.includes('.close(1013'));
 });
@@ -51,6 +53,11 @@ test('composer and control keys preserve Unicode; never send preedit',()=>{
   assert.equal(M.composerAction({key:'Enter',shiftKey:true,isComposing:false}),'newline');
   assert.equal(M.composerAction({key:'Enter',shiftKey:false,isComposing:false}),'send');
   assert.equal(M.alternateScroll(1,false),'\x1b[B');assert.equal(M.alternateScroll(-1,true),'\x1bOA');
+});
+
+test('only an identified Codex process owns remote TUI paging',()=>{
+  for(const session of [{agent:'codex'},{learnedAgent:'Codex'},{shell:'codex'},{command:'C:\\Tools\\codex.exe'},{argv:['codex.js','--no-alt-screen']}])assert.equal(M.codexOwnedPaging(session),true);
+  for(const session of [{agent:'claude-code',shell:'codex'},{title:'Codex workspace',shell:'powershell'},{shell:'cmd'},{command:'notcodex.exe'}])assert.equal(M.codexOwnedPaging(session),false);
 });
 
 test('Android committed Enter and beforeinput submit without sending preedit or Shift+Enter',()=>{

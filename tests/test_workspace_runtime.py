@@ -123,6 +123,13 @@ async def _check_browser(playwright, edge, legacy):
                         await page.locator("#connect-button").click()
                         await page.locator('#relay-profiles-dialog summary').click()
                         await page.locator('#relay-profiles-advanced').click()
+                        print('ADVANCED_DIALOG_STATE', await page.evaluate("""() => ({
+                          dialogs:[...document.querySelectorAll('dialog[open]')].map(d=>d.id),
+                          relayCode:{display:getComputedStyle(document.getElementById('relay-code')).display,visibility:getComputedStyle(document.getElementById('relay-code')).visibility,labelHidden:document.getElementById('relay-code').closest('label').hidden,rect:document.getElementById('relay-code').getBoundingClientRect().toJSON()},
+                          connectionDisplay:getComputedStyle(document.getElementById('connection-dialog')).display,
+                          auth:document.getElementById('connection-auth').value,
+                          error:document.getElementById('connection-error').textContent
+                        })"""), 'PAGE_ERRORS', errors)
                         await page.locator("#relay-url").fill(f"ws://127.0.0.1:{rejected.sockets[0].getsockname()[1]}/ws")
                         await page.locator("#relay-code").fill("bad-room")
                         await page.locator("#connection-form").get_by_role("button", name="连接", exact=True).click()
@@ -161,12 +168,38 @@ async def _check_viewport_follow(playwright, edge):
                     page = await browser.new_page(viewport={"width": 1100, "height": 760}, has_touch=True)
                     await page.goto(f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/workspace?direct=1&renderer=dom#token={daemon.token}")
                     await page.wait_for_function("smaWorkspace?.terminal && smaWorkspace.connected")
+                    await page.evaluate("""() => {
+                      window.nanScrolls=[];
+                      const service=smaWorkspace.terminal._core._bufferService,scroll=service.scrollLines;
+                      service.scrollLines=function(...args){
+                        if(!Number.isFinite(args[0]))nanScrolls.push({amount:String(args[0]),stack:new Error().stack});
+                        return scroll.apply(this,args);
+                      };
+                    }""")
                     await page.evaluate("smaWorkspace.takeControl()")
                     settled = "!smaWorkspace.activePane.resizeRequest && !smaWorkspace.activePane.writing && !smaWorkspace.activePane.frames.length && !smaWorkspace.activePane.redrawTimer && !smaWorkspace.activePane.redrawAfterReplay && smaWorkspace.controls[smaWorkspace.activeSession]?.cols===smaWorkspace.terminal.cols"
                     for width, height in [(1100, 760), (880, 608), (733, 507), (1920, 1080), (1280, 720), (430, 760), (344, 608), (320, 507)]:
                         await page.set_viewport_size({"width": width, "height": height})
                         await page.wait_for_function(settled)
-                        await page.wait_for_function("(()=>{const t=smaWorkspace.terminal,b=t.buffer.active;return Array.from({length:t.rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)||'').some(line=>line.includes('STATUS '+t.cols+'x'+t.rows));})()", timeout=3000)
+                        try:
+                            await page.wait_for_function("(()=>{const t=smaWorkspace.terminal,b=t.buffer.active;return Array.from({length:t.rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)||'').some(line=>line.includes('STATUS '+t.cols+'x'+t.rows));})()", timeout=3000)
+                        except Exception:
+                            print('VIEWPORT_STATE', width, height, await page.evaluate("""() => {
+                              const s=smaWorkspace,p=s.activePane,t=p.term,b=t.buffer.active;
+                              return {cols:t.cols,rows:t.rows,controls:s.controls[p.sid],request:p.resizeRequest,
+                                paused:p.resizePaused,follow:p.followOutput,cursor:p.historyCursor,
+                                baseY:b.baseY,viewportY:b.viewportY,frames:p.frames.length,
+                                cell:t._core._renderService.dimensions.css.cell,
+                                scrollTop:t.element.querySelector('.xterm-viewport').scrollTop,
+                                followFrame:p.followFrame,followGeometry:p.followGeometry,nanScrolls,
+                                lines:Array.from({length:b.length},(_,i)=>b.getLine(i).translateToString(true))};
+                            }"""))
+                            print('VIEWPORT_AFTER_BOTTOM', await page.evaluate("""() => {
+                              const t=smaWorkspace.terminal;t.scrollToBottom();
+                              return {viewportY:t.buffer.active.viewportY,baseY:t.buffer.active.baseY,
+                                follow:smaWorkspace.activePane.followOutput};
+                            }"""))
+                            raise
                         assert await page.evaluate("smaWorkspace.terminal.buffer.active.viewportY===smaWorkspace.terminal.buffer.active.baseY"), (width, height)
                     # Native layout may scroll the old viewport before fit observes new dimensions.
                     await page.evaluate("""() => {
@@ -193,5 +226,39 @@ async def _check_viewport_follow(playwright, edge):
                     await page.wait_for_function(settled)
                     assert await page.evaluate("smaWorkspace.terminal.buffer.active.viewportY<smaWorkspace.terminal.buffer.active.baseY")
                     assert await page.evaluate("(()=>{const t=smaWorkspace.terminal,b=t.buffer.active;return Array.from({length:t.rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)||'').some(line=>line.includes('HISTORY_ROW_'));})()")
+                finally:
+                    await browser.close()
+
+
+def test_zero_height_viewport_scroll_keeps_finite_position():
+    playwright = pytest.importorskip("playwright.async_api")
+    edge = Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe")
+    if not edge.exists():
+        pytest.skip("Local Edge required")
+    asyncio.run(_check_zero_height_scroll(playwright, edge))
+
+
+async def _check_zero_height_scroll(playwright, edge):
+    async with isolated_host() as (daemon, _direct, _relay):
+        window = daemon.hub.open_window("Viewport zero-height probe", owner=daemon.token)
+        session = daemon.hub.open_cli(window.id, "cmd")
+        async with serve(daemon.handle_socket, "127.0.0.1", 0, process_request=daemon.serve_http) as server:
+            async with playwright.async_playwright() as runtime:
+                browser = await runtime.chromium.launch(executable_path=str(edge), headless=True)
+                try:
+                    page = await browser.new_page(viewport={"width": 1100, "height": 760})
+                    errors = []
+                    page.on("pageerror", lambda error: errors.append(str(error)))
+                    await page.goto(f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/workspace?direct=1&renderer=dom#token={daemon.token}")
+                    await page.wait_for_function("smaWorkspace?.terminal && smaWorkspace.connected")
+                    assert await page.evaluate("""() => {
+                      const term=smaWorkspace.terminal,viewport=term._core.viewport;
+                      Object.defineProperty(viewport,'_currentRowHeight',{value:0,configurable:true});
+                      viewport._ignoreNextScrollEvent=false;
+                      viewport._viewportElement.scrollTop=0;
+                      viewport._handleScroll(new Event('scroll'));
+                      return Number.isFinite(term.buffer.active.viewportY)&&term.buffer.active.viewportY===0;
+                    }""")
+                    assert not errors, errors
                 finally:
                     await browser.close()

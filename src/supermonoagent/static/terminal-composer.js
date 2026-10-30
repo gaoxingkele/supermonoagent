@@ -17,14 +17,15 @@
   textarea.placeholder='自由编辑多行文本；支持正常 Ctrl+V';
   const hint=node('p','编辑后粘贴到当前终端，不额外按 Enter；提交行为由终端程序决定。草稿会保留。');hint.id='terminal-composer-hint';
   const paste=button('terminal-composer-paste','粘贴文本'),fileLabel=node('label','选择附件（每批最多 32 个，每个不超过 64 MiB）');
-  const picker=node('input');picker.id='terminal-composer-files-input';picker.type='file';picker.multiple=true;fileLabel.htmlFor=picker.id;
+  const picker=node('input');picker.id='terminal-composer-files-input';picker.type='file';picker.multiple=true;picker.hidden=true;fileLabel.htmlFor=picker.id;
+  const chooseFiles=button('terminal-composer-choose-files','选择文件'),chooseImages=button('terminal-composer-choose-images','选择图片');
   const files=node('ul');files.id='terminal-composer-files';const receipts=node('ul');receipts.id='terminal-composer-receipts';
   const capability=node('p');capability.id='terminal-composer-capability';
   const progress=node('progress');progress.id='terminal-composer-progress';progress.max=100;progress.value=0;progress.hidden=true;
   const state=node('p');state.id='terminal-composer-state';state.setAttribute('role','status');state.setAttribute('aria-live','polite');
   const upload=button('terminal-composer-upload','上传附件'),cancel=button('terminal-composer-cancel','取消上传'),insert=button('terminal-composer-insert','插入输入行'),close=button('terminal-composer-close','关闭');
   insert.className='primary';
-  const actions=node('div');actions.className='composer-actions';actions.append(paste,upload,cancel,insert,close);
+  const actions=node('div');actions.className='composer-actions';actions.append(paste,chooseFiles,chooseImages,upload,cancel,insert,close);
   dialog.append(heading,label,textarea,hint,fileLabel,picker,files,receipts,capability,progress,state,actions);document.body.append(dialog);
   const drafts=[],transfers=new Set();let current=null,inflight=null,nextFile=0,destroyed=false,openError='',listDraft=null,listSignature='';
   function windowOf(host,session){return host.catalog?.find(win=>(win.sessions||[]).some(item=>item.id===session));}
@@ -76,7 +77,7 @@
   function render(){
     const ctx=current,draft=ctx?.draft,target=ctx?.target;
     insert.disabled=!ctx||!canInsert(target)||!draft.text||draft.inserted===draft.revision;
-    paste.disabled=!ctx;picker.disabled=!ctx||inflight?.draft===draft;
+    paste.disabled=!ctx;picker.disabled=!ctx||inflight?.draft===draft;chooseFiles.disabled=chooseImages.disabled=picker.disabled;
     upload.disabled=!ctx||!!inflight||!draft.files.some(item=>!item.pending&&!item.nativeClipboard)||!usableUpload(target)||!active(target);
     cancel.disabled=!inflight||inflight.controller.signal.aborted;
     capability.textContent=ctx&&!usableUpload(target)?'附件上传不可用：当前客户端缺少目标绑定上传入口，或目标连接已变化。文本草稿仍保留。':'附件仅上传保存到目标目录；不会自动导入模型。';
@@ -137,6 +138,19 @@
     }
     draft.files.push(...chosen.map(file=>({id:++nextFile,file})));draft.message='已选择附件，尚未上传保存。';render();return true;
   }
+  chooseFiles.onclick=()=>{picker.accept='';picker.click();};
+  chooseImages.onclick=()=>{picker.accept='image/*';picker.click();};
+  dialog.addEventListener('paste',event=>{
+    if(event.target!==textarea)return;
+    const selected=[...(event.clipboardData?.files||[])],plain=event.clipboardData?.getData('text/plain')||'';
+    if(plain&&!selected.length)return;
+    if(!selected.length&&!window.supermonoClipboardHasFiles)return;
+    event.preventDefault();event.stopImmediatePropagation();
+    const ctx=current;
+    if(!ctx||!active(ctx.target)){if(ctx){ctx.draft.message='目标窗口已变化，请重新选择后再粘贴附件。';render();}return;}
+    if(selected.length&&!addFiles(selected))return;
+    startUpload(selected.length===0,ctx);
+  });
   picker.addEventListener('change',()=>{const chosen=[...(picker.files||[])];picker.value='';addFiles(chosen);});
   async function startUpload(native=false,ctx=current){
     if(!ctx||(!native&&inflight)||transfers.size>=32||!usableUpload(ctx.target)||!active(ctx.target)||(!native&&!ctx.draft.files.some(item=>!item.pending&&!item.nativeClipboard)))return false;

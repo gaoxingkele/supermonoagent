@@ -65,7 +65,26 @@ async def _exercise(playwright, edge):
                     await page.wait_for_function("!!smaWorkspace.panes.get(smaWorkspace.activeSession).resizeRequest")
                     session.pty.inbox.put(b"\r\nWAITING-OUTPUT\r\n")
                     await page.wait_for_function("smaWorkspace.panes.get(smaWorkspace.activeSession).resizePaused===true", timeout=6000)
-                    await page.wait_for_function("Array.from({length:smaWorkspace.terminal.buffer.active.length},(_,i)=>smaWorkspace.terminal.buffer.active.getLine(i).translateToString(true)).join('\\n').includes('WAITING-OUTPUT')")
+                    try:
+                        await page.wait_for_function("Array.from({length:smaWorkspace.terminal.buffer.active.length},(_,i)=>smaWorkspace.terminal.buffer.active.getLine(i).translateToString(true)).join('\\n').includes('WAITING-OUTPUT')")
+                    except Exception:
+                        print('RESIZE_TIMEOUT_STATE', await page.evaluate("""() => {
+                          const s=smaWorkspace,p=s.panes.get(s.activeSession),b=p.term.buffer.active;
+                          return {connected:s.connected,ready:p.ready,paused:p.resizePaused,resizeRequest:p.resizeRequest,
+                            writing:p.writing,queued:p.frames.map(f=>({op:f.op,size:f.bytes.length,grid:f.grid})),
+                            controls:s.controls[p.sid],replay:p.replayPending,
+                            lines:Array.from({length:b.length},(_,i)=>b.getLine(i).translateToString(true))};
+                        }"""))
+                        print('RESIZE_BACKEND_STATE', {
+                            'input_queue': session.pty.inbox.qsize(), 'stopped': session.stop.is_set(),
+                            'position': session.pump.position(), 'flushed': session.pump.flushed_position,
+                            'pending': len(session.pump._pending),
+                            'clients': [{'multiplex': c.multiplex, 'subscriptions': sorted(c.subscriptions),
+                                'pending_replays': sorted(c.pending_replays), 'feed_offsets': c.feed_offsets,
+                                'history_context': c.history_context, 'history_resume': c.history_resume,
+                                'reliable': c.reliable, 'delegated': c.delegated, 'queue': c.queue.qsize()}
+                                for c in daemon.hub.clients.values()]})
+                        raise
                     await page.evaluate("smaWorkspace.takeControl()")
                     await page.wait_for_function(settled, timeout=8000)
 
@@ -83,10 +102,28 @@ async def _exercise(playwright, edge):
                     # Only a diff remains in history; reconnect must request one full repaint.
                     with session.pump._lock:
                         session.pump._ring[:] = b"\x1b[1;8HZ"
+                        session.pump._epoch_ring[:] = b"\x1b[1;8HZ"
+                        session.pump._position += 4096
                     before = len(resizes)
                     previous_snapshots = await page.evaluate("smaWorkspace.metrics.snapshots")
                     await sockets[-1].close(code=1012)
-                    await page.wait_for_function("count=>smaWorkspace.metrics.snapshots>count", arg=previous_snapshots, timeout=10000)
+                    try:
+                        await page.wait_for_function("count=>smaWorkspace.metrics.snapshots>count", arg=previous_snapshots, timeout=10000)
+                    except Exception:
+                        print('RECONNECT_SNAPSHOT_STATE', await page.evaluate("""() => {
+                          const w=smaWorkspace,h=w.activeHost,p=w.activePane;
+                          return {connected:w.connected,phase:h.phase,error:h.error,retry:h.retry,
+                            socket:h.ws?.readyState,metrics:w.metrics,cursor:p?.historyCursor,
+                            initialized:p?.historyInitialized,replay:p?.replayPending,recovery:p?.recoveryPending,
+                            writing:p?.writing,frames:p?.frames.length,follow:p?.followOutput};
+                        }"""))
+                        print('RECONNECT_BACKEND_STATE', {
+                            'position': session.pump.position(), 'epoch_bytes': len(session.pump._epoch_ring),
+                            'clients': [{'subscriptions': sorted(c.subscriptions), 'pending_replays': sorted(c.pending_replays),
+                                'feed_offsets': c.feed_offsets, 'history_after': c.history_after,
+                                'history_context': c.history_context, 'history_resume': c.history_resume,
+                                'queue': c.queue.qsize()} for c in daemon.hub.clients.values()]})
+                        raise
                     await page.wait_for_function(settled, timeout=10000)
                     # Clearing the timeout notice may first change the available height.
                     assert 2 <= len(resizes[before:]) <= 3

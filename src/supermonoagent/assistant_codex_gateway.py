@@ -246,6 +246,14 @@ class ResponsesGateway:
                 connection = None
                 transport = None
                 try:
+                    if self.headers.get("Transfer-Encoding") or len(str(self.headers)) > 32768:
+                        return self.deny()
+                    if len(self.headers.get_all("Content-Length", [])) != 1 or len(self.headers.get_all("Authorization", [])) > 1:
+                        return self.deny()
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= MAX_BODY:
+                        return self.deny()
+                    body = self.rfile.read(length)
                     remaining = owner.deadline - time.monotonic()
                     if remaining <= 0 or (owner.cancel is not None and owner.cancel.is_set()):
                         return self.deny()
@@ -253,16 +261,8 @@ class ResponsesGateway:
                         return self.deny()
                     if owner.mode not in _UPSTREAMS:
                         return self.deny()
-                    if self.headers.get("Transfer-Encoding") or len(str(self.headers)) > 32768:
-                        return self.deny()
-                    if len(self.headers.get_all("Content-Length", [])) != 1 or len(self.headers.get_all("Authorization", [])) > 1:
-                        return self.deny()
                     if not self.headers.get("Authorization"):
                         return self.deny()
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < length <= MAX_BODY:
-                        return self.deny()
-                    body = self.rfile.read(length)
                     request = json.loads(body)
                     if request.get("tools") not in (None, []) or request.get("tool_choice") not in (None, "none", "auto"):
                         return self.deny()

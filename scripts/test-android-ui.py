@@ -100,11 +100,16 @@ class Device:
             self.run("shell", "settings", "put", "system", name, value)
 
     def screenshot(self, path: Path):
-        data = self.run("exec-out", "screencap", "-p", binary=True)
-        start = data.find(PNG)
-        if start < 0:
-            raise RuntimeError("Android screenshot contained no PNG signature")
-        path.write_bytes(data[start:])
+        import time
+        for attempt in range(3):
+            data = self.run("exec-out", "screencap", "-p", binary=True)
+            start = data.find(PNG)
+            if start >= 0:
+                path.write_bytes(data[start:])
+                return
+            if attempt < 2:
+                time.sleep(.25)
+        raise RuntimeError("Android screenshot contained no PNG signature")
 
     def native_nodes(self):
         # Parse accessibility XML only in memory. Never persist fields or passwords.

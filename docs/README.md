@@ -2,7 +2,7 @@
 
 - [Windows 0.2.52 发布交接（2026-10-27）](handoff-2026-10-27-0.2.52.md)：源码／安装包版本对应、验收证据、服务器恢复边界及暂停后的接手入口。
 
-- [六种 Agent 独立渲染模式](agent-render-modes.md)：Windows 与 Android 各六份独立配置、选择、修改与调试。
+- [六种 Agent 跨端共享渲染模式](agent-render-modes.md)：Windows 与 Android 共用六份配置、选择、修改与调试。
 
 - [免费任务完成通知](task-notifications.md)：现有中继、原生后台通知、保留 Windows 会话的兼容桥与送达边界。
 

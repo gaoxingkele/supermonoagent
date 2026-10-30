@@ -30,22 +30,36 @@ async def check_paging(playwright,boundary):
                     await page.wait_for_function('window.smaWorkspace?.connected&&smaWorkspace.activePane?.ready')
                     session.pty.inbox.put(('\r\n'+''.join(f'PAGING_ROW_{i:03d}\r\n' for i in range(200))).encode())
                     await page.wait_for_function('smaWorkspace.terminal.buffer.active.baseY>150&&!smaWorkspace.activePane.writing&&!smaWorkspace.activePane.frames.length&&!smaWorkspace.activePane.resizeRequest&&!smaWorkspace.activePane.redrawAfterReplay')
-                    await page.evaluate('window.originalPagingPane=smaWorkspace.activePane;window.originalPagingGeneration=smaWorkspace.activePane.host.generation;window.originalPagingSnapshots=smaWorkspace.metrics.snapshots')
+                    await page.evaluate('window.originalPagingPane=smaWorkspace.activePane;window.originalPagingGeneration=smaWorkspace.activePane.host.generation;window.originalPagingSnapshots=smaWorkspace.metrics.snapshots;window.originalPagingResumes=smaWorkspace.metrics.historyResumes')
                     if boundary=='reconnect':
                         for socket in list(server.connections):await socket.close(code=1012,reason='Test-owned reconnect')
-                        # Empty replay flags also hold before the first new snapshot arrives.
-                        await page.wait_for_function('smaWorkspace.connected&&smaWorkspace.activePane===originalPagingPane&&smaWorkspace.activePane.host.generation>originalPagingGeneration&&smaWorkspace.metrics.snapshots>originalPagingSnapshots&&smaWorkspace.activePane.ready&&!smaWorkspace.activePane.replayPending&&!smaWorkspace.activePane.writing&&!smaWorkspace.activePane.frames.length&&!smaWorkspace.activePane.resizeRequest&&!smaWorkspace.activePane.redrawAfterReplay')
+                        # Empty replay flags also hold before the first new snapshot or exact resume.
+                        await page.wait_for_function('smaWorkspace.connected&&smaWorkspace.activePane===originalPagingPane&&smaWorkspace.activePane.host.generation>originalPagingGeneration&&(smaWorkspace.metrics.snapshots>originalPagingSnapshots||smaWorkspace.metrics.historyResumes>originalPagingResumes)&&smaWorkspace.activePane.ready&&!smaWorkspace.activePane.replayPending&&!smaWorkspace.activePane.writing&&!smaWorkspace.activePane.frames.length&&!smaWorkspace.activePane.resizeRequest&&!smaWorkspace.activePane.redrawAfterReplay')
                     else:
                         session.pty.inbox.put(b'\x1b[3J\x1b[H\x1b[2JAFTER_SCREEN_CLEANUP')
                         await page.wait_for_function("smaWorkspace.terminal.buffer.active.getLine(smaWorkspace.terminal.buffer.active.baseY)?.translateToString(true).includes('AFTER_SCREEN_CLEANUP')")
                     assert await page.evaluate('smaWorkspace.terminal.buffer.active.baseY>100'), 'Application cleanup discarded every history row'
+                    await page.evaluate("""() => {
+                      const p=smaWorkspace.activePane,t=p.term;window.followChanges=[];window.scrollCalls=[];window.resetCalls=[];
+                      let follow=p.followOutput;
+                      Object.defineProperty(p,'followOutput',{get:()=>follow,set:value=>{followChanges.push({value,stack:new Error().stack});follow=value;}});
+                      const bottom=t.scrollToBottom.bind(t);t.scrollToBottom=()=>{scrollCalls.push({bottom:true,stack:new Error().stack});bottom();};
+                      const line=t.scrollToLine.bind(t);t.scrollToLine=row=>{scrollCalls.push({row,stack:new Error().stack});line(row);};
+                      const reset=t.reset.bind(t);t.reset=()=>{resetCalls.push(new Error().stack);reset();};
+                      window.bufferScrolls=[];window.resizeCalls=[];
+                      const service=t._core._bufferService,scroll=service.scrollLines;
+                      service.scrollLines=function(...args){bufferScrolls.push({args,stack:new Error().stack});return scroll.apply(this,args);};
+                      const resize=t.resize.bind(t);t.resize=(cols,rows)=>{resizeCalls.push({cols,rows,stack:new Error().stack});resize(cols,rows);};
+                    }""")
                     await page.get_by_role('button',name='向上翻动一页历史',exact=True).click()
                     await page.wait_for_function('smaWorkspace.terminal.buffer.active.viewportY<smaWorkspace.terminal.buffer.active.baseY',timeout=2000)
-                    before=await page.evaluate('smaWorkspace.terminal.buffer.active.viewportY')
+                    before=await page.evaluate('smaWorkspace.terminal.buffer.active.baseY-smaWorkspace.terminal.buffer.active.viewportY')
                     session.pty.inbox.put(b'\r\nFRESH_WHILE_READING')
                     await page.wait_for_function('!smaWorkspace.activePane.writing&&!smaWorkspace.activePane.frames.length')
                     await asyncio.sleep(.1)
-                    assert await page.evaluate('smaWorkspace.terminal.buffer.active.viewportY')==before
+                    print('PAGING_DEBUG', await page.evaluate('JSON.stringify({followChanges,scrollCalls,resetCalls,bufferScrolls,resizeCalls})'))
+                    assert await page.evaluate('smaWorkspace.terminal.buffer.active.baseY-smaWorkspace.terminal.buffer.active.viewportY')==before, await page.evaluate('({followChanges,scrollCalls,resetCalls,bufferScrolls,resizeCalls})')
+                    assert not await page.evaluate('resetCalls.length')
                     await page.get_by_role('button',name='翻到最早的历史输出',exact=True).click()
                     await page.wait_for_function('smaWorkspace.terminal.buffer.active.viewportY===0')
                     await page.get_by_role('button',name='翻到最新输出并恢复自动跟随',exact=True).click()

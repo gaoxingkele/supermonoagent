@@ -4,13 +4,23 @@
 
 Android 专用终端默认开启文本高亮，右上角“⋯ → 文本高亮”可以关闭，选择保存在当前设备。文件名、数字、引号内容、Markdown 行内代码、函数名和错误提示会补充颜色；应用自身输出的 ANSI 前景色、背景色、反色和隐藏文字保持原样。
 
-实现复用 `vendor/terminal-client.js` 的 `createHighlighter`，`mobile-core.js` 保留相同接口；Windows 工作区也使用这一实现。原始字节仍直接交给 xterm，在解析后的可见字格上注册 foreground decoration，不往终端流中插入 SGR，不改变字符、光标、复制内容或后台会话。装饰只保留当前可见行，随输出、滚动、尺寸和缓冲区变化刷新，切换会话时销毁；DOM 与 WebGL 使用同一套规则。这是文字模式的辅助着色，不是完整的编程语言语法解析器；跨终端自动换行的单个 token 可能只按各行分别匹配。
+实现复用 `vendor/terminal-client.js` 的 `createHighlighter`，`mobile-core.js` 保留相同接口；Windows 工作区也使用这一实现。六份 `agent-modes` JSON 同样由两端共享，Android 的 APK、USB 与签名更新直接打包 Windows 所用文件，保证主题、ANSI 调色板和 token 规则一致。原始字节仍直接交给 xterm，在解析后的可见字格上注册 foreground decoration，不往终端流中插入 SGR，不改变字符、光标、复制内容或后台会话。装饰只保留当前可见行，随输出、滚动、尺寸和缓冲区变化刷新，切换会话时销毁；DOM 与 WebGL 使用同一套规则。这是文字模式的辅助着色，不是完整的编程语言语法解析器；跨终端自动换行的单个 token 可能只按各行分别匹配。
 
 回归：`python -m pytest -q tests/test_android_highlighting.py`。隔离后台和隐藏 Edge 覆盖冷启动历史、逐字节 UTF-8/SGR/OSC、中文及 emoji 字格、原生调色板/真彩色、光标覆盖、备用屏、历史滚动、旋转、开关保存和会话切换；DOM 检查实际文字颜色，双渲染器截图位于 `.omx/artifacts/mobile-highlighting/`。这些是桌面 Chromium 验证，不代表已更新或验证真机 WebView。
 
+## 输入、滚屏与持续输出
+
+底部快捷输入框可直接调出手机输入法，与多行编辑弹窗共用同一终端草稿、IME 预编辑保护和回显确认状态机。弹窗在输入被接受后立即关闭；只有确认新回显后才发送唯一一次 Enter。无回显或断连时保留草稿并提示，旧回调不能关闭重新打开的编辑会话。输入栏中的“收起／展开”按钮同时切换历史操作栏与辅助按键栏并保存状态，输入框和发送按钮始终保留。
+
+普通终端保留 xterm scrollback，触摸滚动具有速度跟踪和最长 900ms 的惯性；新触摸、切会话、暂停及历史按钮会取消旧动画。Codex 备用屏与 Windows 一样发送程序自身的 PageUp/PageDown/Ctrl+Home/Ctrl+End，其他全屏程序只浏览本地有界历史，不接收意外翻页键。
+
+本地全屏历史在读取字格前统一限频，不再因存在 scrollback 而对每次输出重建整屏；终端/电脑目录只有显示数据变化时才重建 DOM。`MobileTerminal.metrics` 提供无文本、无凭据的采样计数，供真机对比持续输出开销。输出积压和 ping 探测超时使用可恢复的 4000 关闭码并按退避重连；4001 仅表示认证失败并停止重试。
+
+0.2.55（versionCode 57）已在 Honor FLC-AN00 / Android 16 真机覆盖安装并验收：原生 IME 与 Unicode 输入、弹窗发送后关闭、两层工具栏折叠且保留输入、300 次刷新 CPU profile、6500 行历史、Codex 按钮与触摸翻页、横竖屏及 13 个界面检查均通过。300 次刷新期间全屏历史重建为 0 次，采样无忙等热点。显式 WebGL 在 DPR 3 下画布、字格尺寸一致，Kimi 实际页面未见叠字，测试后恢复原会话及自动渲染。证据见 `.omx/artifacts/android-055-complete/verification.json`、`.omx/artifacts/android-055-ui/verification.json` 与 `.omx/artifacts/refresh-diagnosis/android-renderer/report.json`；临时电脑和 ADB 映射已清理。折叠回内屏后，当前页与四个弹窗的只读检查通过，见 `.omx/artifacts/android-055-final-ui/verification.json`；正常前台连接约 30 秒的 10 次采样平均 CPU 0.55%、峰值 2.3%，原始记录为 `.omx/artifacts/android-055-foreground-cpu.txt`。
+
 ## 当前行为
 
-Android 使用系统 WebView、xterm、Unicode11 和可选 WebGL。2026-10-22 修正跨端尺寸争抢：手机默认保持清晰字号并在终端区域内滑动观看共享网格，可选全屏总览缩放，切换会话、旋转、打开编辑框均不自动接管；Windows 普通标签切换也不抢占另一端。只有明确点击“接管”才交接共享 PTY 尺寸控制权，当前所有者可随后适配自己的视口。后台确认后才调整本地网格。隐藏或零尺寸窗口不请求最小网格。历史数据若先于尺寸到达，会先进入有界等待队列，随后按确认网格重放。
+Android 使用系统 WebView、xterm、Unicode11 和可选 WebGL。自动模式默认 DOM；显式 WebGL 保留给需要 GPU 的场景。共享 WebGL 附加组件包含设备像素观察保护：当浏览器把 CSS 尺寸误报为物理像素时，按计算样式乘 DPR 恢复一致的 backing canvas，避免裁切和叠字；正常的亚像素舍入仍沿用上游结果。共享 xterm 也会在字格高度为有限正值前忽略原生滚动事件，避免初始布局把视口变成 NaN。`tests/test_webgl_canvas_pixels.py` 在 DPR 1、1.25、1.5、2、3 下验证真实字格、画布和中文／emoji 重绘，真机验收记录见上文；不能仅由桌面 Chromium 推断真机结果。2026-10-22 修正跨端尺寸争抢：手机默认保持清晰字号并在终端区域内滑动观看共享网格，可选全屏总览缩放，切换会话、旋转、打开编辑框均不自动接管；Windows 普通标签切换也不抢占另一端。只有明确点击“接管”才交接共享 PTY 尺寸控制权，当前所有者可随后适配自己的视口。后台确认后才调整本地网格。隐藏或零尺寸窗口不请求最小网格。历史数据若先于尺寸到达，会先进入有界等待队列，随后按确认网格重放。同一终端流的连续实时输出可以跨尺寸 epoch 接收，避免首次连接或账号切换时正文被跳过；流身份变化和字节位置缺口仍会触发恢复。
 
 同一 CLI 的 PTY 只有一套行列数，双方不能各自无约束改变它；本机布局、缩放和显示选择独立，接管是明确的共享尺寸操作。`tests/test_cross_device_layout.py` 用真实桌面和手机页面验证了双向不抢占及明确交接。旧手机页面仍含自动接管逻辑，必须激活新版界面才生效；不能只更新 Windows 就宣布问题全部修复。
 
@@ -26,7 +36,7 @@ Android 使用系统 WebView、xterm、Unicode11 和可选 WebGL。2026-10-22 �
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/push-android-ui.ps1
 ```
 
-多设备时加 `-Serial <设备序列号>`。脚本分发完整、不可变的版本目录，最后原子切换指针；原生端逐文件验证 SHA256、10 个固定文件名和 5 MiB 总上限。全部校验通过后才加载该版本，不混用两个版本；失败则整体回退 APK。切换版本只重建显示端连接，后台 shell 继续运行。
+多设备时加 `-Serial <设备序列号>`。脚本分发完整、不可变的版本目录，最后原子切换指针；原生端逐文件验证 SHA256、12 个固定文件名和 5 MiB 总上限。全部校验通过后才加载该版本，不混用两个版本；失败则整体回退 APK。切换版本只重建显示端连接，后台 shell 继续运行。
 
 实现：`HotAssets.java`、`package-android-ui.py`、`push-android-ui.ps1`。这是 USB 开发热更新；签名远程界面更新使用现有中继的 HTTPS /updates/stable/manifest.json，可从右上角 Update 手动检查、下载并验签后激活。原生 Java、权限、签名和 Manifest 的变化仍需升级 APK。
 

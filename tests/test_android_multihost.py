@@ -39,6 +39,7 @@ async def check(playwright):
             daemon.hub.groups[window.group_id].name = 'Group '+str(index)
             with patch('supermonoagent.hub.secrets.token_hex', return_value='aabbccdd'):
                 session = daemon.hub.open_cli(window.id, 'cmd')
+            session.pump.stream_id = 'aabbccdd' * 3
             daemons.append(daemon)
             sessions.append(session)
 
@@ -71,9 +72,11 @@ async def check(playwright):
                         await page.goto(origin+'/mobile/index.html#'+quote(json.dumps(config)))
                         await page.wait_for_function('MobileTerminal.ready && MobileTerminal.hosts[1].status.startsWith(String.fromCodePoint(0x9a8c,0x8bc1,0x5931,0x8d25))')
                         # Failed authentication on another computer leaves the active socket usable.
-                        await page.tap('#screen')
-                        await page.keyboard.insert_text('home-input')
+                        await page.locator('#quick-draft').fill('home-input')
+                        await page.locator('#quick-draft').press('Enter')
                         await wait_for(lambda: b'home-input' in sessions[0].pty.written)
+                        sessions[0].pty.inbox.put(b'home-input')
+                        await wait_for(lambda: b'home-input\r' in sessions[0].pty.written)
                         assert not sessions[1].pty.written
                         await page.tap('#sessions')
                         await page.locator('#host-list .host-row').nth(1).locator('button').nth(1).tap()
@@ -82,9 +85,11 @@ async def check(playwright):
                         await page.wait_for_function('MobileTerminal.ready && MobileTerminal.hosts.every(h=>h.connected)')
                         assert await page.evaluate('MobileTerminal.activeKey') == '["host:second","aabbccdd"]'
                         assert await page.locator('.xterm').count() == 1
-                        await page.tap('#screen')
-                        await page.keyboard.insert_text('other-input')
+                        await page.locator('#quick-draft').fill('other-input')
+                        await page.locator('#quick-draft').press('Enter')
                         await wait_for(lambda: b'other-input' in sessions[1].pty.written)
+                        sessions[1].pty.inbox.put(b'other-input')
+                        await wait_for(lambda: b'other-input\r' in sessions[1].pty.written)
                         assert b'other-input' not in sessions[0].pty.written
                         # TD-006D/I: unopened output streams remain unsubscribed; directories stay connected.
                         await page.wait_for_function('MobileTerminal.hosts[0].subscription==="" && MobileTerminal.hosts[1].subscription==="aabbccdd"')

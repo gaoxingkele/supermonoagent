@@ -62,54 +62,85 @@
   function nativeMenu(){const menu=document.getElementById('app-menu');if(menu&&window.pywebview?.api?.clipboard_files&&!document.getElementById('paste-native-files')){const item=document.createElement('button');item.id='paste-native-files';item.type='button';item.setAttribute('role','menuitem');item.textContent='粘贴文件到当前窗口';item.onclick=()=>run(nativeSources);menu.append(item);}}
   nativeMenu();addEventListener('pywebviewready',nativeMenu,{once:true});
   function uploadSources(getSources,options={}){return enqueue(getSources,options);}
-  async function transferExchange(pinned,sources,options){
-    const F=window.SuperMonoFileWorkspaces;
-    if(!F)throw Error('文件交换助手尚未安装，请更新完整客户端并在接收电脑启用文件助手。');
-    const target=options.exchangeTarget;
-    if(!target||target.pane!==pinned.pane||target.ws!==pinned.ws||target.generation!==pinned.generation)throw Error('目标窗口已变化，请重新打开编辑框。');
-    const client=F.getClient(target),receipts=[];
-    const check=()=>{if(options.signal?.aborted)throw Error('文件传输已取消。');if(!valid(pinned)||!F.isCurrent(target))throw Error('目标窗口或连接已变化。');};
-    const progress=value=>{
+  let directSequence=0;
+  function directRequest(pinned,body,options,cleanup=false){
+    return new Promise((resolve,reject)=>{
+      const socket=pinned.ws,C=window.TerminalClient;
+      if(!socket||!C||!cleanup&&!valid(pinned)){reject(Error('目标连接已变化或上传已取消。'));return;}
+      const request='desktop-file-'+Date.now().toString(36)+'-'+(++directSequence),encoder=new TextEncoder(),decoder=new TextDecoder();let timer,settled=false;
+      const done=(error,value)=>{if(settled)return;settled=true;clearTimeout(timer);socket.removeEventListener('message',receive);socket.removeEventListener('close',closed);options.signal?.removeEventListener('abort',aborted);error?reject(error):resolve(value);};
+      const closed=()=>done(Error('文件上传连接已断开。')),aborted=()=>done(Error('上传已取消。'));
+      const receive=event=>{try{
+        if(!(event.data instanceof ArrayBuffer))return;const frame=C.unpack(event.data);if(frame.op!==21)return;
+        const value=JSON.parse(decoder.decode(frame.payload));if(value.request!==request)return;
+        if(!cleanup&&!valid(pinned))done(Error('目标终端已变化。'));
+        else if(value.ok!==true){const error=Error(value.error||'目标电脑拒绝接收文件。');error.code=value.error_code||'failed';done(error);}
+        else done(null,value);
+      }catch{}};
+      socket.addEventListener('message',receive);socket.addEventListener('close',closed);if(!cleanup)options.signal?.addEventListener('abort',aborted,{once:true});
+      timer=setTimeout(()=>done(Error('等待文件接收确认超时。')),cleanup?3000:15000);
+      try{socket.send(C.pack(21,encoder.encode(JSON.stringify({request,session:pinned.session,...body}))));}catch{done(Error('无法发送文件数据。'));}
+    });
+  }
+  async function transferDirect(pinned,sources,options){
+    const receipts=[],progress=value=>{
       if(value.phase==='preparing')status('准备传输 '+value.name+'…');
       else if(value.phase==='uploading')status(value.name+' · '+(value.size?Math.floor(value.loaded/value.size*100):100)+'%');
-      else if(value.phase==='receiving')status('已存入中继，正在等待目标项目 tmp 保存确认：'+value.name);
-      else if(value.phase==='submitting')status('正在提交中继，请等待结果确认：'+value.name);
+      else if(value.phase==='receiving')status('正在等待目标电脑保存确认：'+value.name);
+      else if(value.phase==='submitting')status('正在提交，请等待结果确认：'+value.name);
       try{options.onProgress?.(value);}catch{}
     };
     try{for(const [index,source] of sources.entries()){
-      let upload_id,file_id,finishSent=false;
+      let id=null,finishSent=false;
       try{
-        check();const workspace=await F.getWorkspace(target);check();
-        if(workspace.project_status==='selection_required')throw Object.assign(Error('请先在底部选择当前项目目录，附件将保存到该项目的 tmp。'),{code:'project_required'});
+        if(options.signal?.aborted||!valid(pinned))throw Error('目标窗口或连接已变化。');
         progress({phase:'preparing',name:source.name,index,total:sources.length,loaded:0,size:source.size});
-        const sha256=source.prepare?await source.prepare():source.sha256;check();
-        const begin=await F.request(target,'upload.begin',{original_name:source.name,size:source.size,sha256,window_id:workspace.window_id,daemon_epoch:workspace.daemon_epoch,workspace_revision:workspace.revision,timezone_offset_minutes:-new Date().getTimezoneOffset()});upload_id=begin.upload_id;
+        const sha256=source.prepare?await source.prepare():source.sha256;
+        if(!/^[a-f0-9]{64}$/.test(sha256||''))throw Error('附件 SHA-256 无效。');
+        const begin=await directRequest(pinned,{action:'begin',name:source.name,size:source.size,sha256},options);
+        if(!/^[a-f0-9]{48}$/.test(begin.id||'')||begin.received!==0)throw Error('接收端返回了无效的上传标识。');id=begin.id;
         let offset=0;
-        while(offset<source.size){check();const chunk=await source.read(offset);check();if(!chunk.data||chunk.next<=offset||chunk.next>source.size)throw Error('源文件分块无效。');const response=await F.request(target,'upload.chunk',{upload_id,offset,data:chunk.data});if(response.received!==chunk.next)throw Error('接收进度不一致。');offset=chunk.next;progress({phase:'uploading',name:source.name,index,total:sources.length,loaded:offset,size:source.size});}
-        check();finishSent=true;
-        progress({phase:'submitting',name:source.name,index,total:sources.length,loaded:source.size,size:source.size,upload_id});
-        const queued=await F.request(target,'upload.finish',{upload_id});
-        if(typeof queued?.file_id!=='string'||!/^[a-f0-9]{48}$/.test(queued.file_id))throw Error('提交结果无效。');
-        upload_id=null;file_id=queued.file_id;
-        progress({phase:'receiving',name:source.name,index,total:sources.length,loaded:source.size,size:source.size,file_id});
-        const deadline=performance.now()+180000;let result;
-        // A committed relay job is durable. Wait for its receipt even if the
-        // caller cancels, then stop before the next file; never call it saved early.
-        while(performance.now()<deadline){
-          if(!valid(pinned)||!F.isCurrent(target))throw Object.assign(Error('文件已存入中继，但目标连接已变化；请核对接收状态。'),{pendingFileId:queued.file_id});
-          result=await F.request(target,'file.status',{file_id:queued.file_id});
-          if(result.state==='saved')break;
-          if(['failed','cancelled'].includes(result.state))throw Error('目标电脑未能保存文件，请检查文件助手。');
-          await new Promise(resolve=>setTimeout(resolve,250));
+        while(offset<source.size){
+          if(options.signal?.aborted||!valid(pinned))throw Error('目标窗口或连接已变化。');
+          const chunk=await source.read(offset);
+          if(!chunk||typeof chunk.data!=='string'||!chunk.data||chunk.next<=offset||chunk.next>source.size)throw Error('源文件分块无效。');
+          const result=await directRequest(pinned,{action:'chunk',id,offset,data:chunk.data},options);
+          if(result.received!==chunk.next)throw Error('接收进度不一致，上传已停止。');offset=chunk.next;
+          progress({phase:'uploading',name:source.name,index,total:sources.length,loaded:offset,size:source.size});
         }
-        if(result?.state!=='saved')throw Object.assign(Error('文件已存入中继，尚未收到目标保存确认。'),{pendingFileId:queued.file_id});
-        const saved=result.receipt;if(!saved||typeof saved.path!=='string'||!saved.path||/[\u0000-\u001f\u007f]/.test(saved.path)||saved.name!==begin.name||saved.size!==source.size||saved.sha256!==sha256)throw Error('目标保存回执无效。');
-        const receipt=Object.freeze({name:source.name,savedName:saved.name,path:saved.path,size:saved.size,sha256});receipts.push(receipt);source.saved=true;file_id=null;progress({phase:'saved',name:source.name,index,total:sources.length,loaded:source.size,size:source.size,receipt});
-      }catch(error){if(file_id&&!error.pendingFileId)error.pendingFileId=file_id;
-        if(finishSent&&!file_id){error.unknownCommit=true;error.pendingUploadId=upload_id;error.message='提交结果待确认，勿重复上传；请先核对目标项目 tmp 的接收情况。';}throw error;}
-      finally{if(upload_id&&!finishSent)try{await client.request('upload.cancel',target.session,{upload_id});}catch{}try{await source.dropPrepared?.();}catch{}}
+        if(options.signal?.aborted||!valid(pinned))throw Error('目标窗口或连接已变化。');finishSent=true;
+        progress({phase:'submitting',name:source.name,index,total:sources.length,loaded:source.size,size:source.size,upload_id:id});
+        const saved=await directRequest(pinned,{action:'finish',id},options);
+        if(typeof saved.path!=='string'||!saved.path||saved.path.length>4096||/[\u0000-\u001f\u007f]/.test(saved.path))throw Error('未收到目标电脑的有效保存路径。');
+        const receipt=Object.freeze({name:source.name,savedName:source.name,path:saved.path,size:source.size,sha256});receipts.push(receipt);source.saved=true;id=null;
+        progress({phase:'saved',name:source.name,index,total:sources.length,loaded:source.size,size:source.size,receipt});
+      }catch(error){if(finishSent){error.unknownCommit=true;error.pendingUploadId=id;error.message='提交结果待确认，勿重复上传；请先核对目标电脑的接收情况。';}throw error;}
+      finally{if(id&&!finishSent)try{await directRequest(pinned,{action:'cancel',id},options,true);}catch{}try{await source.dropPrepared?.();}catch{}}
     }}catch(error){error.receipts=[...receipts];throw error;}
     return receipts;
+  }
+  async function transferExchange(pinned,sources,options){
+    const F=window.SuperMonoFileWorkspaces,direct=pinned.host.capabilities?.file_transfer===true;
+    if(!F){
+      if(direct)return transferDirect(pinned,sources,options);
+      throw Error('文件交换助手尚未安装，请更新完整客户端并在接收电脑启用文件助手。');
+    }
+    const target=options.exchangeTarget;
+    if(!target||target.pane!==pinned.pane||target.ws!==pinned.ws||target.generation!==pinned.generation)throw Error('目标窗口已变化，请重新打开编辑框。');
+    try{
+      return await window.SuperMonoFileUpload.upload({session:target.session,getWorkspace:()=>F.getWorkspace(target),
+        request:(action,data)=>F.request(target,action,data),sources,
+        isCurrent:()=>!options.signal?.aborted&&valid(pinned)&&F.isCurrent(target),signal:options.signal,onProgress:value=>{
+          if(value.phase==='preparing')status('准备传输 '+value.name+'…');
+          else if(value.phase==='uploading')status(value.name+' · '+(value.size?Math.floor(value.loaded/value.size*100):100)+'%');
+          else if(value.phase==='receiving')status('已存入中继，正在等待目标项目 tmp 保存确认：'+value.name);
+          else if(value.phase==='submitting')status('正在提交中继，请等待结果确认：'+value.name);
+          try{options.onProgress?.(value);}catch{}
+        }});
+    }catch(error){
+      if(direct&&error.beforeUpload===true&&['host_unavailable','connection_failed','unsupported'].includes(error.code))return transferDirect(pinned,sources,options);
+      throw error;
+    }
   }
   window.SuperMonoFilePaste={paste:()=>run(nativeSources),captureTarget:target,isCurrent:valid,
     upload:(files,options={})=>uploadSources(()=>browserSources([...files]),options),

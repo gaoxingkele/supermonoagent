@@ -103,7 +103,9 @@ async def check_editor(playwright):
                     assert await page.locator('#send').is_disabled()
                     assert session.pty.written.count(b'no-echo-command') == 1
                     assert session.pty.written.count(b'\r') == 1
-                    await page.locator('#composer-close').click()
+                    assert not await page.locator('#composer').evaluate('d=>d.open')
+                    assert await page.locator('#quick-draft').input_value() == 'no-echo-command'
+                    assert await page.locator('#quick-send').is_disabled()
                     assert not await page.evaluate("MobileTerminal.openNotification({endpoint:'http://example.invalid',code:'',session:'missing'})")
                     assert not await page.evaluate("v=>MobileTerminal.openNotification(v)", {'endpoint':origin,'code':'','session':'closed-session'})
                     assert await page.evaluate("v=>MobileTerminal.openNotification(v)", {'endpoint':origin,'code':'','session':session.id})

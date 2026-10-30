@@ -55,14 +55,14 @@ foreach ($name in @('index.html', 'app.js', 'app.css', 'mobile-core.js')) {
 }
 New-Item -ItemType Directory -Force "$mobileAssets/agent-modes" | Out-Null
 foreach ($name in @('codex', 'claude-code', 'grok', 'kimi', 'pi-dev', 'cursor-cli')) {
-    Copy-Item -LiteralPath "$repoRoot/android/assets/mobile/agent-modes/$name.json" -Destination "$mobileAssets/agent-modes"
+    Copy-Item -LiteralPath "$repoRoot/src/supermonoagent/static/agent-modes/$name.json" -Destination "$mobileAssets/agent-modes"
 }
 Copy-Item -LiteralPath "$repoRoot/src/supermonoagent/static/update-trust.json" -Destination (Join-Path $stagedAssets 'update-trust.json')
 Copy-Item -LiteralPath "$repoRoot/android/assets/update-bridge.js" -Destination (Join-Path $stagedAssets 'update-bridge.js')
 Copy-Item -LiteralPath "$repoRoot/android/assets/update-api.json" -Destination (Join-Path $stagedAssets 'update-api.json')
 $changesPath = Join-Path $repoRoot 'android/CHANGELOG.txt'
 if (Test-Path -LiteralPath $changesPath) { Copy-Item -LiteralPath $changesPath -Destination (Join-Path $stagedAssets 'CHANGELOG.txt') }
-foreach ($name in @('xterm.js', 'xterm.css', 'xterm-fit.js', 'xterm-unicode11.js', 'xterm-webgl.js', 'terminal-client.js')) {
+foreach ($name in @('xterm.js', 'xterm.css', 'xterm-fit.js', 'xterm-unicode11.js', 'xterm-webgl.js', 'terminal-client.js', 'file-client.js', 'file-upload.js')) {
     Copy-Item -LiteralPath "$repoRoot/src/supermonoagent/static/$name" -Destination "$mobileAssets/vendor"
 }
 # Hash the exact packaged bytes, keeping shared vendor files in their existing source location.

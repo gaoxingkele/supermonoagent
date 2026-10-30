@@ -23,6 +23,11 @@ async def check_grid_order(playwright, renderer):
     async with isolated_host() as (daemon, _direct, _relay):
         window = daemon.hub.open_window('Grid ordering', owner=daemon.token)
         session = daemon.hub.open_cli(window.id, 'cmd')
+
+        def emit(data):
+            session.pump.add(data, asyncio.get_running_loop(),
+                lambda chunk, overflow: daemon.hub._flushed(session.id, chunk, overflow))
+
         desktop = daemon.hub.attach(
             asyncio.Queue(), key='grid-order-owner', token=daemon.token
         )
@@ -65,9 +70,9 @@ async def check_grid_order(playwright, renderer):
                                 });
                             };
                         }''')
-                        daemon.hub._flushed(session.id, b'BLOCK', False)
+                        emit(b'BLOCK')
                         await page.wait_for_function('!!window.releaseWrite')
-                        daemon.hub._flushed(session.id, b'\x1b[1;100HOLD_GRID', False)
+                        emit(b'\x1b[1;100HOLD_GRID')
                         await page.wait_for_function(
                             'smaWorkspace.panes.get(smaWorkspace.activeSession).frames.length===1'
                         )
@@ -75,7 +80,7 @@ async def check_grid_order(playwright, renderer):
                         await page.wait_for_function(
                             'smaWorkspace.controls[smaWorkspace.activeSession]?.cols===60'
                         )
-                        daemon.hub._flushed(session.id, b'\x1b[2J\x1b[HNEW_GRID', False)
+                        emit(b'\x1b[2J\x1b[HNEW_GRID')
                         await page.wait_for_function(
                             'smaWorkspace.panes.get(smaWorkspace.activeSession).frames.length===2'
                         )

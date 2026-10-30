@@ -32,14 +32,19 @@
       "color": "#e5c07b"
     },
     {
-      "pattern": "(?:\\u9519\\u8bef|\\u5931\\u8d25|\\u5f02\\u5e38|\\u8b66\\u544a)|\\b(?:Error|Exception|ERROR|FAIL|FAILED|Warning)\\b",
+      "pattern": "(?:\\u9519\\u8bef|\\u5931\\u8d25|\\u5f02\\u5e38)|\\b(?:Error|Exception|ERROR|FAIL|FAILED)\\b",
       "flags": "gu",
       "color": "#e06c75"
     },
     {
-      "pattern": "\\b(?:Claude|Thinking|Read|Write|Edit|Bash|Tool|Task)\\b",
+      "pattern": "\\b(?:Claude|Thinking|Working|Plan|Planning|Explored|Updated|Tool|Task|Todo|TodoList)\\b",
       "flags": "giu",
       "color": "#82cfff"
+    },
+    {
+      "pattern": "https?://[^\\s<>\"'\\x60]+",
+      "flags": "giu",
+      "color": "#56b6c2"
     },
     {
       "pattern": "[\\p{L}\\p{N}_./\\\\:-]+\\.(?:py|js|jsx|ts|tsx|css|html|json|md|exe|ps1|sh|yaml|yml|toml|java|go|rs|cpp|h)(?::\\d+)?",
@@ -47,9 +52,19 @@
       "color": "#e5c07b"
     },
     {
+      "pattern": "\\b(?:Read|Write|Edit|MultiEdit|Bash|Task|Glob|Grep|Search|WebSearch|WebFetch|TodoWrite|NotebookEdit|Shell|Execute|Run|View|Create|StrReplace|KillShell|BashOutput)(?:\\s*\\(|\\s*:)",
+      "flags": "giu",
+      "color": "#c678dd"
+    },
+    {
       "pattern": "`[^`\\n]+`|\\b[A-Za-z_][\\w]*\\(\\)",
       "flags": "gu",
       "color": "#e5c07b"
+    },
+    {
+      "pattern": "\\b(?:Ran|Running|cmd(?:\\.exe)?|powershell(?:\\.exe)?|git|python|pytest|node|npm|pnpm|yarn|adb)\\b",
+      "flags": "giu",
+      "color": "#56b6c2"
     },
     {
       "pattern": "\\b\\d+(?:\\.\\d+)?(?:\\s?(?:KiB|MiB|ms|tokens|\\u5b57\\u8282))?",
@@ -65,6 +80,11 @@
       "pattern": "^#{1,6} [^\\n]+|\\*\\*[^*\\n]+\\*\\*",
       "flags": "gu",
       "color": "#82cfff"
+    },
+    {
+      "pattern": "(?:\\u8b66\\u544a)|\\b(?:Warning|Caution)\\b",
+      "flags": "giu",
+      "color": "#e5c07b"
     }
   ]
 }

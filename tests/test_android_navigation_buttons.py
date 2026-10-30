@@ -98,6 +98,27 @@ async def check_buttons(playwright):
                     assert (session.resize_owner, session.cols, session.rows) == baseline
                     session.pty.inbox.put(b'\x1b[?1049l')
                     await page.wait_for_function("MobileTerminal.terminal.buffer.active.type==='normal'")
+                    session.task_detector.app='codex';daemon.hub._catalog()
+                    session.pty.inbox.put(b'\x1b[?1049h')
+                    await page.wait_for_function("MobileTerminal.terminal.buffer.active.type==='alternate'")
+                    for selector,key in [('#page-up',b'\x1b[5~'),('#page-down',b'\x1b[6~'),('#history-top',b'\x1b[1;5H'),('#history-bottom',b'\x1b[1;5F')]:
+                        before=bytes(session.pty.written)
+                        await page.locator(selector).click()
+                        async with asyncio.timeout(3):
+                            while bytes(session.pty.written)==before:await asyncio.sleep(.01)
+                        assert bytes(session.pty.written)==before+key
+                    bounds=await page.locator('#screen').bounding_box()
+                    touch=await page.context.new_cdp_session(page)
+                    x=bounds['x']+bounds['width']/2;y=bounds['y']+bounds['height']/2-40
+                    before=bytes(session.pty.written)
+                    await touch.send('Input.dispatchTouchEvent',{'type':'touchStart','touchPoints':[{'x':x,'y':y}]})
+                    await touch.send('Input.dispatchTouchEvent',{'type':'touchMove','touchPoints':[{'x':x,'y':y+80}]})
+                    await touch.send('Input.dispatchTouchEvent',{'type':'touchEnd','touchPoints':[]})
+                    async with asyncio.timeout(3):
+                        while bytes(session.pty.written)==before:await asyncio.sleep(.01)
+                    assert bytes(session.pty.written)==before+b'\x1b[5~', 'Codex swipe must page the remote program exactly once'
+                    session.pty.inbox.put(b'\x1b[?1049l')
+                    await page.wait_for_function("MobileTerminal.terminal.buffer.active.type==='normal'")
                     # Even a size owner must not resize the PTY just by showing a history hint.
                     await page.locator('#control').click()
                     await page.wait_for_function('MobileTerminal.controls?.owner === true')
@@ -115,9 +136,10 @@ async def check_buttons(playwright):
                             const r=b.getBoundingClientRect();return r.left>=0&&r.top>=0&&r.right<=innerWidth+1&&r.bottom<=innerHeight+1;
                         }) && document.documentElement.scrollWidth<=innerWidth""")
                         await page.screenshot(path=str(artifacts/f'toolbar-{width}x{height}.png'))
+                    before_pause=bytes(session.pty.written)
                     await page.evaluate('MobileTerminal.pause()')
                     await page.locator('[data-key="enter"]').click()
-                    assert session.pty.written == b'\r\r'
+                    assert session.pty.written == before_pause
                     assert not errors, errors
                 finally:
                     await browser.close()

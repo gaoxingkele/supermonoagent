@@ -69,7 +69,9 @@ def test_native_bridge_rejects_navigation_before_library_access(tmp_path):
     preferences_path = tmp_path / 'assistant-preferences.json'
     assistant = DesktopAssistant(window, current[0], tmp_path, preferences_path=preferences_path)
     assert exposed == [assistant.recommend_skills, assistant.get_assistant_preferences, assistant.save_assistant_preferences,
-        assistant.set_assistant_api_key, assistant.assistant_chat, assistant.cancel_assistant_chat, assistant.read_assistant_skill]
+        assistant.set_assistant_api_key, assistant.assistant_chat, assistant.cancel_assistant_chat, assistant.read_assistant_skill,
+        assistant.library_status, assistant.pull_library, assistant.commit_library_preview, assistant.commit_library,
+        assistant.run_library_evolution, assistant.apply_library_evolution]
     assert assistant.get_assistant_preferences()['status'] == 'default'
     assert not preferences_path.exists()
     assistant._loaded()

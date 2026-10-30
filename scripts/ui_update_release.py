@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENT_MODES = ('codex','claude-code','grok','kimi','pi-dev','cursor-cli')
 NATIVE_API = 2
 DESKTOP = ('workspace.html','workspace.js','workspace.css','terminal-client.js','tab-themes.js','tab-themes.css','xterm.js','xterm.css','xterm-fit.js','xterm-unicode11.js','xterm-webgl.js') + tuple('agent-modes/'+name+'.json' for name in AGENT_MODES)
-VENDOR = ('xterm.js','xterm.css','xterm-fit.js','xterm-unicode11.js','xterm-webgl.js','terminal-client.js')
+VENDOR = ('xterm.js','xterm.css','xterm-fit.js','xterm-unicode11.js','xterm-webgl.js','terminal-client.js','file-client.js','file-upload.js')
 MOBILE = ('index.html','app.js','app.css','mobile-core.js')
 ANDROID = tuple('mobile/'+name for name in MOBILE) + tuple('mobile/vendor/'+name for name in VENDOR) + tuple('mobile/agent-modes/'+name+'.json' for name in AGENT_MODES)
 SAFE_INTEGER = 9007199254740991
@@ -146,7 +146,7 @@ def files_for_platform(root,platform,feed):
     else:
         files={'mobile/'+name:(root/'android/assets/mobile'/name).read_bytes() for name in MOBILE}
         files.update({'mobile/vendor/'+name:(static/name).read_bytes() for name in VENDOR})
-        files.update({'mobile/agent-modes/'+name+'.json':(root/'android/assets/mobile/agent-modes'/(name+'.json')).read_bytes() for name in AGENT_MODES})
+        files.update({'mobile/agent-modes/'+name+'.json':(static/'agent-modes'/(name+'.json')).read_bytes() for name in AGENT_MODES})
     if sum(map(len,files.values()))>MAX_SNAPSHOT or any(len(data)>MAX_FILE for data in files.values()):
         raise ValueError('UI snapshot exceeds size limit')
     return files
@@ -157,7 +157,6 @@ def source_fingerprint(root,*,include_android=True):
     paths += [root/'src/supermonoagent/static'/name for name in ('file-client.js','file-workspace-ui.js','clipboard-files.js','terminal-composer.js','terminal-questions.js','clipboard-context-menu.js','mylib-assistant.js','assistant-chat.js')]
     if include_android:
         paths += [root/'android/assets/mobile'/name for name in MOBILE]
-        paths += [root/'android/assets/mobile/agent-modes'/(name+'.json') for name in AGENT_MODES]
     return {str(path.relative_to(root)):digest(path.read_bytes()) for path in paths}
 
 def make_archive(path,files):

@@ -12,18 +12,20 @@ def test_composer_multiple_attachments_reach_project_tmp_without_terminal_input(
             async with browser_page(playwright, url, document_url=url.replace('ws:', 'http:').replace('/file/ws','/')) as (page, errors, _sockets):
                 await page.evaluate('''()=>{const h=document.querySelector('header');const actions=document.createElement('div');actions.className='toolbar-actions';h.append(actions);window.smaWorkspace.metrics={transmittedBytes:0};}''')
                 await page.evaluate((STATIC/'terminal-client.js').read_text('utf-8'))
+                await page.evaluate((STATIC/'file-upload.js').read_text('utf-8'))
                 await page.evaluate((STATIC/'clipboard-files.js').read_text('utf-8'))
                 await page.evaluate('''()=>{const original=SuperMonoFilePaste.upload;SuperMonoFilePaste.upload=async(...args)=>{try{return await original(...args);}catch(error){window.fixtureUploadError={code:error.code,message:error.message};throw error;}};}''')
                 await page.evaluate((STATIC/'terminal-composer.js').read_text('utf-8'))
                 await page.locator('#terminal-composer-open').click()
                 await page.locator('#terminal-composer-text').fill('owned draft remains local')
-                inputs = page.locator('#terminal-composer input[type=file]')
                 data_a=b'\x89PNG\r\nowned image attachment'
                 data_b=b'%PDF-1.4 owned document attachment'
-                await inputs.set_input_files([
-                    {'name':'owned.png','mimeType':'image/png','buffer':data_a},
-                    {'name':'owned.pdf','mimeType':'application/pdf','buffer':data_b},
-                ])
+                async with page.expect_file_chooser() as image_chooser:
+                    await page.locator('#terminal-composer-choose-images').click()
+                await (await image_chooser.value).set_files({'name':'owned.png','mimeType':'image/png','buffer':data_a})
+                async with page.expect_file_chooser() as file_chooser:
+                    await page.locator('#terminal-composer-choose-files').click()
+                await (await file_chooser.value).set_files({'name':'owned.pdf','mimeType':'application/pdf','buffer':data_b})
                 await page.locator('#terminal-composer-upload').click()
                 await page.wait_for_function('!SuperMonoTerminalComposer.busy', timeout=20000)
                 files=[path for path in (parents[0].project/'tmp').glob('*') if path.is_file()]
@@ -35,5 +37,42 @@ def test_composer_multiple_attachments_reach_project_tmp_without_terminal_input(
                 assert not (parents[1].project/'tmp').exists()
                 assert await page.evaluate('fixtureInputs')==[]
                 assert await page.locator('#terminal-composer-text').input_value()=='owned draft remains local'
+                assert not errors,errors
+    run(exercise,tmp_path)
+
+
+def test_composer_ctrl_v_image_upload_and_plain_text(tmp_path):
+    async def exercise(playwright, folder):
+        from test_file_companion import environment
+        async with environment(folder) as (_broker, url, parents, _companions):
+            async with browser_page(playwright, url, document_url=url.replace('ws:', 'http:').replace('/file/ws','/')) as (page, errors, _sockets):
+                await page.evaluate('''()=>{const h=document.querySelector('header');const actions=document.createElement('div');actions.className='toolbar-actions';h.append(actions);window.smaWorkspace.metrics={transmittedBytes:0};}''')
+                await page.evaluate((STATIC/'terminal-client.js').read_text('utf-8'))
+                await page.evaluate((STATIC/'file-upload.js').read_text('utf-8'))
+                await page.evaluate((STATIC/'clipboard-files.js').read_text('utf-8'))
+                await page.evaluate((STATIC/'terminal-composer.js').read_text('utf-8'))
+                await page.locator('#terminal-composer-open').click()
+                data=b'\x89PNG\r\nowned image pasted with Ctrl V'
+                prevented=await page.evaluate('''data=>{
+                  const transfer=new DataTransfer();transfer.items.add(new File([new Uint8Array(data)],'pasted.png',{type:'image/png'}));
+                  const event=new ClipboardEvent('paste',{clipboardData:transfer,bubbles:true,cancelable:true});
+                  document.getElementById('terminal-composer-text').dispatchEvent(event);return event.defaultPrevented;
+                }''',data)
+                assert prevented
+                await page.wait_for_function('!SuperMonoTerminalComposer.busy',timeout=20000)
+                saved=[path for path in (parents[0].project/'tmp').glob('*pasted.png') if path.is_file()]
+                assert len(saved)==1 and saved[0].read_bytes()==data
+                assert not (parents[1].project/'tmp').exists()
+                plain=await page.evaluate('''()=>{
+                  const transfer=new DataTransfer();transfer.setData('text/plain','ordinary pasted text');
+                  const event=new ClipboardEvent('paste',{clipboardData:transfer,bubbles:true,cancelable:true});
+                  const field=document.getElementById('terminal-composer-text');field.dispatchEvent(event);
+                  if(!event.defaultPrevented)field.setRangeText(transfer.getData('text/plain'),field.selectionStart,field.selectionEnd,'end');
+                  return event.defaultPrevented;
+                }''')
+                assert not plain
+                assert 'ordinary pasted text' in await page.locator('#terminal-composer-text').input_value()
+                assert await page.evaluate('fixtureInputs')==[]
+                assert all(not parent.pty_written for parent in parents)
                 assert not errors,errors
     run(exercise,tmp_path)

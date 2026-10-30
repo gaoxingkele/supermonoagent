@@ -546,6 +546,7 @@ def test_consecutive_editor_native_pastes_reach_captured_projects_through_real_b
                       if(!window.editorReadStarted){window.editorReadStarted=true;await new Promise(yes=>window.releaseEditorRead=yes);}
                       return fixtureClipRead(id,offset);}}};
                 }''')
+                await page.evaluate((STATIC/'file-upload.js').read_text(encoding='utf-8'))
                 await page.evaluate((STATIC/'clipboard-files.js').read_text(encoding='utf-8'))
                 await page.evaluate(SCRIPT.read_text(encoding='utf-8'))
                 await page.locator('#terminal-composer-open').click()

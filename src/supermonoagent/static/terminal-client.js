@@ -190,7 +190,7 @@
   function historyFrameBytes(context,bytes,cursor) {
     if(context.kind==='snapshot')return {bytes,position:context.v===2?context.end_position:null,reset:true};
     if(context.v!==2)return {bytes,position:null,reset:false};
-    if(!cursor||cursor.epoch!==context.epoch||cursor.stream_id!==context.stream_id)return null;
+    if(!cursor||cursor.stream_id!==context.stream_id)return null;
     const start=context.end_position-bytes.length;
     if(start<0||cursor.position<start)return null;
     if(cursor.position>=context.end_position)return {bytes:new Uint8Array(),position:context.end_position,reset:false};

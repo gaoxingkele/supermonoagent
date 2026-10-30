@@ -123,6 +123,29 @@ class StartupTest(unittest.TestCase):
                 self.assertIsNone(ensure_running("http://127.0.0.1:6769", self.state))
             process.assert_not_called()
 
+    def test_occupied_default_reuses_matching_bridge_on_another_port(self):
+        self.config()
+        expected = {"ok": True, "role": "relay-bridge", "backend": "ws://127.0.0.1:6769/ws",
+                    "relay": DEFAULT_RELAY, "relay_connected": False}
+        def health(port):
+            return (True, {"role": "other"}) if port == 6791 else (True, expected)
+        with patch("supermonoagent.relay_bridge._local_health", side_effect=health), patch("subprocess.Popen") as process:
+            self.assertEqual(ensure_running("http://127.0.0.1:6769", self.state), expected)
+            process.assert_not_called()
+
+    def test_occupied_default_starts_next_free_port_without_replacing_other_service(self):
+        self.config()
+        calls = []
+        def health(port):
+            calls.append(port)
+            return (True, {"role": "other"}) if port == 6791 else (False, None)
+        with patch("supermonoagent.relay_bridge._local_health", side_effect=health), \
+                patch("subprocess.Popen") as process, patch("supermonoagent.relay_bridge._STARTED", {}):
+            ensure_running("http://127.0.0.1:6769", self.state)
+            command = process.call_args.args[0]
+            self.assertEqual(command[command.index("--port") + 1], "6792")
+            self.assertEqual(calls[:2], [6791, 6792])
+
     def test_frozen_start_is_hidden_bounded_and_keeps_tokens_and_code_out_of_argv(self):
         self.config()
         with patch("supermonoagent.relay_bridge._local_health", return_value=(False, None)), \

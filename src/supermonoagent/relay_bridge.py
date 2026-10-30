@@ -354,9 +354,9 @@ class RelayBridge:
         return text_response(connection, 404, "Not found", "text/plain")
 
 
-def _local_health() -> tuple[bool, dict | None]:
+def _local_health(port=HEALTH_PORT) -> tuple[bool, dict | None]:
     """No proxy, redirect, credential, or public network is involved in this probe."""
-    connection = http.client.HTTPConnection("127.0.0.1", HEALTH_PORT, timeout=.15)
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=.15)
     try:
         connection.request("GET", "/health")
         response = connection.getresponse()
@@ -391,7 +391,10 @@ def ensure_running(backend: str, state_dir: Path) -> dict | None:
             return None
         canonical_backend = socket_url(backend, local=True)
         # This migration is for one user-approved server, never an env override.
-        if config.get("relay") != DEFAULT_RELAY or config.get("port", HEALTH_PORT) != HEALTH_PORT:
+        if config.get("relay") != DEFAULT_RELAY:
+            return None
+        requested_port = config.get("port", HEALTH_PORT)
+        if type(requested_port) is not int or not HEALTH_PORT <= requested_port <= HEALTH_PORT + 8:
             return None
         if "backend" in config and socket_url(config["backend"], local=True) != canonical_backend:
             return None
@@ -402,11 +405,16 @@ def ensure_running(backend: str, state_dir: Path) -> dict | None:
     except (OSError, ValueError, TypeError, AttributeError):
         return None
     with _START_LOCK:
-        present, health = _local_health()
-        if present:
+        health_port = requested_port
+        for candidate in (requested_port, *(port for port in range(HEALTH_PORT, HEALTH_PORT + 9) if port != requested_port)):
+            present, health = _local_health(candidate)
+            if not present:
+                health_port = candidate
+                break
             if (health and health.get("ok") is True and health.get("role") == "relay-bridge"
                     and health.get("backend") == canonical_backend and health.get("relay") == DEFAULT_RELAY):
                 return health
+        else:
             logging.getLogger(__name__).warning("Secure relay bridge health port is occupied by another service")
             return None
         key = (canonical_backend, str(state_dir.resolve()))
@@ -421,7 +429,7 @@ def ensure_running(backend: str, state_dir: Path) -> dict | None:
                 executable = pythonw
             command = [str(executable), "-m", "supermonoagent.relay_bridge"]
         command += ["--backend", canonical_backend, "--state-dir", str(state_dir.resolve()),
-                    "--relay", DEFAULT_RELAY, "--code-file", str(code_file.resolve()), "--port", str(HEALTH_PORT)]
+                    "--relay", DEFAULT_RELAY, "--code-file", str(code_file.resolve()), "--port", str(health_port)]
         flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
         try:
             subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

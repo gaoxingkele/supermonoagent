@@ -37,7 +37,9 @@ class OldParent:
         service = {'pid': self.pid}
         if self.owner != 'missing':
             service['owner_authenticated'] = self.owner
-        return {'capabilities': {'multiplex': self.multiplex}, 'service': service,
+        return {'capabilities': {'multiplex': self.multiplex, 'snapshot_sgr': True},
+                'controls': {'session1': {'cols': 80, 'rows': 24, 'owner': False, 'busy': False}},
+                'service': service,
                 'windows': [{'id': 'window1', 'sessions': [{'id': 'session1', 'cwd': str(self.project)}] if self.session_open else []}]}
 
     async def http(self, connection, request):
@@ -61,6 +63,8 @@ class OldParent:
                     await ws.send(pack_json(2, self.state()))
                 elif op == 10:
                     await ws.send(pack(11, payload))
+                elif op == 16:
+                    await ws.send(pack(8, b'session1\0'))
                 else:
                     self.pty_written.append(raw)
                     raise AssertionError('Companion attempted a terminal operation')
@@ -126,7 +130,7 @@ async def environment(tmp_path, *, download_mode='http'):
                 server.close();await server.wait_closed()
             await broker.close()
             assert all(not parent.pty_written for parent in parents)
-            assert all(set(parent.operations) <= {1, 10} for parent in parents)
+            assert all(set(parent.operations) <= {1, 10, 16} for parent in parents)
 
 
 @asynccontextmanager

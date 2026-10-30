@@ -74,17 +74,21 @@ public class HotCheck {
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
 
     def test_complete_package_loads_and_keeps_immutable_snapshot(self):
-        self.assertEqual(len(list(self.directory.rglob("*.js"))), 7)
-        self.assertEqual(len((self.directory / "manifest.properties").read_text().splitlines()), 17)
+        self.assertEqual(len(list(self.directory.rglob("*.js"))), 9)
+        self.assertEqual(len((self.directory / "manifest.properties").read_text().splitlines()), 19)
         self.assertEqual(len(list((self.directory / "mobile/agent-modes").glob("*.json"))), 6)
+        for name in PACKAGER.AGENT_MODES:
+            packaged = self.directory / "mobile/agent-modes" / (name + ".json")
+            shared = ROOT / "src/supermonoagent/static/agent-modes" / (name + ".json")
+            self.assertEqual(packaged.read_bytes(), shared.read_bytes())
         self.check("test_ui_1", snapshot=True)
         # A subsequent instance detects the changed bytes and safely uses bundled assets.
         self.check()
 
-    def test_legacy_ten_file_usb_override_falls_back_without_mixing_apk_profiles(self):
+    def test_legacy_twelve_file_usb_override_falls_back_without_mixing_apk_profiles(self):
         manifest=self.directory/"manifest.properties"
         legacy="\n".join(line for line in manifest.read_text().splitlines() if not line.startswith("file.mobile/agent-modes/"))+"\n"
-        self.assertEqual(len(legacy.splitlines()),11)
+        self.assertEqual(len(legacy.splitlines()),13)
         manifest.write_text(legacy,encoding="ascii")
         self.check()
         self.assertEqual(self.pointer.read_text(),"test_ui_1\n")

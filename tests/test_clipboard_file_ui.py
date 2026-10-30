@@ -7,7 +7,7 @@ from supermonoagent.windows_clipboard import ClipboardFiles
 from test_workspace_profile_rooms import fixture, run, server_barrier, eventually, add_profile, wait_room
 
 
-def test_native_file_paste_requires_exchange_helper_and_plain_text_remains_text(tmp_path):
+def test_native_file_paste_uses_op21_when_exchange_missing_and_plain_text_remains_text(tmp_path):
     run(lambda playwright: check_paste(playwright, tmp_path))
 
 
@@ -31,9 +31,8 @@ async def check_paste(playwright, tmp_path):
             await page.evaluate(Path('src/supermonoagent/static/clipboard-files.js').read_text(encoding='utf-8'))
             await page.evaluate('''()=>{window.supermonoClipboardHasFiles=true;smaWorkspace.terminal.textarea.dispatchEvent(new ClipboardEvent('paste',{clipboardData:new DataTransfer(),bubbles:true,cancelable:true}));}''')
             await page.wait_for_function('!SuperMonoFilePaste.busy')
-            assert '文件交换助手尚未安装' in await page.locator('#file-transfer-progress').inner_text()
-            assert await page.evaluate('SuperMonoFilePaste.queued') == 1
-            assert not (daemons[0].receive_dir / source.name).exists()
+            assert (daemons[0].receive_dir / source.name).read_bytes() == content
+            assert await page.evaluate('SuperMonoFilePaste.queued') == 0
             assert not any(session.pty.written for owned in sessions for session in owned)
             # A plain text paste takes the original xterm path unchanged.
             sid = await page.evaluate('smaWorkspace.activePane.raw')
@@ -76,6 +75,7 @@ async def check_boundary(playwright, folder, boundary):
                 await page.expose_function('fixtureClipRead', read)
                 await page.expose_function('fixtureClipRelease', clip.release)
                 await page.evaluate("()=>{window.pywebview={api:{clipboard_files:fixtureClipSnapshot,clipboard_chunk:fixtureClipRead,clipboard_release:fixtureClipRelease}};}")
+                await page.evaluate((STATIC/'file-upload.js').read_text(encoding='utf-8'))
                 await page.evaluate((STATIC/'clipboard-files.js').read_text(encoding='utf-8'))
                 await page.evaluate('()=>{window.uploadRun=SuperMonoFilePaste.paste();}')
                 async with asyncio.timeout(5):
@@ -131,6 +131,7 @@ async def check_browser_batch(playwright, folder):
               const screen=document.createElement('div');screen.className='terminal-screen';const field=document.createElement('textarea');
               screen.append(field);document.querySelector('#stage').append(screen);fixturePanes[0].term={textarea:field};
             }""")
+            await page.evaluate((STATIC/'file-upload.js').read_text(encoding='utf-8'))
             await page.evaluate((STATIC/'clipboard-files.js').read_text(encoding='utf-8'))
             await page.evaluate("""()=>{const d=new DataTransfer();d.items.add(new File(['first-pdf'],'one.pdf'));d.items.add(new File(['second-docx'],'two.docx'));
               smaWorkspace.activePane.term.textarea.dispatchEvent(new ClipboardEvent('paste',{clipboardData:d,bubbles:true,cancelable:true}));}""")

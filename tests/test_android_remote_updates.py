@@ -41,7 +41,7 @@ public class RemoteCheck {
    catch(java.io.IOException error){check(error.getMessage().contains("Native shell upgrade required"),"Missing native upgrade message");System.out.println("native-shell-upgrade-required");}return;
   }
   if(a[0].equals("document")){
-   check(RemoteUpdates.NATIVE_API==2&&RemoteUpdates.FILES.size()==16,"API2 asset baseline missing");
+   check(RemoteUpdates.NATIVE_API==2&&RemoteUpdates.FILES.size()==18,"API2 asset baseline missing");
    String profileOrigin="https://terminal.example.test",profileRevision="test-2";
    for(String mode:Arrays.asList("codex","claude-code","grok","kimi","pi-dev","cursor-cli")){
     String path="mobile/agent-modes/"+mode+".json";
