@@ -34,7 +34,7 @@
   }
   async function drain(){if(activeJob)return;const job=jobs.find(j=>j.state==='queued');if(!job){busy=false;renderQueue();return;}activeJob=job;busy=true;job.state='reading';status('正在读取粘贴文件…');renderQueue();
     try{await job.ready;if(job.controller.signal.aborted)throw Error('文件传输已取消。');if(job.sourceError)throw job.sourceError;if(!job.sources.length){if(!job.retain)throw Error('没有可上传的文件或图片。');job.fallback?.();job.resolve([]);await forget(job);}
-      else{job.state='sending';renderQueue();const receipts=await transferExchange(job.pinned,job.sources.filter(s=>!s.saved),{...job.options,signal:job.controller.signal,exchangeTarget:job.exchange});job.resolve(receipts);status('已保存到目标项目 tmp：'+receipts.map(r=>r.path).join('、'));await forget(job);}}
+      else{job.state='sending';renderQueue();const receipts=await transferExchange(job.pinned,job.sources.filter(s=>!s.saved),{...job.options,signal:job.controller.signal,exchangeTarget:job.exchange});job.resolve(receipts);status('已保存到目标电脑暂存目录（D:\\aicoding\\supermonoagent\\tmp，无 D 盘时为 C 盘）：'+receipts.map(r=>r.path).join('、'));await forget(job);}}
     catch(error){if(error.code==='project_required')error.message='请先在底部选择当前项目目录，附件将保存到该项目的 tmp。';job.reject(error);status(String(error.message||error));if(job.retain&&(!job.controller.signal.aborted||error.unknownCommit||error.pendingFileId)&&job.sources.length){job.state=error.unknownCommit?'unknown':error.pendingFileId?'pending':'failed';job.pendingFileId=error.pendingFileId;job.pendingUploadId=error.pendingUploadId;renderQueue();}else await forget(job);}
     finally{activeJob=null;busy=false;drain();}
   }
@@ -133,7 +133,7 @@
         isCurrent:()=>!options.signal?.aborted&&valid(pinned)&&F.isCurrent(target),signal:options.signal,onProgress:value=>{
           if(value.phase==='preparing')status('准备传输 '+value.name+'…');
           else if(value.phase==='uploading')status(value.name+' · '+(value.size?Math.floor(value.loaded/value.size*100):100)+'%');
-          else if(value.phase==='receiving')status('已存入中继，正在等待目标项目 tmp 保存确认：'+value.name);
+          else if(value.phase==='receiving')status('已存入中继，等待目标电脑暂存目录保存确认：'+value.name);
           else if(value.phase==='submitting')status('正在提交中继，请等待结果确认：'+value.name);
           try{options.onProgress?.(value);}catch{}
         }});

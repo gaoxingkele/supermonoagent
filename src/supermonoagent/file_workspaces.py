@@ -24,6 +24,10 @@ from .file_transfer import _validate_name
 MAX_SETTINGS_BYTES = 1024 * 1024
 MAX_REVISION = 9007199254740991
 _PATH_LIMIT = 4096
+# Central relay-upload drop on the receiving host: D:\aicoding\supermonoagent\tmp
+# preferred, C:\aicoding\supermonoagent\tmp when no usable D: volume exists.
+UPLOAD_DROP_DRIVES = ('D', 'C')
+UPLOAD_DROP_PARTS = ('aicoding', 'supermonoagent', 'tmp')
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -122,6 +126,20 @@ def _directory(value, *, required=False):
     if required and not found:
         raise ValueError('Directory does not exist')
     return str(path.resolve(strict=False)), 'ready' if found else 'missing'
+
+
+def default_upload_drop():
+    """Central upload-drop directory on this host, or None when unavailable.
+
+    Reads never create the directory; callers create it only at delivery time.
+    """
+    if os.name != 'nt':
+        return None
+    relative = '/'.join(UPLOAD_DROP_PARTS)
+    for letter in UPLOAD_DROP_DRIVES:
+        if _drive_type(letter + ':\\') in (2, 3, 6):  # Removable, fixed, RAM; never network.
+            return str(_path(letter + ':/' + relative))
+    return None
 
 
 def _description(value, *, reject_unsafe=False):

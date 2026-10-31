@@ -18,6 +18,7 @@
   let renderer = C.rendererName(params.get('renderer') || read(localStorage, 'sma.workspace.renderer'));
   let catalog = [], panes = new Map(), openTabs = [], active = '', layout = null;
   let userConnectedOnce = false, maximized = false, ctrl = false;
+  let windowOrder=read(localStorage,'sma.workspace.window-order')==='hot'?'hot':'grouped';
   let renameWindow = null, terminateSession = null, connectionOwner = null;
   let homeConfig={...config}, savedHosts=loadHosts(), selectedHost='local', editingHost='', homeRelays=[];
   let relayProfiles=loadRelayProfiles(),profileLegacy='connection',roomMenu=null;
@@ -102,7 +103,7 @@
   }
   function handshake(host){
     if(host.helloSent||host.ws?.readyState!==WebSocket.OPEN)return;
-    host.helloSent=true;socketSend(host,C.pack(1,encoder.encode(JSON.stringify({...(tokenlessLocal(host.config)||host.config.authMode==='account'?{}:{token:host.config.token}),multiplex:true,reliable:true,history_context:1,history_resume:1,
+    host.helloSent=true;socketSend(host,C.pack(1,encoder.encode(JSON.stringify({...(tokenlessLocal(host.config)||host.config.authMode==='account'?{}:{token:host.config.token}),multiplex:true,reliable:true,history_context:1,history_resume:1,history_chunks:1,
       channel:host.id==='local'?params.get('channel')||undefined:undefined}))));
   }
   function stopHost(host){
@@ -126,7 +127,7 @@
     host.helloSent=false;host.subscriptionSignature='';host.phase='connecting';host.error='';host.meter.reset(performance.now(),host.retry);host.rates={tx:0,rx:0};host.pingSentAt=null;
     for(const pane of panes.values())if(pane.host===host){
       pane.resumeControl=pane.resumeControl||host.controls[pane.raw]?.owner===true;
-      pane.generation=host.generation;pane.bindHeader();pane.bindInput();pane.bindObserver();pane.writing=false;pane.lastSize='';pane.lastAttempt='';pane.limitedSize=null;pane.resizePaused=false;pane.frames=[];pane.replayPending=0;pane.recoveryPending=false;
+      pane.generation=host.generation;pane.bindHeader();pane.bindInput();pane.bindObserver();pane.writing=false;pane.lastSize='';pane.lastAttempt='';pane.limitedSize=null;pane.resizePaused=false;pane.frames=[];pane.replayPending=0;pane.recoveryPending=false;pane.chunkedReplay=false;
     }
     let url;try{url=C.socketURL(host.config.relay,location.origin);const safe=new URL(url);safe.searchParams.delete('token');url=safe.toString();}
     catch(error){host.error=error.message;host.phase='invalid';updateConnection();renderHosts();return;}
@@ -152,11 +153,17 @@
           if(op===23&&host.capabilities.history_context!==1)throw new Error('Unnegotiated history context');
           const data=op===23?C.historyPayload(payload):C.sessionPayload(payload),pane=panes.get(key(host,data.session));
           const replay=op===8||op===23&&['snapshot','resume'].includes(data.context.kind);
-          if(!replay&&data.bytes.length)host.activity.set(data.session,performance.now());
+          if(!replay&&data.bytes.length){host.activity.set(data.session,performance.now());scheduleHotTree();}
           if(livePane(pane)){
             const size=data.context||host.controls[data.session];
             pane.frames.push({op,bytes:data.bytes,context:data.context||null,grid:size?{cols:size.cols,rows:size.rows}:null});
-            if(replay){pane.replayPending++;if(data.context?.kind==='resume')metrics.historyResumes++;else metrics.snapshots++;}metrics.outputFrames++;drainPane(pane);
+            if(replay){
+              pane.replayPending++;
+              if(host.capabilities.history_chunks===1&&data.context?.kind==='snapshot'&&Number.isSafeInteger(host.controls[data.session]?.history_end))
+                pane.chunkedReplay=data.context.end_position<host.controls[data.session].history_end;
+              pane.ready=false;pane.term.options.disableStdin=true;
+              if(data.context?.kind==='resume')metrics.historyResumes++;else metrics.snapshots++;
+            }metrics.outputFrames++;drainPane(pane);
           }
         }else if(op===11){
           const reply=decoder.decode(payload),barrier=/^resize:(\d+):(.+)$/.exec(reply);
@@ -214,7 +221,7 @@
       }
     }
     if(host.nextSplit==='new'){const created=host.catalog.flatMap(win=>win.sessions||[]).find(session=>!host.sessionsBeforeOpen.has(session.id));if(created){host.nextSplit='';openView(key(host,created.id));}}
-    for(const pane of panes.values())if(pane.host===host){pane.ready=true;pane.term.options.disableStdin=false;const data=sessionInfo(pane.sid);if(data){pane.title.textContent=data.win.title+'（'+agentType(data.session,data.win.title)+'）';TabThemes.apply(pane.title.parentElement,data.win.tab_theme);updateAgentMode(pane);}drainPane(pane);}
+    for(const pane of panes.values())if(pane.host===host){pane.ready=host.connected&&!pane.writing&&!pane.frames.length&&!pane.replayPending&&!pane.chunkedReplay;pane.term.options.disableStdin=!pane.ready;const data=sessionInfo(pane.sid);if(data){pane.title.textContent=data.win.title+'（'+agentType(data.session,data.win.title)+'）';TabThemes.apply(pane.title.parentElement,data.win.tab_theme);updateAgentMode(pane);}drainPane(pane);}
     renderTree();renderTabs();renderHosts();renderDaemonMonitor();if(layoutChanged)renderLayout();subscribe();updateConnection();updateFooter();if(greeting||host.id==='local')refreshDirectories();
     scheduleVisibleFit();
   }
@@ -245,7 +252,12 @@
       pane.pendingRefreshOnFollow=true;pane.history.textContent='正在阅读历史，返回底部后同步当前画面';pane.history.hidden=false;
       drainPane(pane);return;
     }
+    if(tracked.reset&&frame.context?.partial){
+      const lease=pane.host.controls[pane.raw];
+      if(lease?.owner||lease?.busy===false){pane.redrawAfterReplay=true;pane.wantControl=true;}
+    }
     frame.bytes=tracked.bytes;
+    if(tracked.reset||(size&&(pane.term.cols!==size.cols||pane.term.rows!==size.rows)))capturePaneHistory(pane,true);
     applyGrid(pane,size);
     pane.writing=true;
     pane.questions?.beforeOutput({replay});
@@ -258,13 +270,17 @@
     pane.term.write(frame.bytes,()=>{
       if(!livePane(pane)||pane.generation!==writeGeneration)return;
       pane.writing=false;if(replay){pane.replayPending=Math.max(0,pane.replayPending-1);pane.historyInitialized=true;if(!pane.replayPending)pane.recoveryPending=false;}
+      if(replay&&pane.chunkedReplay&&frame.context?.kind==='resume'&&!tracked.bytes.length&&frame.context.end_position>=pane.host.controls[pane.raw]?.history_end)pane.chunkedReplay=false;
+      pane.ready=pane.host.connected&&!pane.writing&&!pane.frames.length&&!pane.replayPending&&!pane.chunkedReplay;
+      pane.term.options.disableStdin=!pane.ready;
       if(frame.context?.v===2&&tracked.position!==null)pane.historyCursor={position:tracked.position,epoch:frame.context.epoch,stream_id:frame.context.stream_id};
       if(readingDistance!==null&&pane.term.buffer.active.type==='normal'){
         pane.followingProgrammatically=true;pane.term.scrollToLine(Math.max(0,pane.term.buffer.active.baseY-readingDistance));pane.followingProgrammatically=false;
       }
       metrics.renderMilliseconds+=performance.now()-before;metrics.parsedBytes+=frame.bytes.length;
+      capturePaneHistory(pane);
       if(pane.followFrame)keepFollowing(pane);
-      drainPane(pane);
+      pane.agentDetector?.request();drainPane(pane);
       if(!pane.frames.length){fitPane(pane);maybeRedrawPane(pane);}
     });
   }
@@ -275,9 +291,10 @@
     const own=node('span','pane-control','');header.append(title,own);
     TabThemes.apply(header,data.win.tab_theme);
     const screen=node('div','terminal-screen');const history=node('div','history-note','已恢复有限输出历史 · 全屏程序画面可能需要刷新');history.hidden=true;
-    history.title=history.textContent;el.append(header,screen);$('stage').append(el);
+    const historyView=node('pre','pane-readonly-history');historyView.hidden=true;historyView.setAttribute('aria-label','只读历史画面');historyView.style.cssText='position:absolute;inset:8px;z-index:5;margin:0;overflow:auto;white-space:pre;overflow-wrap:anywhere;background:#121212;color:#dedede;font:13px/1.4 "Cascadia Mono",Consolas,monospace;padding:8px;';
+    history.title=history.textContent;el.append(header,screen);screen.append(historyView);$('stage').append(el);
     const term=new Terminal({allowProposedApi:true,convertEol:false,disableStdin:!data.win.host.connected,cursorBlink:true,
-      fontFamily:'"Cascadia Mono", "Cascadia Code", Consolas, monospace',fontSize:mobile()?13:14,scrollback:5000,minimumContrastRatio:4.5,
+      fontFamily:'"Cascadia Mono", "Cascadia Code", Consolas, monospace',fontSize:mobile()?13:14,scrollback:10000,minimumContrastRatio:4.5,
       theme:{background:'#121212',foreground:'#dedede',cursor:'#ddd',selectionBackground:'#55555588'},rendererType:'dom'});
     const fit=new FitAddon.FitAddon();term.loadAddon(fit);
     if(window.Unicode11Addon?.Unicode11Addon){try{term.loadAddon(new Unicode11Addon.Unicode11Addon());term.unicode.activeVersion='11';}catch{}}
@@ -291,7 +308,7 @@
     });
     // Preserve readable history when a full-screen tool clears saved lines.
     term.parser.registerCsiHandler({final:'J'},params=>params[0]===3);
-    const pane={sid,host:data.win.host,raw:data.session.raw,generation:data.win.host.generation,el,screen,term,fit,history,title,own,ready:data.win.host.connected,replayPending:0,lastSize:'',renderer:'dom',webgl:null,observer:null,frames:[],writing:false,wantControl:false,redrawAfterReplay:false,redrawTimer:0,resizeRequest:null,lastAttempt:'',lastInputAt:0,repaintAt:0,composing:false,historyCursor:null,historyInitialized:false,recoveryGeneration:-1};
+    const pane={sid,host:data.win.host,raw:data.session.raw,generation:data.win.host.generation,el,screen,term,fit,history,historyView,title,own,ready:data.win.host.connected,replayPending:0,lastSize:'',renderer:'dom',webgl:null,observer:null,frames:[],writing:false,wantControl:false,redrawAfterReplay:false,redrawTimer:0,resizeRequest:null,lastAttempt:'',lastInputAt:0,repaintAt:0,composing:false,historyCursor:null,historyInitialized:false,recoveryGeneration:-1,historyMode:false,historyCapturedAt:0,screenArchive:C.createScreenHistory({maxFrames:128,maxBytes:4*1024*1024})};
     term.parser.registerOscHandler(7501,data=>{
       if(!livePane(pane))return false;
       const session=pane.host.catalog.flatMap(win=>win.sessions||[]).find(item=>item.id===pane.raw);if(!session||session.agent)return false;
@@ -304,7 +321,7 @@
     });
     pane.highlighter=C.createHighlighter(term,{enabled:highlightEnabled});
     pane.questions=window.TerminalQuestions?.create(pane,{enabled:highlightEnabled,isCurrent:livePane});
-    panes.set(sid,pane);setRenderer(pane);updateAgentMode(pane);
+    panes.set(sid,pane);setRenderer(pane,false);updateAgentMode(pane);watchAgentContent(pane);
     pane.followOutput=true;pane.followFrame=0;pane.followGeometry=viewportGeometry(pane);pane.userScrollUntil=0;
     const scrollIntent=event=>{
       const buffer=term.buffer.active;if(event.type==='wheel'&&event.deltaY>=0&&buffer.viewportY===buffer.baseY)return;
@@ -326,7 +343,7 @@
       const explicit=performance.now()<pane.userScrollUntil&&pane.userScrollGeometry===viewportGeometry(pane);
       // Zoom can generate a native DOM scroll before fit/resize sees the new geometry.
       // A stable, idle programmatic history scroll is also an intentional view change.
-      if(explicit||(!pane.writing&&!pane.resizeRequest&&!pane.followFrame&&pane.followGeometry===viewportGeometry(pane)))
+      if(explicit||(!pane.writing&&!pane.followFrame&&pane.followGeometry===viewportGeometry(pane)))
         pane.followOutput=term.buffer.active.viewportY===term.buffer.active.baseY;
     });
     const scrollBar=node('div','pane-scroll');
@@ -370,21 +387,31 @@
     pane.bindObserver();
     return pane;
   }
-  function setRenderer(pane) {
+  function setRenderer(pane,preserve=true) {
+    pane.preserveGrid=preserve?{geometry:viewportGeometry(pane)}:null;
     if(pane.webgl){pane.webgl.dispose();pane.webgl=null;}
     pane.renderer='dom';
     if(renderer!=='dom'&&window.WebglAddon?.WebglAddon){
       try{
         const gl=new WebglAddon.WebglAddon();pane.term.loadAddon(gl);pane.webgl=gl;pane.renderer='webgl';
-        gl.onContextLoss(()=>{if(pane.webgl!==gl)return;pane.webgl=null;gl.dispose();pane.renderer='dom';metrics.rendererFallbacks++;notice('WebGL 上下文已丢失，已切换为 DOM 渲染。');updateFooter();});
+        gl.onContextLoss(()=>{if(pane.webgl!==gl)return;pane.webgl=null;gl.dispose();pane.renderer='dom';pane.term.refresh(0,pane.term.rows-1);metrics.rendererFallbacks++;notice('WebGL 上下文已丢失，已切换为 DOM 渲染。');updateFooter();});
       }catch(error){pane.renderer='dom';metrics.rendererFallbacks++;if(renderer==='webgl')notice('WebGL 不可用，已使用 DOM 渲染：'+error.message);}
     }else if(renderer==='webgl'){metrics.rendererFallbacks++;notice('此浏览器不支持 WebGL 附加组件，已使用 DOM 渲染。');}
+    pane.term.refresh(0,pane.term.rows-1);
   }
   const agentModeKey=pane=>'sma.workspace.agent-mode.'+JSON.stringify([endpoint(pane.host.config),pane.raw]);
+  function watchAgentContent(pane){
+    if(pane.agentDetector)return;
+    pane.agentDetector=C.createAgentDetector(pane.term,{isUnknown:()=>livePane(pane)&&pane.agentMode==='auto'&&!pane.host.agents.get(pane.raw),onDetected:mode=>{
+      if(!livePane(pane)||pane.agentMode!=='auto')return;const session=sessionInfo(pane.sid)?.session;if(!session||session.agent)return;
+      session.learnedAgent=mode;pane.host.agents.set(pane.raw,mode);aggregateCatalog();const info=sessionInfo(pane.sid);
+      if(info)pane.title.textContent=info.win.title+'（'+agentType({...info.session,learnedAgent:mode},info.win.title)+'）';pane.agentRequested=null;updateAgentMode(pane);renderTree();
+    }});pane.agentDetector.request();
+  }
   function updateAgentMode(pane){
     const info=sessionInfo(pane.sid);if(!info)return;
     const saved=read(localStorage,agentModeKey(pane)),mode=C.agentProfiles.some(profile=>profile.id===saved)?saved:'auto';
-    const detected=mode==='auto'?C.agentModeFromSession(info.session,info.win.title):mode;
+    const learned=pane.host.agents.get(pane.raw),detected=mode==='auto'?(learned||C.agentModeFromSession(info.session,info.win.title)):mode;
     pane.agentMode=mode;if(pane.agentRequested===detected)return;
     pane.agentRequested=detected;const generation=pane.agentGeneration=(pane.agentGeneration||0)+1;
     const apply=profile=>{
@@ -403,13 +430,47 @@
   function viewportGeometry(pane){
     const rect=pane.screen.getBoundingClientRect();return [rect.width,rect.height,devicePixelRatio].join(':');
   }
+  function capturePaneHistory(pane,force=false){
+    if(!livePane(pane)||pane.historyMode||!pane.ready||pane.replayPending||pane.writing||pane.resizeRequest)return false;
+    const buffer=pane.term.buffer.active;
+    if(buffer.type==='normal'&&buffer.baseY>0)return false;
+    const now=performance.now();if(!force&&now-pane.historyCapturedAt<750)return false;
+    pane.historyCapturedAt=now;
+    const lines=Array.from({length:pane.term.rows},(_,row)=>buffer.getLine(buffer.baseY+row)?.translateToString(true)||'');
+    if(!lines.some(line=>line.trim()))return false;
+    return pane.screenArchive.record({cols:pane.term.cols,rows:pane.term.rows,lines});
+  }
+  function renderPaneHistory(pane){
+    const frame=pane.screenArchive.current();if(!frame){exitPaneHistory(pane);return;}
+    pane.historyMode=true;pane.screen.style.visibility='hidden';pane.historyView.hidden=false;pane.historyView.replaceChildren(document.createTextNode(frame.lines.join('\n')));
+    const message='只读历史 · '+pane.screenArchive.length+' 帧 · 最新帧';pane.history.textContent=message;pane.history.title=message;pane.history.hidden=false;
+  }
+  function exitPaneHistory(pane){
+    pane.screenArchive.bottom();pane.historyMode=false;pane.screen.style.visibility='';pane.historyView.hidden=true;pane.historyView.textContent='';
+  }
   function pageHistory(pane,direction){
     const buffer=pane.term.buffer.active;
+    if(pane.historyMode){
+      if(direction==='start')pane.screenArchive.top();
+      else if(direction==='end'){exitPaneHistory(pane);pane.term.scrollToBottom();pane.followOutput=true;keepFollowing(pane);}
+      else if(direction==='up')pane.screenArchive.previous();
+      else pane.screenArchive.next();
+      renderPaneHistory(pane);return;
+    }
     if(buffer.type==='alternate'||buffer.baseY===0){
       const session=sessionInfo(pane.sid)?.session||{},declared=session.agent||session.learnedAgent;
       const executable=value=>String(Array.isArray(value)?value[0]||'':value||'').trim().replace(/^"|"$/g,'').split(/[\\/]/).pop();
       const codex=declared?/^codex$/i.test(declared):[session.shell,session.command,session.argv].some(value=>/^codex(?:\.(?:exe|cmd|js))?$/i.test(executable(value)));
       const canPage=codex&&pane.ready&&pane.host.connected&&!pane.replayPending;
+      if(!canPage){
+        capturePaneHistory(pane,true);
+        if(pane.screenArchive.length){
+          if(direction==='end'){exitPaneHistory(pane);pane.followOutput=true;keepFollowing(pane);return;}
+          pane.historyMode=true;pane.screen.style.visibility='hidden';pane.historyView.hidden=false;
+          if(direction==='start')pane.screenArchive.top();else if(direction==='up')pane.screenArchive.previous();else pane.screenArchive.next();
+          pane.followOutput=false;renderPaneHistory(pane);return;
+        }
+      }
       const message=codex?(canPage?'正在翻阅 Codex 历史。':'请等待连接和历史恢复后再翻屏。'):buffer.type==='alternate'?'此全屏程序没有本地滚动历史，请使用程序自身的历史查看功能。':'当前会话尚无可翻阅的本地历史。';
       pane.history.textContent=message;pane.history.title=message;pane.history.hidden=false;
       if(canPage){
@@ -495,6 +556,10 @@
   function fitPane(pane, takeover=false) {
     if(!pane||!livePane(pane)||pane.writing||pane.replayPending||!pane.host.controls[pane.raw]||!visibleIDs().includes(pane.sid)||pane.screen.clientWidth<20||pane.screen.clientHeight<20)return;
     if(pane.frames.length){drainPane(pane);return;}
+    if(pane.preserveGrid){
+      if(pane.preserveGrid.geometry===viewportGeometry(pane)&&!takeover&&!pane.wantControl){applyGrid(pane);updateFooter();return;}
+      pane.preserveGrid=null;
+    }
     applyGrid(pane);if(pane.resizeRequest||pane.resizePaused)return;
     let proposed;try{proposed=pane.fit.proposeDimensions();}catch{return;}if(!proposed)return;
     const desired=C.terminalSize(proposed.cols,proposed.rows),lease=pane.host.controls[pane.raw];
@@ -507,6 +572,12 @@
       if(requestResize(pane,desired,takeover)){pane.lastAttempt=key;pane.wantControl=false;}
     }else if(unchanged)pane.wantControl=false;
     updateFooter();maybeRedrawPane(pane);
+  }
+  function repaintPane(pane) {
+    // WebGL incremental redraw can leave stale glyph overlays on cells whose
+    // content changed while the pane was hidden; a full row refresh clears
+    // them. DOM rendering repaints cells individually, so skip it.
+    try{if(pane&&pane.renderer==='webgl'&&pane.ready)pane.term.refresh(0,pane.term.rows-1);}catch{}
   }
   function redrawPane(pane) {
     if(!livePane(pane)||!pane.ready||!visibleIDs().includes(pane.sid))return;
@@ -550,7 +621,7 @@
     if(active&&panes.has(active)){selectedHost=panes.get(active).host.id;updateConnection();renderHosts();}
     if(redraw){renderTree();renderTabs();renderLayout();subscribe();}
   }
-  function activate(sid,focus=true){if(active===sid)return;active=sid;selectedHost=panes.get(sid).host.id;updateConnection();renderHosts();renderTree();renderTabs();if(mobile()||maximized)renderLayout();else for(const p of panes.values())p.el.classList.toggle('active',p.sid===active);updateFooter();if(focus)panes.get(sid)?.term.focus();}
+  function activate(sid,focus=true){if(active===sid)return;active=sid;selectedHost=panes.get(sid).host.id;updateConnection();renderHosts();renderTree();renderTabs();if(mobile()||maximized)renderLayout();else for(const p of panes.values())p.el.classList.toggle('active',p.sid===active);updateFooter();if(focus)panes.get(sid)?.term.focus();repaintPane(panes.get(sid));}
   function split(direction){
     const candidate=openTabs.find(id=>id!==active&&!visibleIDs().includes(id))||catalog.flatMap(w=>w.sessions||[]).find(s=>s.id!==active&&!visibleIDs().includes(s.id))?.id;
     if(!active||!candidate){notice('先新建另一个终端，再使用分屏。');return;}
@@ -574,6 +645,7 @@
     };
     draw(mobile()||maximized?active:layout,$('stage'));
     scheduleVisibleFit();updateFooter();
+    for(const p of panes.values())if(!p.el.hidden)repaintPane(p);
   }
   function subscribe(){
     for(const host of hosts.values()){
@@ -645,24 +717,33 @@
     }
     return '其他';
   }
+  function updateWindowOrderButton(){const button=$('window-order');if(!button)return;button.textContent=windowOrder==='hot'?'分组':'热模式';button.title=windowOrder==='hot'?'恢复电脑-窗口分组':'按最新输出排列全部窗口';button.setAttribute('aria-pressed',String(windowOrder==='hot'));}
+  let hotTreeTimer=0;
+  function scheduleHotTree(){if(windowOrder!=='hot'||hotTreeTimer)return;hotTreeTimer=setTimeout(()=>{hotTreeTimer=0;if(windowOrder==='hot')renderTree();},500);}
   function renderTree(){
-    const tree=$('tree');tree.replaceChildren();let count=0;
-    for(const host of hosts.values()){
+    const tree=$('tree');tree.replaceChildren();tree.dataset.order=windowOrder;let count=0;
+    const appendEntry=(parent,host,win,session)=>{
+      count++;const context=owner(host),row=node('div','session-row');row.dataset.current=String(session.id===active);row.dataset.host=host.id;row.dataset.session=session.raw;
+      const type=agentType(session,win.title),machine=windowOrder==='hot'?' · '+(host.identity.machine||host.name):'';
+      const open=button('','打开 '+win.title+'（'+type+machine+'）',()=>{if(validOwner(context))openView(session.id);});open.className='session-open';const text=node('span','session-label',win.title),agent=node('span','session-shell','（'+type+machine+'）');agent.title=type;const dot=node('i','session-dot');dot.setAttribute('role','img');open.append(dot,text,agent);
+      row.append(open,button('···','重命名窗口',()=>rename(win.id,context)));TabThemes.apply(row,win.tab_theme);row.oncontextmenu=event=>tabMenu(event,win,context);parent.append(row);
+    };
+    if(windowOrder==='hot'){
+      const entries=catalog.flatMap(win=>win.sessions.map(session=>({win,session,host:win.host,at:win.host.activity.get(session.raw)||0})));
+      entries.sort((a,b)=>b.at-a.at);const windows=node('div','computer-windows hot-window-list');
+      for(const {win,session,host} of entries)appendEntry(windows,host,win,session);tree.append(windows);
+    }else for(const host of hosts.values()){
       const computer=node('section','computer-tree');computer.dataset.host=host.id;
       computer.append(hostRow(host));
       const windows=node('div','computer-windows');windows.id='host-windows-'+encodeURIComponent(host.id);windows.hidden=host.collapsed;computer.append(windows);
-      const entries=catalog.filter(win=>win.host===host).flatMap(win=>win.sessions.map(session=>({win,session})));
-      const context=owner(host);
-      for(const {win,session} of entries){count++;const row=node('div','session-row');row.dataset.current=String(session.id===active);row.dataset.host=host.id;row.dataset.session=session.raw;
-        const type=agentType(session,win.title),open=button('','打开 '+win.title+'（'+type+'）',()=>{if(validOwner(context))openView(session.id);});open.className='session-open';const text=node('span','session-label',win.title),agent=node('span','session-shell','（'+type+'）');agent.title=type;const dot=node('i','session-dot');dot.setAttribute('role','img');open.append(dot,text,agent);
-        row.append(open,button('···','重命名窗口',()=>rename(win.id,context)));TabThemes.apply(row,win.tab_theme);row.oncontextmenu=event=>tabMenu(event,win,context);windows.append(row);
-      }
+      for(const win of catalog.filter(win=>win.host===host))for(const session of win.sessions)appendEntry(windows,host,win,session);
       tree.append(computer);
     }
     if(!catalog.length)tree.append(node('p','muted small','暂无会话。新建终端开始工作。'));
     $('session-count').textContent=count+' 个终端';
-    updateSessionDots();
+    updateWindowOrderButton();updateSessionDots();
   }
+  if($('window-order'))$('window-order').onclick=()=>{windowOrder=windowOrder==='hot'?'grouped':'hot';save(localStorage,'sma.workspace.window-order',windowOrder);updateWindowOrderButton();renderTree();};
   function updateFooter(){
     const pane=panes.get(active),info=sessionInfo(active),host=currentHost();
     $('dimensions').textContent=pane?pane.term.cols+' × '+pane.term.rows:'—';$('effective-renderer').textContent=pane?pane.renderer.toUpperCase():'—';
@@ -1422,7 +1503,8 @@
   };
   const meterTimer=setInterval(()=>{for(const host of hosts.values())host.rates=host.meter.sample(performance.now());updateConnection();renderHosts();},1000);
   const activityTimer=setInterval(updateSessionDots,300);
-  addEventListener('beforeunload',()=>{closeDaemonMonitor();cancelRelayProbe();clearInterval(meterTimer);clearInterval(activityTimer);for(const host of hosts.values())stopHost(host);for(const directory of directories.values())stopDirectory(directory);cancelAccountLogin();for(const account of relayAccounts.values()){stopAccountDirectory(account);clearTimeout(account.expiryTimer);}});
+  const repaintTimer=setInterval(()=>{if(!document.hidden)repaintPane(panes.get(active));},15000);
+  addEventListener('beforeunload',()=>{closeDaemonMonitor();cancelRelayProbe();clearInterval(meterTimer);clearInterval(activityTimer);clearInterval(repaintTimer);for(const host of hosts.values())stopHost(host);for(const directory of directories.values())stopDirectory(directory);cancelAccountLogin();for(const account of relayAccounts.values()){stopAccountDirectory(account);clearTimeout(account.expiryTimer);}});
   // Launch secrets are consumed once. Fragments never reach HTTP access logs.
   if(params.has('token')||launch.has('token')){
     save(sessionStorage,'sma.workspace.token',config.token);const clean=new URL(location.href);clean.searchParams.delete('token');launch.delete('token');clean.hash=launch.toString();history.replaceState(null,'',clean);

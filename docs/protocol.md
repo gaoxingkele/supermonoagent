@@ -184,7 +184,7 @@ daemon、relay、frontend 对 HTTP 与 WS 升级检查 Host 和 Origin：默认�
 
 `reliable:true` 表示未协商流控的旧路径溢出时明确断开并要求重新订阅有界历史，**不代表带序号的永久无损日志**。daemon 客户端队列、relay phone 队列均为 32 帧；旧 reliable 连接不能静默丢帧后继续 ANSI 流，慢连接以 1013 等关闭。新版 `flow_control:1` 路径通过暂停和最新快照重同步处理突发，不扩大队列。旧非 reliable 路径仍可丢最旧帧。PTY 待发合并超限时，旧 reliable 订阅端失败重连，旧路径可收到快照。
 
-每会话环形历史 256 KiB、待发上限 128 KiB，默认合并窗口 20ms；multiplex 订阅时会把该会话合并窗口降到不高于 4ms。订阅快照记录输出位置，防止紧随其后的 pending batch 重复回放。客户端把 bytes 直接写入 xterm，跨帧保存 UTF-8/ANSI 解析状态。来源：[pump.py](../src/supermonoagent/pump.py)、[hub.py:_flushed/_send/fail_client/set_subscriptions](../src/supermonoagent/hub.py)、[relay.py:_enqueue](../src/supermonoagent/relay.py)。
+每会话环形历史 2 MiB、待发上限 128 KiB，默认合并窗口 20ms；multiplex 订阅时会把该会话合并窗口降到不高于 4ms。协商 `history_chunks:1` 的客户端按约 192 KiB 分块接收快照，首块后接续 `resume`，最后一个空 `resume` 表示已解析到当前尾部；未协商客户端继续接收单个 256 KiB 有界快照。订阅快照记录输出位置，防止紧随其后的 pending batch 重复回放。客户端把 bytes 直接写入 xterm，跨帧保存 UTF-8/ANSI 解析状态。来源：[pump.py](../src/supermonoagent/pump.py)、[hub.py:_flushed/_send/fail_client/set_subscriptions](../src/supermonoagent/hub.py)、[relay.py:_enqueue](../src/supermonoagent/relay.py)。
 
 ## 验证入口
 

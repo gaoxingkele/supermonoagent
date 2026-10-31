@@ -85,6 +85,26 @@
       "pattern": "(?:\\u8b66\\u544a)|\\b(?:Warning|Caution)\\b",
       "flags": "giu",
       "color": "#e5c07b"
+    },
+    {
+      "pattern": "\\bFinished\\b",
+      "flags": "giu",
+      "color": "#98c379"
+    },
+    {
+      "pattern": "Add a follow-up|\\bAuto\\b",
+      "flags": "giu",
+      "color": "#56b6c2"
+    },
+    {
+      "pattern": "\\bedited\\b",
+      "flags": "gu",
+      "color": "#82cfff"
+    },
+    {
+      "pattern": "\\bRun[ \\t]+Every\\w*\\b",
+      "flags": "giu",
+      "color": "#c678dd"
     }
   ]
 }

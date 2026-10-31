@@ -70,7 +70,7 @@ async def _check_discovery(playwright):
             try:
                 page = await browser.new_page(viewport={'width': 1200, 'height': 800})
                 errors = []
-                page.on('pageerror', lambda error: errors.append(str(error)))
+                page.on('pageerror', lambda error: errors.append(str(error.stack or error)))
                 await page.goto(page_url)
                 await page.wait_for_function('window.smaWorkspace?.connected && smaWorkspace.terminal')
                 await page.wait_for_function('smaWorkspace.directories.size === 1', timeout=5000)

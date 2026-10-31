@@ -57,7 +57,7 @@ def test_upload_keeps_original_computer_and_cleans_aborted_file(tmp_path, bounda
 
 
 async def check_boundary(playwright, folder, boundary):
-    from test_file_companion import environment
+    from test_file_companion import drop_dir, environment
     from test_file_workspace_ui import browser_page, STATIC
     source = folder / 'target-bound.docx'
     data = bytes(range(256)) * 700
@@ -94,13 +94,13 @@ async def check_boundary(playwright, folder, boundary):
                     assert result is False
                 release.set()
                 await page.evaluate('uploadRun')
-                assert not (parents[1].project/'tmp').exists()
-                saved = [p for p in (parents[0].project/'tmp').glob('*') if p.is_file()]
+                assert not (folder / 'drop-B').exists()
+                saved = [p for p in drop_dir(folder).glob('*') if p.is_file()]
                 if boundary in ('switch', 'text-while-uploading'):
                     assert len(saved) == 1 and saved[0].read_bytes() == data
                 else:
                     assert not saved
-                assert not list((parents[0].project/'tmp/.supermono-partials').glob('*.part'))
+                assert not list((drop_dir(folder)/'.supermono-partials').glob('*.part'))
                 if boundary == 'reconnect':
                     # Failed item remains explicit and cannot retry into a new connection.
                     assert await page.evaluate('SuperMonoFilePaste.queued') == 1
@@ -119,7 +119,7 @@ def test_browser_files_are_prepared_one_at_a_time(tmp_path):
 
 async def check_browser_batch(playwright, folder):
     import hashlib
-    from test_file_companion import environment
+    from test_file_companion import drop_dir, environment
     from test_file_workspace_ui import browser_page, STATIC
     async with environment(folder) as (_broker, url, parents, _companions):
         async with browser_page(playwright, url) as (page, errors, _sockets):
@@ -140,6 +140,6 @@ async def check_browser_batch(playwright, folder):
             await page.evaluate('releaseRead()')
             await page.wait_for_function('!SuperMonoFilePaste.busy')
             assert await page.evaluate('preparedFiles') == ['one.pdf','two.docx']
-            assert sorted(p.read_bytes() for p in (parents[0].project/'tmp').glob('*') if p.is_file()) == [b'first-pdf',b'second-docx']
+            assert sorted(p.read_bytes() for p in drop_dir(folder).glob('*') if p.is_file()) == [b'first-pdf',b'second-docx']
             assert not errors
             assert all(not parent.pty_written for parent in parents)

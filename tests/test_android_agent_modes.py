@@ -227,3 +227,54 @@ async def choose_mode(page,id,effective=None):
     await page.locator('#agent-mode').select_option(id)
     await page.wait_for_function('mode=>document.getElementById("screen").dataset.agentMode===mode',arg=effective or id)
     assert await page.locator('#agent-mode').input_value()==id
+
+
+def test_mobile_cursor_tui_output_selects_profile_without_cli_name():
+    playwright = pytest.importorskip('playwright.async_api')
+    if not EDGE.exists():
+        pytest.skip('Hidden Chromium required for mobile Cursor detection')
+    asyncio.run(check_mobile_cursor_detection(playwright))
+
+
+async def check_mobile_cursor_detection(playwright):
+    with tempfile.TemporaryDirectory() as temporary, patch('supermonoagent.daemon.STATE', Path(temporary)), patch.dict(os.environ, {'SUPERMONO_STATE_DIR': temporary}):
+        daemon = Daemon('cursor-content-owner')
+        daemon.hub.persist = False
+        daemon.hub.pty_factory = lambda *_: ControlledPty()
+        daemon.hub.attach_loop(asyncio.get_running_loop())
+        window = daemon.hub.open_window('Unlabeled utility', owner=daemon.token)
+        session = daemon.hub.open_cli(window.id, 'cmd')
+        async def http(connection, request):
+            path = request.path.split('?', 1)[0]
+            if path.startswith('/mobile/'):
+                name = path[len('/mobile/'):]
+                resource = ROOT/'src/supermonoagent/static'/name[7:] if name.startswith('vendor/') else PROFILES/name[len('agent-modes/'):] if name.startswith('agent-modes/') else ROOT/'android/assets/mobile'/name
+                if resource.is_file():
+                    mime = {'.html':'text/html','.css':'text/css','.json':'application/json'}.get(resource.suffix, 'text/javascript')
+                    return web.text_response(connection, 200, resource.read_text('utf-8'), mime+'; charset=utf-8')
+            return await daemon.serve_http(connection, request)
+        try:
+            async with serve(daemon.handle_socket, '127.0.0.1', 0, process_request=http) as server:
+                origin = 'http://127.0.0.1:' + str(server.sockets[0].getsockname()[1])
+                config = {'endpoint': origin, 'code': '', 'token': daemon.token, 'renderer': 'dom'}
+                async with playwright.async_playwright() as runtime:
+                    browser = await runtime.chromium.launch(executable_path=str(EDGE), headless=True)
+                    try:
+                        page = await browser.new_page(viewport={'width': 440, 'height': 900}, is_mobile=True, has_touch=True)
+                        errors = []
+                        page.on('pageerror', lambda error: errors.append(str(error)))
+                        await page.goto(origin + '/mobile/index.html#' + quote(json.dumps(config)))
+                        await page.wait_for_function('window.MobileTerminal?.ready')
+                        assert await page.locator('#agent-mode').input_value() == 'auto'
+                        session.pty.inbox.put('Finished Check changed files\r\n→ Add a follow-up\r\nAuto · 79.3% · 11 files edited\r\n'.encode())
+                        await page.wait_for_function('document.getElementById("screen").dataset.agentMode==="cursor-cli"')
+                        assert await page.locator('#screen').get_attribute('data-agent-preference') == 'auto'
+                        assert not errors
+                        assert not session.pty.written
+                        artifacts = ROOT/'.omx/artifacts/android-agent-modes'
+                        artifacts.mkdir(parents=True, exist_ok=True)
+                        await page.screenshot(path=str(artifacts/'cursor-content-detection.png'))
+                    finally:
+                        await browser.close()
+        finally:
+            daemon.hub.close_window(window.id)

@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from supermonoagent.file_workspaces import FileWorkspaces, InvalidSettings, RevisionConflict, timestamped_name
+from supermonoagent.file_workspaces import FileWorkspaces, InvalidSettings, RevisionConflict, default_upload_drop, timestamped_name
 
 
 def folders(tmp_path):
@@ -17,6 +17,25 @@ def folders(tmp_path):
     library.mkdir()
     settings = tmp_path / 'state' / 'file-workspaces.json'
     return FileWorkspaces(settings, default_mylib_root=library), project, library, settings
+
+
+def test_upload_drop_prefers_d_and_falls_back_to_c(monkeypatch):
+    kinds = {'D:\\': 0, 'C:\\': 3}  # 0 = unavailable, 3 = fixed local disk
+    monkeypatch.setattr('supermonoagent.file_workspaces._drive_type', lambda anchor: kinds.get(anchor, 1))
+    monkeypatch.setattr('supermonoagent.file_workspaces.os.name', 'nt')
+    assert default_upload_drop() == 'C:\\aicoding\\supermonoagent\\tmp'
+    kinds['D:\\'] = 3
+    assert default_upload_drop() == 'D:\\aicoding\\supermonoagent\\tmp'
+    kinds['D:\\'] = 4  # Network drive is never an upload target.
+    assert default_upload_drop() == 'C:\\aicoding\\supermonoagent\\tmp'
+
+
+def test_upload_drop_unavailable_without_local_drive_or_off_windows(monkeypatch):
+    monkeypatch.setattr('supermonoagent.file_workspaces._drive_type', lambda anchor: 1)
+    monkeypatch.setattr('supermonoagent.file_workspaces.os.name', 'nt')
+    assert default_upload_drop() is None
+    monkeypatch.setattr('supermonoagent.file_workspaces.os.name', 'posix')
+    assert default_upload_drop() is None
 
 
 def test_home_startup_needs_project_selection_without_creating_directories(tmp_path, monkeypatch):

@@ -1,0 +1,327 @@
+﻿{
+    "exe_sha256":  "57be04e99f6645c76e5831e04e718e9540d7edfeb0564e312ad2fa856491b3bc",
+    "sources":  [
+                    {
+                        "sha256":  "8de77229ecf52ce3b3f8dc3b2b02bb578ca95ba5c6ca3d93f84fd26a528f7da9",
+                        "path":  "src/supermonoagent/accounts.py"
+                    },
+                    {
+                        "sha256":  "1fa8a0f40a07e6683976e9217417c165e751bbf6c20b35d1f0a61a2826d279d4",
+                        "path":  "src/supermonoagent/ansi_state.py"
+                    },
+                    {
+                        "sha256":  "d2c8bea02327d99a28b8ba9ef314a403e1115de6f29896fb60ddffe0b0fd4547",
+                        "path":  "src/supermonoagent/assistant_api.py"
+                    },
+                    {
+                        "sha256":  "585e3e2e7a91c2f6d0018072409eba2d96b5b75ed0bdb1ab1e7fb20c149fa216",
+                        "path":  "src/supermonoagent/assistant_codex.py"
+                    },
+                    {
+                        "sha256":  "110911706f81578b211d8e0e35d24d1e753a7d1ebb776e45e85453fb4c835f0f",
+                        "path":  "src/supermonoagent/assistant_codex_gateway.py"
+                    },
+                    {
+                        "sha256":  "df0c1c196d6059c5160b5c7ab1ae8139644392e03364231b57988f1d25431e3a",
+                        "path":  "src/supermonoagent/assistant_context.py"
+                    },
+                    {
+                        "sha256":  "09ea3b7cbea2855edf1d98ef6add51e9b21425a683c305752a9a4dc9952c53e0",
+                        "path":  "src/supermonoagent/assistant_preferences.py"
+                    },
+                    {
+                        "sha256":  "50486189e5f69feb5f920e0b9afcf60d233117db03e89ae84a3e7245f57c9712",
+                        "path":  "src/supermonoagent/assistant_service.py"
+                    },
+                    {
+                        "sha256":  "f941e97197e2921ed9ca94b3ec1c4a0f37177e0fc6c44393aae5f2f91934846d",
+                        "path":  "src/supermonoagent/central_skill_index.py"
+                    },
+                    {
+                        "sha256":  "17e2fd7a6ced22b1e1337cff37707088cdbc8e219cba572995e0668d6852f3e6",
+                        "path":  "src/supermonoagent/console_snapshot.py"
+                    },
+                    {
+                        "sha256":  "eef90ba9ab83982d9741f459447c314446b40a709a2618240c5f6eaa9b2d52db",
+                        "path":  "src/supermonoagent/daemon.py"
+                    },
+                    {
+                        "sha256":  "6607a5efe6e0717ffa83f3898743c770332224831ada2b2b8587b6edab49e5a7",
+                        "path":  "src/supermonoagent/daemon_logs.py"
+                    },
+                    {
+                        "sha256":  "d7ff05989619b9dee3b797b6599458e306bdd2cf6e9ef9052bf8926e8c95ded3",
+                        "path":  "src/supermonoagent/defaults.py"
+                    },
+                    {
+                        "sha256":  "62c276dd043b292a7cf36bd16310cb6441039add3edca6bd9771d667c31faf4f",
+                        "path":  "src/supermonoagent/desktop.py"
+                    },
+                    {
+                        "sha256":  "9a82f4a5d8df0f9e0faba0652469e7cdd64363793cfa0693c1a8ec2279ecc7da",
+                        "path":  "src/supermonoagent/desktop_assistant.py"
+                    },
+                    {
+                        "sha256":  "9fdcf9385e6dea780202c4b36d4afb4175885daeffaf43d9dd68d9185f961e20",
+                        "path":  "src/supermonoagent/desktop_files.py"
+                    },
+                    {
+                        "sha256":  "de4441de0ee9e3d8da845e1a379b17e64a2b6937ed922fe46a8a3df6a4d94355",
+                        "path":  "src/supermonoagent/file_broker.py"
+                    },
+                    {
+                        "sha256":  "db4661259afcb4e33bbe8b18746c2851cc4c05a2aaebfa878d0c6665de181196",
+                        "path":  "src/supermonoagent/file_companion.py"
+                    },
+                    {
+                        "sha256":  "513f43c14a173e93ac72849d8084a27faf1bde56699ff9f7b84826429428a610",
+                        "path":  "src/supermonoagent/file_companion_manager.py"
+                    },
+                    {
+                        "sha256":  "2e26519dc097751aa159921c4531cb7c35b4d227ceab050f41dc9f6905432015",
+                        "path":  "src/supermonoagent/file_transfer.py"
+                    },
+                    {
+                        "sha256":  "a31929c472016412fdcecde99d8fa42d178895cb1f02bb4b03d49114771a2aad",
+                        "path":  "src/supermonoagent/file_transfer_rpc.py"
+                    },
+                    {
+                        "sha256":  "10aa8d1b19c5fdce4fd6ec973c6c8234fb081e6e107607f4f2146baa963db594",
+                        "path":  "src/supermonoagent/file_workspaces.py"
+                    },
+                    {
+                        "sha256":  "641d91839f314e16a648a990b125ea5bd5e9fab5314ec373e103559c54f3abc2",
+                        "path":  "src/supermonoagent/frontend.py"
+                    },
+                    {
+                        "sha256":  "e9fb4e1b45d6229e33a90dd353b46e29ab9c7b0b388690e66773aa350497ddb6",
+                        "path":  "src/supermonoagent/history_context.py"
+                    },
+                    {
+                        "sha256":  "c2ed0b61b66be679e97ca146a6183c5931e3763d760d2b23c574c89ff6b3900a",
+                        "path":  "src/supermonoagent/hub.py"
+                    },
+                    {
+                        "sha256":  "15eb02e5754d05ef0b2db5e5706aaf33350832bf4511dd9e9ed9fb3f6758473d",
+                        "path":  "src/supermonoagent/launcher.py"
+                    },
+                    {
+                        "sha256":  "4657f1ec05ddff46b7fa95fa7bf7afd6d99cd01588bfaf1b5abb74fd9df1208a",
+                        "path":  "src/supermonoagent/microsoft.py"
+                    },
+                    {
+                        "sha256":  "adc67db3f5aac3dabce2c874a00b45b5f9ff8fc3ac3b47c401bd60772d274af0",
+                        "path":  "src/supermonoagent/mylib_assistant.py"
+                    },
+                    {
+                        "sha256":  "d9ae225b765abe263296b50097ed9c9ce5eba2678b3ae5d0a31723f1bbbcb956",
+                        "path":  "src/supermonoagent/mylib_catalog.py"
+                    },
+                    {
+                        "sha256":  "19a4e88b61e834194b92ad65efeacb394075f2be882a5e6d612dc50e94cee968",
+                        "path":  "src/supermonoagent/mylib_evolution.py"
+                    },
+                    {
+                        "sha256":  "84c15955974b47aac45b53de1d2b5f144431fabfbf6377506078a789f32dd54d",
+                        "path":  "src/supermonoagent/mylib_local.py"
+                    },
+                    {
+                        "sha256":  "fba2c7c2bc5a3e22587f5123a09b99b919d104c2eec93c692f4f4db4296a241d",
+                        "path":  "src/supermonoagent/mylib_mcp.py"
+                    },
+                    {
+                        "sha256":  "66e4885fd49102bb748108652ea9e5296ef0571c0741a23847889b983987e2a9",
+                        "path":  "src/supermonoagent/mylib_remote_client.py"
+                    },
+                    {
+                        "sha256":  "fa660747f4686f84684835f6f9aec37f5c8776cb3ad8c719a5642422cbd123c9",
+                        "path":  "src/supermonoagent/mylib_sync.py"
+                    },
+                    {
+                        "sha256":  "a9d7cf0fbc7481e8c0aa13d0e2f8150a554d62c1a9cee7323edd4afb224f41ed",
+                        "path":  "src/supermonoagent/native_attach.py"
+                    },
+                    {
+                        "sha256":  "3580b5c0468a3aeff7fa831c8e0bca792f8d10eea61eeda23db87e8f5db5c144",
+                        "path":  "src/supermonoagent/notification_bridge.py"
+                    },
+                    {
+                        "sha256":  "b468add3cec12f25457c3b218150f7fcab541a1b378cb1cbe616acb4dab68b05",
+                        "path":  "src/supermonoagent/protocol.py"
+                    },
+                    {
+                        "sha256":  "fb559fd18ee4c31bca69e5176ccd6daacb23ee40dfcb1a905af86f5715065ebe",
+                        "path":  "src/supermonoagent/pty.py"
+                    },
+                    {
+                        "sha256":  "dd48c3920b346edc056d9fb7e5c00a25af49411214e2ece6a748238a66a3d026",
+                        "path":  "src/supermonoagent/pump.py"
+                    },
+                    {
+                        "sha256":  "e8dcbd44362a6cdda16be2044af457f7aa92cdb76013dda7d934bfbd4b6fa5bc",
+                        "path":  "src/supermonoagent/relay.py"
+                    },
+                    {
+                        "sha256":  "ae102bc116daf484ee21f9d183f159cdafcb212f7c697e2d3c7252f54d120245",
+                        "path":  "src/supermonoagent/relay_bridge.py"
+                    },
+                    {
+                        "sha256":  "8ae11e6fd6eefe667845848c0df51e1f8f6e893cd0f1e7c1852fb311c6f5728e",
+                        "path":  "src/supermonoagent/relay_identity.py"
+                    },
+                    {
+                        "sha256":  "4985ec1b93fdb65bf8d45dd0a4bb065ceb2878217d8a290e1f96572fb4d992c2",
+                        "path":  "src/supermonoagent/release_notifications.py"
+                    },
+                    {
+                        "sha256":  "057e21eb67d2e6e805a8ed581a33d818d160da72bfb386b3919673985cdd8237",
+                        "path":  "src/supermonoagent/security.py"
+                    },
+                    {
+                        "sha256":  "cb74fc197fdc5a20cde323dc9add374a33d01f094cf92bc6f8e200a400ea71e3",
+                        "path":  "src/supermonoagent/task_events.py"
+                    },
+                    {
+                        "sha256":  "95104fc8f170af7517ae7235c323b0582c0852ebb194aab518a0126d213b4a3b",
+                        "path":  "src/supermonoagent/token_config.py"
+                    },
+                    {
+                        "sha256":  "a9f7542d82cc0419744fbc748a209519ec2d9acf0823669d3792bd071f7502aa",
+                        "path":  "src/supermonoagent/ui_updates.py"
+                    },
+                    {
+                        "sha256":  "8b2931509d43a7d249fd0aa2bf8076c1a0ddc59d822b372e89bbad191bc44a73",
+                        "path":  "src/supermonoagent/web.py"
+                    },
+                    {
+                        "sha256":  "ceabba0031b0dd5b23809b06ec9fc48c9ec28103042efae7f01feebf12aa10ce",
+                        "path":  "src/supermonoagent/windows_clipboard.py"
+                    },
+                    {
+                        "sha256":  "0ea14c4b37e95c7f440f0d227e65d3d8cbed91d8223b6110302ac2c19a6dcb94",
+                        "path":  "src/supermonoagent/workspace.py"
+                    },
+                    {
+                        "sha256":  "91447944015cec709e8aa7655f7e9d64e1e4508e7023a57fe3746911c0fc6fed",
+                        "path":  "src/supermonoagent/__init__.py"
+                    },
+                    {
+                        "sha256":  "ac51882c8e8dd0e55a1cf27ab5d9fb1b5ee8ea8a3b099687f1d03a53c761433e",
+                        "path":  "src/supermonoagent/__main__.py"
+                    },
+                    {
+                        "sha256":  "486cab65bba2274be0367436dceeb111f5e5a5c2328b819d794f385f52299444",
+                        "path":  "src/supermonoagent/static/app-icon.ico"
+                    },
+                    {
+                        "sha256":  "86ae2c15a4301cc278bc198b55b9077a72f3e0f84564a4319d7a285035612a88",
+                        "path":  "src/supermonoagent/static/app-icon.png"
+                    },
+                    {
+                        "sha256":  "3ee47d1600aed278eac8929d40ff9eda6bfee3dfef2620143c5e3fc4bb3dff79",
+                        "path":  "src/supermonoagent/static/assistant-chat.js"
+                    },
+                    {
+                        "sha256":  "859e048ff1e25c8f613076959549b465ac471d14d3f128bb4e418486f7020544",
+                        "path":  "src/supermonoagent/static/clipboard-context-menu.js"
+                    },
+                    {
+                        "sha256":  "8ad8dd700e01c86d893936a1810dc7394688722337d35c2db9d1209b6259b2fe",
+                        "path":  "src/supermonoagent/static/clipboard-files.js"
+                    },
+                    {
+                        "sha256":  "1d64a50f1819863cd178ca4ac8f3e75d8696ed0f675eeeaacec9014dedfeb7f7",
+                        "path":  "src/supermonoagent/static/file-client.js"
+                    },
+                    {
+                        "sha256":  "3e9a9b9f2fb4efa3f5d5742ee64e62902a72c16f4e4535d8c8df583a405531cc",
+                        "path":  "src/supermonoagent/static/file-workspace-ui.js"
+                    },
+                    {
+                        "sha256":  "dc363cf5689132b86eec962adc3e64865281959b6a192671ccd79487bd07bc09",
+                        "path":  "src/supermonoagent/static/mylib-assistant.js"
+                    },
+                    {
+                        "sha256":  "9f299f88114e2ea1b619b7b238ec40e14bbb1d10b544e5b68925dc871415ebe1",
+                        "path":  "src/supermonoagent/static/native-updates.js"
+                    },
+                    {
+                        "sha256":  "e70f61e079de8bfd9e6633a9573d01a205d84ddba1f5933326801d9719521a50",
+                        "path":  "src/supermonoagent/static/tab-themes.css"
+                    },
+                    {
+                        "sha256":  "8ead6cd57da88965fb38b83e525aed1566a1a8da9c0035b04a5b5fc21a6d17ca",
+                        "path":  "src/supermonoagent/static/tab-themes.js"
+                    },
+                    {
+                        "sha256":  "39444933f91e64faed636bfc7c56dd6563adcc9aa3d7ac550b831ab5d7a43734",
+                        "path":  "src/supermonoagent/static/terminal-client.js"
+                    },
+                    {
+                        "sha256":  "228b17132d858122ce15df7375a4eb4be9e3718708e2d2e0359bc56f969519e1",
+                        "path":  "src/supermonoagent/static/terminal-composer.js"
+                    },
+                    {
+                        "sha256":  "0627b3fe272f5323ecb6e846fa9e9a68a05e03ecc22305748f4f758c6e6c1330",
+                        "path":  "src/supermonoagent/static/terminal-questions.js"
+                    },
+                    {
+                        "sha256":  "7eb045b47b475b453ebd942157c771d7f6eee387d6f72e70859823d72efd601e",
+                        "path":  "src/supermonoagent/static/update-trust.json"
+                    },
+                    {
+                        "sha256":  "bddd721b5c2fe535245edeaf9f864fc372dd84a50fec13e0847190f59882f5b4",
+                        "path":  "src/supermonoagent/static/workspace.css"
+                    },
+                    {
+                        "sha256":  "08a283833018ab0207f712fc69b52c0f952fc236164c0b5fc7970cbe7346ec68",
+                        "path":  "src/supermonoagent/static/workspace.js"
+                    },
+                    {
+                        "sha256":  "bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089",
+                        "path":  "src/supermonoagent/static/xterm-fit.js"
+                    },
+                    {
+                        "sha256":  "b0c3be540a9984713aea996966c24ed1a639d11f60d44986b22661e3a8a148d0",
+                        "path":  "src/supermonoagent/static/xterm-unicode11.js"
+                    },
+                    {
+                        "sha256":  "097966742f20263c29d848a113e7ca71a50f56ccc045f54cdfed673fdae7bdd8",
+                        "path":  "src/supermonoagent/static/xterm-webgl.js"
+                    },
+                    {
+                        "sha256":  "ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6",
+                        "path":  "src/supermonoagent/static/xterm.css"
+                    },
+                    {
+                        "sha256":  "3366f0ed9aa87adab36491153a7783fcde7943e420c7d0dcde488c1590988bdd",
+                        "path":  "src/supermonoagent/static/xterm.js"
+                    },
+                    {
+                        "sha256":  "d2a01d2ec6e4e6a5c264b5235e6c4e0c279a47f0409da0f20f9a7d65789509b8",
+                        "path":  "src/supermonoagent/static/agent-modes/claude-code.json"
+                    },
+                    {
+                        "sha256":  "cb21ecaef3b8f450874c82b641121459cedb657e5e2900df0e47a1b02ab6e033",
+                        "path":  "src/supermonoagent/static/agent-modes/codex.json"
+                    },
+                    {
+                        "sha256":  "37bc259f1c0f723a92d563035c171195c54597a42abf3dcd5690554cc6440084",
+                        "path":  "src/supermonoagent/static/agent-modes/cursor-cli.json"
+                    },
+                    {
+                        "sha256":  "6ee542f306f113ece299c8c69c1d80e7cbaa3491e7bcbe1c776869061b0fb7d1",
+                        "path":  "src/supermonoagent/static/agent-modes/grok.json"
+                    },
+                    {
+                        "sha256":  "8892e66ddd0e6c30a69531c897e403d2b3c5b7dbbfe59d6f3a91207555825bdb",
+                        "path":  "src/supermonoagent/static/agent-modes/kimi.json"
+                    },
+                    {
+                        "sha256":  "a7a1d3ff48216f6819eeafc3cc962596cf0c4f4b66a1aefe2796deb8d6cf0447",
+                        "path":  "src/supermonoagent/static/agent-modes/pi-dev.json"
+                    }
+                ],
+    "version":  "0.2.56",
+    "built_at":  "2026-10-29T17:56:26.9606391Z"
+}

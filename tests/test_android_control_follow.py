@@ -160,6 +160,7 @@ async def exercise(playwright, renderer):
                         await mobile.wait_for_function('MobileTerminal.controls?.owner===true')
                         await mobile.locator('#control').tap()
                         await mobile.wait_for_function('MobileTerminal.ready&&MobileTerminal.controls?.owner===false&&MobileTerminal.controls?.busy===false')
+                        await mobile.wait_for_function('document.getElementById("screen").dataset.viewportMode==="readable"')
                         assert await mobile.locator('#screen').get_attribute('data-viewport-mode') == 'readable'
                         assert '等待远端接回尺寸控制' in await mobile.locator('#notice').text_content()
                         assert not errors, errors

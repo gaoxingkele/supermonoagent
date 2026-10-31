@@ -121,6 +121,21 @@ def test_selection_required_preflight_rejects_before_staging(tmp_path):
     asyncio.run(scenario())
 
 
+def test_central_drop_ready_allows_selection_required_preflight(tmp_path):
+    async def scenario():
+        async with running(tmp_path / 'broker', auth_file(tmp_path)) as (broker, url):
+            host, viewer = await login(url, hello('host')), await login(url, hello())
+            try:
+                result = await begin(viewer, host, target_changes={
+                    'project_status': 'selection_required', 'upload_ready': True,
+                    'upload_dir': 'D:\\aicoding\\supermonoagent\\tmp'})
+                assert result['ok'] and result['result']['upload_id'], result
+                await call(viewer, 'upload.cancel', {'upload_id': result['result']['upload_id']})
+            finally:
+                await viewer.close(); await host.close()
+    asyncio.run(scenario())
+
+
 def test_real_loopback_stage_download_ack_duplicate_and_private_storage(tmp_path):
     async def scenario():
         auth = auth_file(tmp_path)

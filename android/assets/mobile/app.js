@@ -59,7 +59,7 @@
   let inventory=[],active='',term=null,fit=null,writer=null,highlighter=null,webgl=null,renderer=config.renderer||'auto';
   const agentModeIds=new Set(['auto','codex','claude-code','grok','kimi','pi-dev','cursor-cli']);
   const agentModePreferences=new Map();
-  let agentModeGeneration=0,agentModeRequest=null;
+  let agentModeGeneration=0,agentModeRequest=null,agentDetector=null;
   try{for(const row of JSON.parse(localStorage.getItem('sma.mobile.agent-modes')||'[]')){
     if(!Array.isArray(row)||row.length!==2||typeof row[0]!=='string'||row[0].length>4096||!agentModeIds.has(row[1]))continue;
     const tuple=JSON.parse(row[0]);if(Array.isArray(tuple)&&tuple.length===4&&tuple.every(part=>typeof part==='string'))agentModePreferences.set(row[0],row[1]);
@@ -90,8 +90,9 @@
   $('agent-mode').onchange=()=>{if(!term||!active)return;const value=$('agent-mode').value;if(!agentModeIds.has(value))return;agentModePreferences.set(agentModeKey(),value);saveAgentModes();refreshAgentMode(true);};
   $('highlight').checked=localStorage.getItem('sma.mobile.highlight')!=='off';
   $('highlight').onchange=()=>{localStorage.setItem('sma.mobile.highlight',$('highlight').checked?'on':'off');highlighter?.setEnabled($('highlight').checked);};
-  let ready=false,replaying=0,fitFrame=null,lastSize='',control=false,ctrl=false,composing=false,pendingKeys=[];
-  let controlAction=null,followIntent=false,followReplay=null;
+  let ready=false,replaying=0,fitFrame=null,lastSize='',control=false,ctrl=false,composing=false,pendingKeys=[],chunkedReplay=false;
+  let controlAction=null,followIntent=false,followReplay=null,historyStatusFrame=0;
+  function scheduleHistoryStatus(){if(historyStatusFrame)return;historyStatusFrame=requestAnimationFrame(()=>{historyStatusFrame=0;historyStatus();});}
   const uncertainDrafts=new Map();
   const uncertainModelCommands=new Set();
   const attachmentDrafts=new Map();
@@ -219,7 +220,7 @@
     let url;try{url=endpoint(c.host);}catch(e){hostState(c,e.message);return;}
     const ws=c.socket=new WebSocket(url);ws.binaryType='arraybuffer';metrics.connections++;
     const current=()=>gen===c.generation;
-    const hello=()=>ws.send(C.pack(1,encoder.encode(JSON.stringify({token:hostTokens.get(c.host.id)||'',multiplex:true,reliable:true,history_context:1,history_resume:1}))));
+    const hello=()=>ws.send(C.pack(1,encoder.encode(JSON.stringify({token:hostTokens.get(c.host.id)||'',multiplex:true,reliable:true,history_context:1,history_resume:1,history_chunks:1}))));
     ws.onopen=()=>{if(!current())return;if(c.host.code)ws.send(JSON.stringify({op:'phone',code:c.host.code,token:hostTokens.get(c.host.id)||'',reliable:true}));else hello();};
     ws.onmessage=event=>{
       if(!current())return;
@@ -322,22 +323,29 @@
     if(snapshot){replayFeeds.set(current,bytes.length<=262144?bytes.slice():null);replayGrids.set(current,gridKey);}
     else if(previous&&previous.length+bytes.length<=262144){const combined=new Uint8Array(previous.length+bytes.length);combined.set(previous);combined.set(bytes,previous.length);replayFeeds.set(current,combined);}
     else replayFeeds.set(current,null);
-    if(replay){if(ready&&!replaying&&(current.cols!==grid.cols||current.rows!==grid.rows||Number.isSafeInteger(grid.epoch)&&drawEpochs.has(current)&&grid.epoch!==drawEpochs.get(current)))captureGridHistory(current);replaying++;ready=false;}
-    let history=snapshot&&!identical?M.safeHistoryReplay(C.snapshotBytes(bytes,sid,c.capabilities?.snapshot_sgr===true),grid,context?.partial===true):null,reset=snapshot&&!identical;
+    if(replay){if(ready&&!replaying&&(current.cols!==grid.cols||current.rows!==grid.rows||Number.isSafeInteger(grid.epoch)&&drawEpochs.has(current)&&grid.epoch!==drawEpochs.get(current)))captureGridHistory(current);
+      if(c.capabilities?.history_chunks===1&&context?.kind==='snapshot'&&Number.isSafeInteger(controls[sid]?.history_end))chunkedReplay=context.end_position<controls[sid].history_end;
+      replaying++;ready=false;}
+    let reset=snapshot&&!identical;
+    if(tracked){const frame=C.historyFrameBytes(context,bytes,known);if(!frame){ready=false;current.options.disableStdin=true;refreshScreen();return;}bytes=frame.bytes;reset=reset&&frame.reset;}
+    let history=reset?M.safeHistoryReplay(C.snapshotBytes(bytes,sid,c.capabilities?.snapshot_sgr===true),grid,context?.partial===true):null;
     if(history&&initializedTerms.has(current)&&sameStream&&current.cols===grid.cols&&current.rows===grid.rows){const baseline=M.safeHistoryReplay(C.snapshotBytes(bytes,sid,c.capabilities?.snapshot_sgr===true),grid,context?.partial===true,true);if(baseline.baseline){history=baseline;reset=false;}else captureGridHistory(current);}
+    grid.boundaryKind=reset?'snapshot':replay?'resume':'';
     if(history){let quality=history.partial?'较早历史或屏幕状态不完整；已保留本机已收到的记录。':'';if(history.recovered&&reset)quality='窗口尺寸曾变化，较早历史不完整；已从完整重绘恢复。';if(restoringTerms.has(current))quality=history.partial?'本机历史已保留；离开期间的较早回放可能不完整。':'本机历史已保留；已重新同步当前画面。';if(quality)c.historyQuality.set(sid,quality);else c.historyQuality.delete(sid);updateHistoryQuality();}
     // A byte-identical authorized replay is already rendered. Avoid resetting
     // its scrollback while still acknowledging the server snapshot in order.
     writer.push(identical?new Uint8Array():history?history.bytes:bytes,reset,()=>{
       if(sid!==active||term!==current||selected()!==c||c.generation!==generation)return;
       if(replay){
-        replaying=Math.max(0,replaying-1);ready=connected&&replaying===0;term.options.disableStdin=!ready;
+        replaying=Math.max(0,replaying-1);
+        if(chunkedReplay&&context?.kind==='resume'&&!bytes.length&&context.end_position>=controls[sid]?.history_end)chunkedReplay=false;
+        ready=connected&&replaying===0&&!chunkedReplay;term.options.disableStdin=!ready;
         if(refresh&&(pendingRefresh===refresh||followReplay===refresh)){
           const buffer=term.buffer.active;if(buffer.type==='normal')term.scrollToLine(Math.max(0,buffer.baseY-refresh.distance));
           localView().bottom=refresh.bottom;const screen=$('screen');screen.scrollLeft=refresh.left;screen.scrollTop=refresh.bottom?screen.scrollHeight:refresh.top;
           if(followReplay===refresh){clearTimeout(refresh.timer);followReplay=null;}
           else{cancelRefresh();$('refresh-screen').textContent='\u5df2\u5237\u65b0';refreshFeedbackTimer=setTimeout(()=>{if(term===current&&!pendingRefresh)$('refresh-screen').textContent='\u5237\u65b0';},3000);}
-        }else{term.scrollToBottom();localBottom();replayNotice(c.historyQuality.get(sid)||(bytes.length?'\u6709\u9650\u5386\u53f2\u5df2\u6062\u590d\uff1b\u5168\u5c4f\u7a0b\u5e8f\u53ef\u80fd\u9700\u8981\u81ea\u884c\u5237\u65b0':''));}
+        }else if(ready){term.scrollToBottom();localBottom();replayNotice(c.historyQuality.get(sid)||(bytes.length?'\u6709\u9650\u5386\u53f2\u5df2\u6062\u590d\uff1b\u5168\u5c4f\u7a0b\u5e8f\u53ef\u80fd\u9700\u8981\u81ea\u884c\u5237\u65b0':''));}
       }
       if(replay){restoreAttachmentEditor();if($('composer').open||attachmentDrafts.has(sessionKey()))updateComposer();}
       captureScreenHistory();updateControlButton();updateTerminalStatus();historyStatus();scheduleFit();
@@ -609,25 +617,25 @@
     }
   }
   function activeWriter(current){return M.createWriter({write:(bytes,reset,done,grid,progress)=>{if(term!==current)return;
-    if(grid){const size=C.terminalSize(grid.cols,grid.rows),epoch=grid.epoch??grid.history_epoch,changed=current.cols!==size.cols||current.rows!==size.rows||Number.isSafeInteger(epoch)&&drawEpochs.has(current)&&epoch!==drawEpochs.get(current);if(changed){if(initializedTerms.has(current)){captureGridHistory(current);selected().historyQuality.set(active,'尺寸变化前的本机历史已归档，可用顶部或上翻查看。');updateHistoryQuality();}if(!reset)replayGrids.delete(current);current.resize(size.cols,size.rows);if(initializedTerms.has(current)&&current.buffer.active.type==='normal')current.clear();}if(Number.isSafeInteger(epoch))drawEpochs.set(current,epoch);}
+    if(grid){const size=C.terminalSize(grid.cols,grid.rows),epoch=grid.epoch??grid.history_epoch,changed=current.cols!==size.cols||current.rows!==size.rows||Number.isSafeInteger(epoch)&&drawEpochs.has(current)&&epoch!==drawEpochs.get(current);if(changed){if(initializedTerms.has(current)){captureGridHistory(current);selected().historyQuality.set(active,'尺寸变化前的本机历史已归档，可用顶部或上翻查看。');updateHistoryQuality();}if(!reset)replayGrids.delete(current);current.resize(size.cols,size.rows);}if(Number.isSafeInteger(epoch))drawEpochs.set(current,epoch);}
     if(grid?.boundaryKind==='snapshot')streamPositions.delete(current);
     if(reset){if(initializedTerms.has(current))captureGridHistory(current);initializedTerms.delete(current);current.reset();}
     displayGrid();metrics.writes++;terminalWrites.set(current,(terminalWrites.get(current)||0)+1);
-    current.write(bytes,()=>{if(bytes.length||reset)writeStamps.set(current,(writeStamps.get(current)||0)+1);parsedTerminalProgress(current,progress);terminalWrites.set(current,Math.max(0,(terminalWrites.get(current)||1)-1));done();if(term===current){updateTerminalStatus();if(!reset&&bytes.length)composerSubmit.output();}if(!terminalWrites.get(current)){const subscribe=settledSubscriptions.get(current);settledSubscriptions.delete(current);subscribe?.();}});
+    current.write(bytes,()=>{if(bytes.length||reset)writeStamps.set(current,(writeStamps.get(current)||0)+1);parsedTerminalProgress(current,progress);terminalWrites.set(current,Math.max(0,(terminalWrites.get(current)||1)-1));done();agentDetector?.request();if(term===current){updateTerminalStatus();if(!reset&&bytes.length)composerSubmit.output();}if(!terminalWrites.get(current)){const subscribe=settledSubscriptions.get(current);settledSubscriptions.delete(current);subscribe?.();}});
   },schedule:cb=>requestAnimationFrame(cb),cancel:id=>cancelAnimationFrame(id),onOverflow:()=>{notice('输出积压超过上限，已暂停并请求重新连接');M.closeForRecovery(selected().socket,'手机输出积压');}});}
   function disposeTerminal(){
     cancelTerminalPress();cancelTouchMomentum();
     leaveScreenHistory();
     cancelAttachmentUpload();
     cancelRefresh();const strip=$('terminal-status');if(strip){strip.textContent='';strip.hidden=true;}
-    agentModeGeneration++;agentModeRequest=null;$('agent-mode').disabled=true;
+    agentModeGeneration++;agentModeRequest=null;agentDetector?.dispose();agentDetector=null;$('agent-mode').disabled=true;
     delete $('screen').dataset.agentMode;delete $('screen').dataset.agentPreference;
     composerSubmit.cancel();
     waitingFeeds=[];waitingBytes=0;
-    ready=false;pendingKeys=[];composing=false;replaying=0;lastSize='';control=false;
+    ready=false;pendingKeys=[];composing=false;replaying=0;lastSize='';control=false;chunkedReplay=false;
     clearTimeout(controlAction?.timer);controlAction=null;followIntent=false;clearTimeout(followReplay?.timer);followReplay=null;updateControlButton();
     setCtrl(false);
-    if(fitFrame!==null)cancelAnimationFrame(fitFrame);fitFrame=null;
+    if(fitFrame!==null)cancelAnimationFrame(fitFrame);fitFrame=null;rendererGridGeometry=null;
     if(writer)writer.dispose();writer=null;if(highlighter)highlighter.dispose();highlighter=null;if(webgl)webgl.dispose();webgl=null;
     if(term)cacheTerminal(term);term=null;fit=null;$('screen').replaceChildren();
   }
@@ -660,11 +668,13 @@
     setRenderer();
     highlighter=C.createHighlighter(current,{enabled:$('highlight').checked,profile:C.commonAgentProfile});
     refreshAgentMode(true);
+    agentDetector=C.createAgentDetector(current,{isUnknown:()=>{if(term!==current||active!==sid)return false;const c=selected(),session=c.inventory.find(item=>item.id===sid);return (agentModePreferences.get(agentModeKey())||'auto')==='auto'&&!c.agents.get(sid)&&C.agentModeFromSession(session||{},session?.title||'')==='auto';},onDetected:mode=>{if(term!==current||active!==sid)return;const c=selected(),session=c.inventory.find(item=>item.id===sid);if(!session||session.agent)return;session.learnedAgent=mode;c.agents.set(sid,mode);renderList();refreshAgentMode(true);}});
+    agentDetector.request();
     writer=activeWriter(current);
     if(!cached){term.onData(text=>{if(term!==current||active!==sid||!validTerminalBinding(terminalBindings.get(current)))return;text=M.terminalInput(text,replaying>0);if(ctrl&&text.length===1){text=M.controlKey(text);setCtrl(false);}input(text);});
     term.textarea.addEventListener('compositionstart',()=>{if(term===current)composing=true;});
     term.textarea.addEventListener('compositionend',()=>{if(term===current){composing=false;setTimeout(flushKeys,0);}});
-    term.onScroll(historyStatus);}setMode(false);scheduleFit();renderList();
+    term.onScroll(scheduleHistoryStatus);}setMode(false);scheduleFit();renderList();
     if(connected)subscribeSessions(selected(),active);
     // Deliberately do not focus: switching sessions must not pop the keyboard.
   }
@@ -759,22 +769,28 @@
     },4000);
     updateControlButton();scheduleFit();
   }
+  let rendererGridGeometry=null;
+  const screenGeometry=()=>[$('screen').clientWidth,$('screen').clientHeight,devicePixelRatio].join(':');
   function scheduleFit(){if(fitFrame!==null||!term)return;fitFrame=requestAnimationFrame(()=>{fitFrame=null;if(!term||paused||writer?.idle===false)return;
-    displayGrid();requestSize();});}
+    displayGrid();if(rendererGridGeometry){if(rendererGridGeometry===screenGeometry()&&(!control||followIntent))return;if(desiredSize()===null)return;rendererGridGeometry=null;}requestSize();});}
   function setRenderer(){
+    rendererGridGeometry=screenGeometry();
     if(webgl)webgl.dispose();webgl=null;let effective='dom';
-    if(renderer==='webgl')try{const gl=new WebglAddon.WebglAddon();term.loadAddon(gl);webgl=gl;effective='webgl';gl.onContextLoss(()=>{if(webgl!==gl)return;webgl=null;gl.dispose();metrics.fallbacks++;$('render-status').textContent='GPU 上下文丢失，已回退 DOM';});}catch{metrics.fallbacks++;notice('GPU 渲染不可用，已回退 DOM');}
-    $('render-status').textContent='实际渲染：'+effective.toUpperCase();$('renderer').value=C.rendererName(renderer);scheduleFit();
+    if(renderer==='webgl')try{const gl=new WebglAddon.WebglAddon();term.loadAddon(gl);webgl=gl;effective='webgl';gl.onContextLoss(()=>{if(webgl!==gl)return;webgl=null;gl.dispose();term.refresh(0,term.rows-1);metrics.fallbacks++;$('render-status').textContent='GPU 上下文丢失，已回退 DOM';});}catch{metrics.fallbacks++;notice('GPU 渲染不可用，已回退 DOM');}
+    term.refresh(0,term.rows-1);$('render-status').textContent='实际渲染：'+effective.toUpperCase();$('renderer').value=C.rendererName(renderer);scheduleFit();
   }
   function setCtrl(value){ctrl=value;$('ctrl').setAttribute('aria-pressed',String(ctrl));}
   function syncDraftFields(text,source=''){
     if(source!=='draft')$('draft').value=text;if(source!=='quick')$('quick-draft').value=text;drafts.set(sessionKey(),text);
   }
+  function attachmentsPending(key=sessionKey()){
+    const draft=attachmentDrafts.get(key);return !!draft&&draft.items.some(item=>!item.receipt);
+  }
   function updateComposer(pending=composerSubmit.pending){
-    const uncertain=!!$('draft').value&&uncertainDrafts.get(sessionKey())===$('draft').value,disabled=pending||uncertain||!!uploadJob;
-    $('send').disabled=disabled;$('send').textContent=pending?'验证输入中…':uncertain?'请先检查终端':'发送';$('send').setAttribute('aria-busy',String(pending));
-    $('quick-send').disabled=disabled;$('quick-send').textContent=pending?'验证中…':uncertain?'请检查终端':'发送';$('quick-send').setAttribute('aria-busy',String(pending));$('quick-draft').readOnly=pending;
-    $('model').disabled=pending||!!uploadJob;$('model').setAttribute('aria-busy',String(pending));$('mode').disabled=$('github').disabled=pending||!!uploadJob;updateAttachments();
+    const uncertain=!!$('draft').value&&uncertainDrafts.get(sessionKey())===$('draft').value,waiting=!!uploadJob||attachmentsPending(),disabled=pending||uncertain||waiting;
+    $('send').disabled=disabled;$('send').textContent=pending?'验证输入中…':uncertain?'请先检查终端':uploadJob?'附件上传中':attachmentsPending()?'请先处理附件':'发送';$('send').setAttribute('aria-busy',String(pending||waiting));
+    $('quick-send').disabled=disabled;$('quick-send').textContent=pending?'验证中…':uncertain?'请检查终端':waiting?'附件未就绪':'发送';$('quick-send').setAttribute('aria-busy',String(pending||waiting));$('quick-draft').readOnly=pending;
+    $('model').disabled=pending||waiting;$('model').setAttribute('aria-busy',String(pending));$('mode').disabled=pending||!!uploadJob;$('github').disabled=pending||waiting;updateAttachments();
   }
   function setMode(focus,open=false){
     const editor=$('composer');
@@ -787,7 +803,7 @@
   }
   function closeComposer(){if(composerSubmit.pending)return;syncDraftFields($('draft').value,'draft');attachmentReturnKey=null;cancelAttachmentUpload();modes.set(sessionKey(),'direct');$('draft').blur();setMode(false);}
   function submit(){
-    if(composing||composerSubmit.pending||uploadJob)return;
+    if(composing||composerSubmit.pending||uploadJob||attachmentsPending()){if(attachmentsPending()){$('composer-status').textContent='附件尚未确认保存，请等待完成或移除失败附件后再发送。';notice($('composer-status').textContent);}return;}
     syncDraftFields($('draft').value,'draft');
     if(!ready||!connected){$('composer-status').textContent='终端未连接，指令尚未发送；文本已保留。';notice($('composer-status').textContent);return;}
     if(!$('draft').value.trim()){$('composer-status').textContent='请先输入指令。';notice($('composer-status').textContent);return;}
@@ -828,8 +844,8 @@
     $('attach-file').disabled=$('attach-image').disabled=busy||composerSubmit.pending;
     $('upload-files').disabled=busy||composerSubmit.pending||!ready||!connected||!draft||!attachmentTargetMatches(draft.target)||!items.some(item=>!item.receipt&&!item.uncertain);
     $('cancel-upload').hidden=!busy;$('attachment-list').replaceChildren();
-    for(const item of items){const row=document.createElement('li');row.className='attachment-item';const text=document.createElement('span'),remove=document.createElement('button');text.textContent=item.name+' · '+(item.receipt?'已保存':item.uncertain?'保存结果待核对':item.error?'失败，可重试':'待上传');remove.textContent='移除';remove.type='button';remove.disabled=busy;remove.onclick=()=>{draft.items=draft.items.filter(value=>value!==item);if(!draft.items.length)attachmentDrafts.delete(sessionKey());updateAttachments();};row.append(text,remove);$('attachment-list').append(row);}
-    if(!busy)$('attachment-status').textContent=items.some(item=>item.uncertain)?'有附件的保存结果未确认，请先检查目标电脑，避免重复上传。':items.length&&selected().capabilities?.file_transfer!==true?'将尝试项目中继保存到目标项目 tmp；未启用文件助手时会显示原因。':'最多 8 个附件，单个限 32 MiB；上传完成后将路径加入草稿，不自动发送。';
+    for(const item of items){const row=document.createElement('li');row.className='attachment-item';const text=document.createElement('span'),remove=document.createElement('button');text.textContent=item.name+' · '+(item.receipt?'已保存':item.uncertain?'保存结果待核对':item.error?'失败，可重试':'待上传');remove.textContent='移除';remove.type='button';remove.disabled=busy;remove.onclick=()=>{draft.items=draft.items.filter(value=>value!==item);if(!draft.items.length)attachmentDrafts.delete(sessionKey());updateComposer();};row.append(text,remove);$('attachment-list').append(row);}
+    if(!busy)$('attachment-status').textContent=items.some(item=>item.uncertain)?'有附件的保存结果未确认，请先检查目标电脑，避免重复上传。':items.some(item=>!item.receipt)?'附件未全部保存，文本发送已锁定；失败项可重试或移除。':items.length&&selected().capabilities?.file_transfer!==true?'附件将保存到目标电脑 D:\\aicoding\\supermonoagent\\tmp（无 D 盘时为 C 盘对应目录）。':'最多 8 个附件，单个限 32 MiB；上传完成后将路径加入草稿，不自动发送。';
   }
   function pickAttachments(input){
     if(uploadJob||composerSubmit.pending)return;
@@ -848,7 +864,7 @@
       if(draft&&!attachmentTargetMatches(draft.target))throw Error('原附件的目标已变化，请先移除原附件。');
       if((draft?.items.length||0)+files.length>8||files.some(file=>file.size>32*1024*1024)||files.reduce((sum,file)=>sum+file.size,0)+(draft?.items.reduce((sum,item)=>sum+item.size,0)||0)>128*1024*1024)throw Error('最多 8 个附件，单个限 32 MiB，总计限 128 MiB。');
       if(!draft){if(attachmentDrafts.size>=32)throw Error('附件窗口过多，请先清理其他窗口的待上传附件。');draft={target,items:[]};attachmentDrafts.set(target.key,draft);}
-      draft.items.push(...files.map(file=>({file,name:file.name,size:file.size})));restoreAttachmentEditor();updateAttachments();
+      draft.items.push(...files.map(file=>({file,name:file.name,size:file.size})));restoreAttachmentEditor();updateAttachments();uploadAttachments();
     }catch(error){$('attachment-status').textContent=error.message;}
   }
   function attachmentRequest(target,body,signal,cleanup=false){return new Promise((resolve,reject)=>{
@@ -861,7 +877,7 @@
     try{socket.send(C.pack(21,encoder.encode(JSON.stringify({request,session:target.session,...body}))));}catch{done(Error('无法发送文件数据。'));}
   });}
   function cancelAttachmentUpload(){uploadJob?.controller.abort();}
-  function attachmentError(error){return ({host_unavailable:'目标电脑未安装或连接文件助手。',connection_failed:'无法连接文件服务，请检查接收端。',authentication_failed:'文件服务凭据验证失败。',project_required:'请先选择当前项目目录，附件将保存到其 tmp。',unsupported:'目标连接不支持文件服务。'})[error.code]||error.message;}
+  function attachmentError(error){return ({host_unavailable:'目标电脑未安装或连接文件助手。',connection_failed:'无法连接文件服务，请检查接收端。',authentication_failed:'文件服务凭据验证失败。',project_required:'目标电脑暂存目录不可用，请检查文件助手。',upload_dir_unavailable:'目标电脑暂存目录不可用，请检查文件助手。',unsupported:'目标连接不支持文件服务。'})[error.code]||error.message;}
   async function uploadAttachments(){
     if(uploadJob||composerSubmit.pending)return;
     const draft=attachmentDrafts.get(sessionKey());if(!draft||!attachmentTargetMatches(draft.target))return;
@@ -926,7 +942,7 @@
     }
     if(recorded){entry.archivedGrid=true;entry.lastGridArchive=now;entry.backupSignature=signature;}
   }
-  function archivedHistoryAvailable(){const entry=screenHistories.get(sessionKey());return !!entry&&(entry.archivedGrid||term?.buffer.active.baseY===0&&entry.archive.length>1);}
+  function archivedHistoryAvailable(){const entry=screenHistories.get(sessionKey()),buffer=term?.buffer.active;return !!entry&&(buffer?.type==='alternate'||buffer?.type==='normal'&&buffer.length<=term.rows&&entry.archive.length>0);}
   function leaveScreenHistory(){
     if(active)screenHistories.get(sessionKey())?.archive.bottom();
     if(!historyRenderer)return;
@@ -956,8 +972,8 @@
   function visibleRows(){const cell=term?._core?._renderService?.dimensions.css.cell,scale=Number($('screen').dataset.scale)||1;return Math.max(1,Math.min(term?.rows||1,Math.floor($('screen').clientHeight/((cell?.height||17)*scale))));}
   function localScroll(pixels){
     if(!term||!pixels)return;const screen=$('screen'),buffer=term.buffer.active,line=term._core._renderService.dimensions.css.cell.height*(Number(screen.dataset.scale)||1);
-    if(screen.dataset.viewportMode!=='readable'){if(buffer.type==='normal')term.scrollLines(Math.trunc(pixels/line));historyStatus();return;}
-    const view=localView(),historyPixels=value=>{const total=(view.historyPixels||0)+value,before=buffer.viewportY;term.scrollLines(Math.trunc(total/line));const rest=total-(buffer.viewportY-before)*line,edge=total<0?buffer.viewportY===0:buffer.viewportY>=buffer.baseY;view.historyPixels=edge?0:rest;return edge?rest:0;};
+    if(screen.dataset.viewportMode!=='readable'){const rows=Math.trunc(pixels/line);if(rows&&buffer.type==='normal')term.scrollLines(rows);historyStatus();return;}
+    const view=localView(),historyPixels=value=>{const total=(view.historyPixels||0)+value,before=buffer.viewportY,rows=Math.trunc(total/line);if(rows)term.scrollLines(rows);const rest=total-(buffer.viewportY-before)*line,edge=total<0?buffer.viewportY===0:buffer.viewportY>=buffer.baseY;view.historyPixels=edge?0:rest;return edge?rest:0;};
     let remaining=pixels;
     // Returning towards the prompt consumes history before the current grid.
     if(remaining>0&&buffer.type==='normal'&&buffer.viewportY<buffer.baseY)remaining=historyPixels(remaining);
@@ -1051,7 +1067,7 @@
   $('sizing').onchange=()=>{sizing=$('sizing').value;localStorage.setItem('sma.mobile.sizing',sizing);lastSize='';scheduleFit();};
   $('options').onclick=()=>$('settings-dialog').showModal();$('settings-close').onclick=()=>$('settings-dialog').close();
   for(const link of document.querySelectorAll('#settings-dialog a'))link.onclick=e=>{e.preventDefault();location.assign(link.getAttribute('href'));};
-  $('font').oninput=()=>{localStorage.setItem('sma.mobile.font',$('font').value);if(term)term.options.fontSize=Number($('font').value);if(historyRenderer){historyRenderer.options.fontSize=Number($('font').value);sizeHistoryRenderer();}scheduleFit();};
+  $('font').oninput=()=>{localStorage.setItem('sma.mobile.font',$('font').value);rendererGridGeometry=null;if(term)term.options.fontSize=Number($('font').value);if(historyRenderer){historyRenderer.options.fontSize=Number($('font').value);sizeHistoryRenderer();}scheduleFit();};
   $('renderer').onchange=()=>{renderer=C.rendererName($('renderer').value);if(term)setRenderer();};
   function setToolsCollapsed(value,persist=true){
     const collapsed=!!value;for(const id of ['terminal-actions','keys'])$(id).hidden=collapsed;
@@ -1120,8 +1136,11 @@
   new ResizeObserver(()=>{scheduleFit();updateTerminalStatus();}).observe($('screen'));window.visualViewport?.addEventListener('resize',scheduleFit);
   new ResizeObserver(sizeHistoryRenderer).observe($('screen-history'));
   function pause(){if(paused)return;paused=true;cancelTerminalPress();cancelTouchMomentum();cancelAttachmentUpload();pauseDebugGrid();clearInterval(activityTimer);activityTimer=null;if(active)drafts.set(sessionKey(),$('draft').value);for(const c of connections.values())stopSocket(c);refreshWatchers();writer?.dispose();if(fitFrame!==null)cancelAnimationFrame(fitFrame);fitFrame=null;if(scrollFrame!==null)cancelAnimationFrame(scrollFrame);scrollFrame=null;state('后台已暂停连接；服务器终端继续运行');}
-  function resume(){if(!paused)return;paused=false;startActivityTimer();for(const c of connections.values())connect(c);refreshWatchers();resumeDebugGrid();}
+  function resume(){if(!paused)return;paused=false;startActivityTimer();for(const c of connections.values())connect(c);refreshWatchers();resumeDebugGrid();if(webgl&&term)term.refresh(0,term.rows-1);}
   document.addEventListener('visibilitychange',()=>document.hidden?pause():resume());
+  // WebGL incremental redraw can leave stale glyph overlays over time; a
+  // periodic full row refresh clears them while the UI is visible.
+  setInterval(()=>{if(!paused&&webgl&&term)term.refresh(0,term.rows-1);},15000);
   window.addEventListener('pagehide',pause);
   function captureUIState(){
     if(composing||composerSubmit.pending||uploadJob||[...attachmentDrafts.values()].some(draft=>draft.items.some(item=>!item.receipt)))return null;

@@ -639,6 +639,7 @@ class Daemon:
             client.reliable = body.get("reliable") is True
             client.history_context = client.multiplex and type(body.get('history_context')) is int and body['history_context'] == 1
             client.history_resume = client.history_context and type(body.get('history_resume')) is int and body['history_resume'] == 1
+            client.history_chunks = client.history_resume and type(body.get('history_chunks')) is int and body['history_chunks'] == 1
             self.hub.ensure_owner(client.token)
             if body.get("channel") is not None:
                 self.hub.subscribe(client, str(body.get("channel") or ""))

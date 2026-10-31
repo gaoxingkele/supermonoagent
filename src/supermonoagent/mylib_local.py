@@ -68,8 +68,9 @@ def library_root_accessible(value):
 def _relative(value):
     if not isinstance(value, str) or not value or len(value) > 1024 or '\\' in value or ':' in value or any(ord(c) < 32 or ord(c) == 127 for c in value):
         _fail('invalid_path')
-    path = PurePosixPath(value)
-    if path.is_absolute() or str(path) != value or any(part in {'.', '..', '.git'} for part in path.parts):
+    candidate = value[:-1] if value.endswith('/') and not value.endswith('//') else value
+    path = PurePosixPath(candidate)
+    if path.is_absolute() or str(path) != candidate or any(part in {'.', '..', '.git'} for part in path.parts):
         _fail('invalid_path')
     return value
 

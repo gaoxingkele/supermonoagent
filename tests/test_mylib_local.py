@@ -135,6 +135,19 @@ def test_preview_fingerprint_blocks_new_changes(tmp_path):
         git(remote, 'cat-file', '-e', 'HEAD:two.txt')
 
 
+def test_untracked_directory_is_valid_change_but_duplicate_separator_is_rejected(tmp_path):
+    remote = bare_remote(repository(tmp_path / 'source'), tmp_path / 'remote.git')
+    work = clone(remote, tmp_path / 'work')
+    directory = work / 'Graphic/handraw-style'
+    repository(directory)
+    preview = service(work, remote, tmp_path / 'state').commit_preview()
+    assert preview['can_commit']
+    assert any(item['path'] == 'Graphic/handraw-style/' for item in preview['items'])
+    from supermonoagent.mylib_local import _relative
+    with pytest.raises(LocalLibraryError, match='invalid_path'):
+        _relative('Graphic/handraw-style//')
+
+
 def test_apply_candidate_requires_exact_source(tmp_path):
     remote = repository(tmp_path / 'remote')
     work = clone(remote, tmp_path / 'work')

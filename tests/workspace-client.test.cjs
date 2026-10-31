@@ -157,4 +157,12 @@ test('desktop history cursor rejects gaps and trims duplicate output',()=>{
   assert.equal(new TextDecoder().decode(client.historyFrameBytes({...context,epoch:3},bytes,cursor).bytes),'hello');
   assert.equal(client.historyFrameBytes(context,bytes,{...cursor,stream_id:'fedcba9876543210fedcba98'}),null);
   assert.equal(client.historyFrameBytes({...context,kind:'snapshot'},bytes,null).reset,true);
+  const snapshot={...context,kind:'snapshot'};
+  assert.deepEqual(client.historyFrameBytes(snapshot,bytes,{...cursor,position:103}),{bytes:bytes.subarray(3),position:105,reset:false});
+  assert.equal(client.historyFrameBytes(snapshot,bytes,{...cursor,position:105}).reset,false);
+  assert.equal(client.historyFrameBytes(snapshot,bytes,{...cursor,position:105}).position,105);
+  assert.equal(client.historyFrameBytes(snapshot,bytes,{...cursor,position:110}).position,110);
+  assert.equal(client.historyFrameBytes(snapshot,bytes,{...cursor,position:99}).reset,true);
+  assert.equal(client.historyFrameBytes(snapshot,bytes,{...cursor,epoch:3}).reset,true);
+  assert.equal(client.historyFrameBytes({...context,kind:'resume',epoch:3},bytes,cursor),null);
 });

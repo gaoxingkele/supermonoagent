@@ -28,6 +28,24 @@ test('only workspace discovery failure is safe for a fallback',async()=>{
     sources:[source(Buffer.from('x'))],isCurrent:()=>true,request:async()=>{begins++;}},),error=>error.beforeUpload===true&&begins===0);
   await assert.rejects(upload({session:'session1',getWorkspace:async()=>({...workspace,project_status:'selection_required'}),
     sources:[source(Buffer.from('x'))],isCurrent:()=>true,request:async()=>{begins++;}},),error=>error.code==='project_required'&&begins===0);
+  await assert.rejects(upload({session:'session1',getWorkspace:async()=>({...workspace,project_status:'selection_required',upload_ready:false}),
+    sources:[source(Buffer.from('x'))],isCurrent:()=>true,request:async()=>{begins++;}},),error=>error.code==='project_required'&&begins===0);
+});
+
+test('selection_required with a ready central drop starts uploading',async()=>{
+  const data=Buffer.alloc(9,3),actions=[];
+  const saved=await upload({session:'session1',getWorkspace:async()=>({...workspace,project_status:'selection_required',upload_ready:true,upload_dir:'D:/aicoding/supermonoagent/tmp'}),
+    sources:[source(data)],isCurrent:()=>true,
+    request:async(action,body)=>{
+      actions.push(action);
+      if(action==='upload.begin')return {upload_id:'b'.repeat(48),name:'owned.bin'};
+      if(action==='upload.chunk')return {received:body.offset+Buffer.from(body.data,'base64').length};
+      if(action==='upload.finish')return {file_id:'c'.repeat(48)};
+      if(action==='file.status')return {state:'saved',receipt:{name:'owned.bin',path:'D:/aicoding/supermonoagent/tmp/owned.bin',size:data.length,sha256:source(data).sha256}};
+      throw Error(action);
+    }});
+  assert.equal(saved[0].path,'D:/aicoding/supermonoagent/tmp/owned.bin');
+  assert.deepEqual(actions,['upload.begin','upload.chunk','upload.finish','file.status']);
 });
 
 test('unknown finish and staged receipt states prevent blind retries',async()=>{

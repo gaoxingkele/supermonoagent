@@ -365,10 +365,10 @@ def _local_health(port=HEALTH_PORT) -> tuple[bool, dict | None]:
             return True, None
         value = json.loads(raw)
         return True, value if isinstance(value, dict) else None
-    except ConnectionRefusedError:
+    except (ConnectionRefusedError, TimeoutError):
         return False, None
     except (OSError, ValueError, http.client.HTTPException):
-        # A listening but unresponsive/foreign service must not be replaced.
+        # A reachable foreign service must not be replaced; a timeout is not proof of occupancy.
         return True, None
     finally:
         connection.close()

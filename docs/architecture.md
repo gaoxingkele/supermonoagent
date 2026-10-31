@@ -49,7 +49,7 @@ multiplex 客户端的 OP3/OP8 无论直连或中继，都包含 `raw_session_id
 
 **输入**：桌面 pane 持有所属 `HostConnection` 与 generation，构造 OP17 的原始会话 ID 与按键字节；Hub 再检查会话存在、仍在该连接订阅集、Token 所有权与频道权限，最后写 PTY。OP4 只用于旧单视图客户端。relay 的 host 链路另加四字节 phone ID，客户端本地 host 元组键不会进入协议。
 
-**背压**：队列深度 32、环形历史 256 KiB、待发上限 128 KiB；默认合并 20ms，multiplex 订阅时降至不高于 4ms。`reliable:true` 在溢出时明确关闭慢连接并重新请求有界历史，避免静默丢失 ANSI 片段；它不是永久日志或端到端序号确认系统。旧非 reliable 路径仍保留丢最旧帧/快照兼容策略。
+**背压**：队列深度 32、每会话环形历史 2 MiB、待发上限 128 KiB；默认合并 20ms，multiplex 订阅时降至不高于 4ms。支持分块协商的客户端按序接收快照块和空 `resume` 提交标记。`reliable:true` 在溢出时明确关闭慢连接并重新请求有界历史，避免静默丢失 ANSI 片段；它不是永久日志或端到端序号确认系统。旧非 reliable 路径仍保留丢最旧帧/快照兼容策略。
 
 来源：[hub.py:_feed_targets/_feed_frame/_session_snapshot/_flushed/_send](../src/supermonoagent/hub.py)、[daemon.py:_op](../src/supermonoagent/daemon.py)、[relay.py:_phone/_enqueue](../src/supermonoagent/relay.py)。
 

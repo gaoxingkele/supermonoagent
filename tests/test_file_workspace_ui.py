@@ -100,6 +100,17 @@ def test_without_native_configuration_preserves_footer_and_opens_no_network(tmp_
     run(exercise, tmp_path)
 
 
+def test_enabling_file_exchange_after_page_boot_initializes_workspace(tmp_path):
+    async def exercise(playwright, _tmp_path):
+        async with browser_page(playwright, enabled=False) as (page, errors, _sockets):
+            assert await page.evaluate('typeof SuperMonoFileWorkspaces') == 'undefined'
+            await page.evaluate("SuperMonoFileWorkspaceConfig={enabled:true,broker_url:'ws://127.0.0.1:8819/file/ws',local_room:'A'}")
+            await page.wait_for_function('typeof SuperMonoFileWorkspaces==="object"', timeout=5000)
+            assert await page.locator('#file-workspace-footer').count() == 1
+            assert not errors
+    run(exercise, tmp_path)
+
+
 def test_home_startup_prompts_for_project_and_keeps_directory_settings_usable(tmp_path):
     async def exercise(playwright, folder):
         from unittest.mock import patch
@@ -180,7 +191,7 @@ def test_captured_upload_continues_to_a_after_selecting_b_and_credential_changes
     async def exercise(playwright, folder):
         import base64
         import hashlib
-        from test_file_companion import environment
+        from test_file_companion import drop_dir, environment
         payload = b'\x89PNG\r\nowned synthetic file fixture'
         async with environment(folder) as (_broker, url, parents, _companions):
             async with browser_page(playwright, url) as (page, errors, _sockets):
@@ -206,8 +217,8 @@ def test_captured_upload_continues_to_a_after_selecting_b_and_credential_changes
                 }''', base64.b64encode(payload).decode())
                 assert result['state'] == 'saved'
                 saved = Path(result['receipt']['path'])
-                assert saved.parent == parents[0].project / 'tmp' and saved.read_bytes() == payload
-                assert not (parents[1].project / 'tmp').exists()
+                assert saved.parent == drop_dir(folder) and saved.read_bytes() == payload
+                assert not (folder / 'drop-B').exists()
                 assert 'project-B' in await page.locator('#file-workspace-project').get_attribute('title')
                 await page.evaluate('fixtureHosts[0].config.token="replacement-fixture-token"')
                 await page.wait_for_function('!clientA.connected')

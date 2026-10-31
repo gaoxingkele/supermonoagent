@@ -89,7 +89,7 @@ async def eventually(function, timeout=8):
 
 
 @asynccontextmanager
-async def environment(tmp_path, *, download_mode='http'):
+async def environment(tmp_path, *, download_mode='http', upload_drop='drop'):
     token = tmp_path / 'viewer-token'
     token.write_text('owned-viewer-token', encoding='utf8')
     key = tmp_path / 'enrollment'
@@ -114,9 +114,16 @@ async def environment(tmp_path, *, download_mode='http'):
                 server = await serve(parent.handle, '127.0.0.1', 0, process_request=parent.http)
                 servers.append(server)
                 backend = f'http://127.0.0.1:{server.sockets[0].getsockname()[1]}'
+                if upload_drop == 'blocked':
+                    blocker = tmp_path / ('drop-blocker-' + label)
+                    blocker.write_text('not a directory', encoding='utf8')
+                    drop_root = str(blocker / 'sub')
+                else:
+                    drop_root = str(tmp_path / (upload_drop + '-' + label))
                 companion = FileCompanion(backend, broker_url, label, tmp_path / ('helper-' + label), owner, key,
                     broker_token_file=token, default_mylib_root=str(tmp_path / 'missing-library'),
-                    download_mode=download_mode, download_base_url=download_base)
+                    download_mode=download_mode, download_base_url=download_base,
+                    upload_drop_root=drop_root)
                 companions.append(companion);parents.append(parent)
                 tasks.append(asyncio.create_task(companion.run()))
                 companion._fixture_tasks, companion._fixture_task = tasks, tasks[-1]
@@ -131,6 +138,10 @@ async def environment(tmp_path, *, download_mode='http'):
             await broker.close()
             assert all(not parent.pty_written for parent in parents)
             assert all(set(parent.operations) <= {1, 10, 16} for parent in parents)
+
+
+def drop_dir(tmp_path, label='A'):
+    return tmp_path / ('drop-' + label)
 
 
 @asynccontextmanager
@@ -188,20 +199,22 @@ def test_two_owned_parents_route_and_save_verified_bytes(tmp_path, mode):
                 assert cfg_a['project_dir'] == str(parents[0].project)
                 assert cfg_a['daemon_epoch'] != cfg_b['daemon_epoch']
                 assert cfg_a['mylib_status'] == 'missing'
-                assert not Path(cfg_a['exchange_dir']).exists()
+                assert cfg_a['upload_ready'] is True and cfg_a['upload_dir'] == str(drop_dir(tmp_path, 'A'))
+                assert not Path(cfg_a['exchange_dir']).exists() and not drop_dir(tmp_path, 'A').exists()
                 data = b'%PDF-1.7\nowned binary\x00\xff'
                 queued = await upload(a, cfg_a, data)
                 result = await saved(a, queued['file_id'])
                 assert result['state'] == 'saved', result
                 path = Path(result['receipt']['path'])
-                assert path.parent == parents[0].project / 'tmp'
+                assert path.parent == drop_dir(tmp_path, 'A')
                 assert re_name(path.name) and path.read_bytes() == data
-                assert not (parents[1].project / 'tmp').exists()
+                assert not (parents[0].project / 'tmp').exists()
+                assert not drop_dir(tmp_path, 'B').exists()
                 assert not list(path.parent.glob('.supermono-partials/*.part'))
     asyncio.run(exercise())
 
 
-def test_home_startup_rejects_upload_until_project_selected_then_saves_to_project_tmp(tmp_path, monkeypatch):
+def test_home_startup_uploads_to_central_drop_without_project_selection(tmp_path, monkeypatch):
     home = tmp_path / 'synthetic-home'; home.mkdir()
     monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
     async def exercise():
@@ -213,12 +226,13 @@ def test_home_startup_rejects_upload_until_project_selected_then_saves_to_projec
             async with client(url, 'A') as ws:
                 cfg = await workspace(ws)
                 assert cfg['project_status'] == 'selection_required' and cfg['exchange_dir'] == str(home / 'tmp')
-                content = b'%PDF-1.7 selected owned project'
-                denied = await request(ws, 'upload.begin', {'original_name': 'owned.pdf', 'size': len(content),
-                    'sha256': hashlib.sha256(content).hexdigest(), 'window_id': cfg['window_id'],
-                    'daemon_epoch': cfg['daemon_epoch'], 'workspace_revision': cfg['revision'],
-                    'timezone_offset_minutes': 0}, ok=False)
-                assert denied['error'] == 'project_required' and not broker._uploads
+                assert cfg['upload_ready'] is True and cfg['upload_dir'] == str(drop_dir(tmp_path))
+                content = b'%PDF-1.7 central drop without project'
+                queued = await upload(ws, cfg, content)
+                result = await saved(ws, queued['file_id'])
+                assert result['state'] == 'saved', result
+                target = Path(result['receipt']['path'])
+                assert target.parent == drop_dir(tmp_path) and target.read_bytes() == content
                 denied = await request(ws, 'workspace.set', {'project_dir': str(home),
                     'exchange_dir': None, 'expected_revision': 0}, ok=False)
                 assert denied['error'] == 'project_required'
@@ -228,16 +242,37 @@ def test_home_startup_rejects_upload_until_project_selected_then_saves_to_projec
                     'exchange_dir': None, 'expected_revision': 0})
                 assert cfg['revision'] == 1 and cfg['exchange_dir'] == str(project / 'tmp')
                 assert not (project / 'tmp').exists()
+                content = b'%PDF-1.7 still central drop after project selected'
                 result = await saved(ws, (await upload(ws, cfg, content))['file_id'])
                 assert result['state'] == 'saved', result
                 target = Path(result['receipt']['path'])
-                assert target.parent == project / 'tmp' and target.read_bytes() == content
+                assert target.parent == drop_dir(tmp_path) and target.read_bytes() == content
                 assert result['receipt']['sha256'] == hashlib.sha256(content).hexdigest()
-                assert list(home.iterdir()) == [] and not (parents[1].project / 'tmp').exists()
+                assert list(home.iterdir()) == [] and not (project / 'tmp').exists()
+                assert not drop_dir(tmp_path, 'B').exists()
     asyncio.run(exercise())
 
 
-def test_staged_delivery_rechecks_home_target_before_creating_receiver(tmp_path, monkeypatch):
+def test_unavailable_upload_drop_fails_delivery_without_creating_paths(tmp_path, monkeypatch):
+    home = tmp_path / 'synthetic-home'; home.mkdir()
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    async def exercise():
+        async with environment(tmp_path, upload_drop='blocked') as (_, url, parents, companions):
+            assert (await companions[0]._workspace('session1'))['upload_ready'] is False
+            async with client(url, 'A') as ws:
+                cfg = await workspace(ws)
+                assert cfg['upload_ready'] is False and cfg['upload_dir'] is None
+                queued = await upload(ws, cfg)
+                result = await saved(ws, queued['file_id'])
+                assert result['state'] == 'failed' and result['error'] == 'delivery_failed', result
+                assert companions[0].progress[queued['file_id']]['error'] == 'delivery_failed'
+                assert not list(tmp_path.rglob('*.part'))
+                assert not list(drop_dir(tmp_path).rglob('*'))
+                assert not list((tmp_path / 'helper-A').rglob('*.pdf'))
+    asyncio.run(exercise())
+
+
+def test_staged_delivery_to_central_drop_survives_home_cwd_change(tmp_path, monkeypatch):
     home = tmp_path / 'synthetic-home'; home.mkdir()
     monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
     async def exercise():
@@ -260,8 +295,9 @@ def test_staged_delivery_rechecks_home_target_before_creating_receiver(tmp_path,
                                      and companion.inspector.snapshot('session1')['cwd'] == str(home))
                     release.set()
                     result = await saved(ws, queued['file_id'])
-                    assert result['state'] == 'failed' and result['error'] == 'project_required', result
-                    assert companion.progress[queued['file_id']]['error'] == 'project_required'
+                    assert result['state'] == 'saved', result
+                    target = Path(result['receipt']['path'])
+                    assert target.parent == drop_dir(tmp_path) and target.read_bytes() == b'%PDF-1.7 owned fixture'
                     assert list(home.iterdir()) == []
                     assert not list(tmp_path.rglob('*.part'))
                     assert not list((tmp_path / 'project-A').rglob('*.pdf'))
@@ -357,7 +393,7 @@ def test_wrong_room_binding_and_revision_rejected_before_upload(tmp_path):
                 await request(b, 'upload.begin', data, ok=False)
                 data['daemon_epoch'] = cfg_b['daemon_epoch']; data['workspace_revision'] = 99
                 await request(b, 'upload.begin', data, ok=False)
-                assert not (parents[0].project/'tmp').exists() and not (parents[1].project/'tmp').exists()
+                assert not drop_dir(tmp_path).exists() and not drop_dir(tmp_path, 'B').exists()
     asyncio.run(exercise())
 
 
@@ -402,6 +438,7 @@ def test_mid_download_target_change_never_publishes(tmp_path, change):
                     result = await saved(ws, queued['file_id'])
                     assert result['state'] == 'failed', result
                     assert all(not list(parent.project.rglob('*.pdf')) for parent in parents)
+                    assert not list(drop_dir(tmp_path).rglob('*.pdf'))
                     if change == 'directory':
                         assert not list(target.rglob('*.pdf'))
                     assert not list(tmp_path.rglob('*.part'))
@@ -444,15 +481,15 @@ def test_owner_failure_is_not_terminal_until_partial_cleanup_finishes(tmp_path):
                     await eventually(cleanup_entered.is_set)
                     # A blocked real receiver cleanup makes the ordering observable.
                     # No timing sleep and no eventual assertion after terminal failure.
-                    assert list(parents[0].project.rglob('*.part'))
+                    assert list(drop_dir(tmp_path).rglob('*.part'))
                     result = await request(ws, 'file.status', {'file_id': queued['file_id']})
                     assert result['state'] not in {'failed', 'saved'}
                     assert helper.progress[queued['file_id']]['state'] != 'failed'
                     release_cleanup.set()
                     result = await saved(ws, queued['file_id'])
                     assert result['state'] == 'failed'
-                    assert not list(parents[0].project.rglob('*.part'))
-                    assert not list(parents[0].project.rglob('*.pdf'))
+                    assert not list(drop_dir(tmp_path).rglob('*.part'))
+                    assert not list(drop_dir(tmp_path).rglob('*.pdf'))
             finally:
                 release_ticket.set();release_cleanup.set()
     asyncio.run(exercise())
@@ -480,7 +517,7 @@ def test_duplicate_delivery_revalidates_and_acks_without_copy(tmp_path):
                 await eventually(lambda: len(acknowledgements) == 2)
                 assert acknowledgements[0] == acknowledgements[1]
                 assert path.stat().st_ino == before.st_ino
-                assert len(list(parents[0].project.rglob('*.pdf'))) == 1
+                assert len(list(drop_dir(tmp_path).rglob('*.pdf'))) == 1
     asyncio.run(exercise())
 
 
@@ -500,7 +537,7 @@ def test_helper_restart_replays_journal_when_saved_ack_was_lost(tmp_path, mutate
                 cfg = await workspace(ws)
                 queued = await upload(ws, cfg)
                 await asyncio.wait_for(entered.wait(), 5)
-                files = list(parents[0].project.rglob('*.pdf')); assert len(files) == 1
+                files = list(drop_dir(tmp_path).rglob('*.pdf')); assert len(files) == 1
                 before = files[0].stat()
                 host_id, host_secret = old.identity['host_id'], old.identity['host_secret']
                 await old.close(); await asyncio.wait_for(old._fixture_task, 8)
@@ -508,15 +545,16 @@ def test_helper_restart_replays_journal_when_saved_ack_was_lost(tmp_path, mutate
                 new = FileCompanion(old.backend, url, 'A', old.state_dir, old.owner_token_file,
                     old.enrollment_key_file, broker_token_file=old.broker_token_file,
                     default_mylib_root=old.workspaces.default_mylib_root,
-                    download_mode=old.download_mode, download_base_url=old.download_base_url)
+                    download_mode=old.download_mode, download_base_url=old.download_base_url,
+                    upload_drop_root=str(drop_dir(tmp_path)))
                 companions[0] = new
                 task = asyncio.create_task(new.run()); old._fixture_tasks.append(task)
                 result = await saved(ws, queued['file_id'])
                 assert result['state'] == ('failed' if mutated else 'saved'), result
                 assert new.identity['host_id'] == host_id and new.identity['host_secret'] == host_secret
-                assert len(list(parents[0].project.rglob('*.pdf'))) == 1
+                assert len(list(drop_dir(tmp_path).rglob('*.pdf'))) == 1
                 if not mutated: assert files[0].stat().st_ino == before.st_ino
-                assert not list(parents[0].project.rglob('*.part'))
+                assert not list(drop_dir(tmp_path).rglob('*.part'))
     asyncio.run(exercise())
 
 
@@ -538,8 +576,8 @@ def test_broker_disconnect_cleans_partial_and_replays_same_staged_job(tmp_path):
                 result = await saved(ws, queued['file_id'])
                 assert result['state'] == 'saved', result
                 assert entered.is_set()
-                assert len(list(parents[0].project.rglob('*.pdf'))) == 1
-                assert not list(parents[0].project.rglob('*.part'))
+                assert len(list(drop_dir(tmp_path).rglob('*.pdf'))) == 1
+                assert not list(drop_dir(tmp_path).rglob('*.part'))
     asyncio.run(exercise())
 
 
@@ -574,8 +612,8 @@ def test_corrupt_staged_bytes_rejected_by_target_sha(tmp_path):
             async with client(url, 'A') as ws:
                 queued = await upload(ws, await workspace(ws))
                 assert (await saved(ws, queued['file_id']))['state'] == 'failed'
-                assert not list(parents[0].project.rglob('*.pdf'))
-                assert not list(parents[0].project.rglob('*.part'))
+                assert not list(drop_dir(tmp_path).rglob('*.pdf'))
+                assert not list(drop_dir(tmp_path).rglob('*.part'))
     asyncio.run(exercise())
 
 
@@ -645,8 +683,8 @@ def test_http_midstream_owner_loss_cancels_verified_partial(tmp_path):
                     await eventually(lambda: not helper.inspector.valid.is_set())
                     release.set()
                     assert (await saved(ws, queued['file_id']))['state'] == 'failed'
-                    assert not list(parents[0].project.rglob('*.pdf'))
-                    assert not list(parents[0].project.rglob('*.part'))
+                    assert not list(drop_dir(tmp_path).rglob('*.pdf'))
+                    assert not list(drop_dir(tmp_path).rglob('*.part'))
             finally:
                 release.set()
     asyncio.run(exercise())
@@ -700,8 +738,64 @@ def test_http_rejects_redirect_and_untrusted_path_and_closes_blocked_read(tmp_pa
                     else:
                         assert (await saved(ws, queued['file_id']))['state'] == 'failed'
                     assert len(contacts) == (0 if fault == 'arbitrary_path' else 1)
-                    assert not list(parents[0].project.rglob('*.pdf'))
-                    assert not list(parents[0].project.rglob('*.part'))
+                    assert not list(drop_dir(tmp_path).rglob('*.pdf'))
+                    assert not list(drop_dir(tmp_path).rglob('*.part'))
             finally:
                 release.set();server.shutdown();server.server_close();worker.join(timeout=2)
+    asyncio.run(exercise())
+
+
+def test_selected_host_library_reads_and_git_actions_stay_on_that_host(tmp_path, monkeypatch):
+    calls = []
+
+    class Library:
+        def __init__(self, root, state_dir):
+            self.root = root
+        def close(self):
+            pass
+        def status(self):
+            return {'root': str(self.root), 'accessible': True, 'git': True, 'revision': 'a' * 40, 'changes': []}
+        def pull(self):
+            calls.append(('pull', str(self.root)))
+            return {**self.status(), 'changed': False}
+        def commit_preview(self):
+            return {'fingerprint': 'f' * 64, 'items': [], 'can_commit': True, 'stat': '', 'excluded_count': 0}
+        def commit_and_push(self, fingerprint, message):
+            calls.append(('commit', str(self.root), fingerprint, message))
+            return {**self.status(), 'revision': 'c' * 40}
+        def apply_evolution(self, suggestion_id):
+            calls.append(('evolution', suggestion_id))
+            return {'path': 'skill-runtime/skills/demo/SKILL.md', 'sha256': 'd' * 64}
+
+    monkeypatch.setattr('supermonoagent.file_companion_library.LocalLibrary', Library)
+
+    async def exercise():
+        from supermonoagent import file_companion_library
+        assert not hasattr(file_companion_library, 'MCPClient')
+        async with environment(tmp_path) as (_, url, parents, _):
+            library = tmp_path / 'remote-mylib'
+            skill = library / 'skill-runtime/skills/demo'
+            skill.mkdir(parents=True)
+            (skill / 'SKILL.md').write_text('---\nname: demo\ndescription: owned remote skill\n---\n# Owned remote\n', encoding='utf-8')
+            (library / 'skill-runtime/manifest.json').write_text(json.dumps({'skills': [{'source': 'skills/demo'}]}), encoding='utf-8')
+            async with client(url, 'A') as ws:
+                await workspace(ws)
+                configured = await request(ws, 'library.set', {'mylib_root': str(library), 'expected_revision': 0})
+                assert configured['mylib_root'] == str(library) and configured['revision'] == 1
+                status = await request(ws, 'library.status')
+                assert status == {'root': str(library), 'accessible': True, 'git': True, 'revision': 'a' * 40, 'changes': []}
+                recommended = await request(ws, 'library.recommend', {'context': 'owned remote skill'})
+                assert recommended['library'] == {'kind': 'local', 'root': str(library)}
+                assert recommended['skills'][0]['name'] == 'demo'
+                source = recommended['skills'][0]['source']
+                preview = await request(ws, 'library.read_skill', {'source': source})
+                assert '# Owned remote' in preview['text']
+                assert not (await request(ws, 'library.pull'))['changed']
+                preview = await request(ws, 'library.commit_preview')
+                await request(ws, 'library.commit', {'fingerprint': preview['fingerprint'], 'message': 'Owned review'})
+                await request(ws, 'library.apply_evolution', {'suggestion_id': 'e' * 64})
+                assert calls == [('pull', str(library)), ('commit', str(library), 'f' * 64, 'Owned review'), ('evolution', 'e' * 64)]
+                denied = await request(ws, 'library.pull', session='missing', ok=False)
+                assert denied['error'] == 'session_unavailable'
+                assert all(not parent.pty_written for parent in parents)
     asyncio.run(exercise())

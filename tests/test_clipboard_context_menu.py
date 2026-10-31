@@ -181,9 +181,11 @@ def test_editor_browser_clipboard_files_queue_without_typing_file_text_or_upload
                   document.querySelector('#terminal-composer-text').dispatchEvent(event);return event.defaultPrevented;
                 }''', name)
                 assert prevented
-            assert await page.locator('#terminal-composer-files li').count() == 2
-            assert await page.locator('#terminal-composer-text').input_value() == 'keep draft'
-            assert await page.evaluate('composerCalls.length') == 0
+            await page.wait_for_function('composerCalls.length===2')
+            assert await page.locator('#terminal-composer-receipts li').count() == 2
+            assert (await page.locator('#terminal-composer-text').input_value()).startswith('keep draft\n附件：')
+            assert 'DO_NOT_TYPE_FILE_TEXT' not in await page.locator('#terminal-composer-text').input_value()
+            assert await page.evaluate('composerCalls.map(call=>call.names)') == [['first.png'], ['second.pdf']]
             assert all(not item.pty.written for owned in sessions for item in owned)
             assert not errors
     run(exercise)

@@ -32,7 +32,9 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from .file_broker import enrollment_proof, PROTOCOL, MAX_FRAME
 from .file_transfer import TransferStore, MAX_CHUNK, _plain_directory, _validate_name
-from .file_workspaces import FileWorkspaces, ProjectSelectionRequired, RevisionConflict, _directory
+from .file_workspaces import FileWorkspaces, ProjectSelectionRequired, RevisionConflict, _directory, default_upload_drop
+from .file_companion_library import CompanionLibrary
+from .mylib_local import LocalLibraryError
 from .protocol import pack, unpack, pack_json
 
 _TRANSPORT_LOG = logging.getLogger('supermonoagent.file_companion.private_transport')
@@ -346,7 +348,8 @@ class FileCompanion:
     """
     def __init__(self, backend, broker_url, room, state_dir, owner_token_file,
                  enrollment_key_file, *, broker_token_file=None,
-                 default_mylib_root=None, download_mode='http', download_base_url=None):
+                 default_mylib_root=None, download_mode='http', download_base_url=None,
+                 upload_drop_root=None):
         self.backend = _endpoint(backend, backend=True)
         self.broker_url = _endpoint(broker_url)
         if download_mode not in {'http', 'ws'}:
@@ -356,6 +359,18 @@ class FileCompanion:
         self.download_base_url = urlunsplit(('https' if parsed.scheme == 'wss' else 'http', parsed.netloc, '', '', ''))
         if download_base_url is not None:
             self.download_base_url = _endpoint(download_base_url, backend=True)
+        if upload_drop_root is not None:
+            # Fixed central relay-upload drop; strict path checks run at probe
+            # time so an unavailable drop reports upload_ready instead of
+            # refusing to construct the helper.
+            try:
+                upload_drop_root = os.fspath(upload_drop_root)
+            except TypeError:
+                raise CompanionError('invalid_upload_drop_root') from None
+            if (not isinstance(upload_drop_root, str) or not upload_drop_root
+                    or len(upload_drop_root) > 4096):
+                raise CompanionError('invalid_upload_drop_root')
+        self._upload_drop_root = upload_drop_root
         self._streams, self._stream_lock = {}, threading.Lock()
         if not isinstance(room, str) or not room or len(room) > 128 or not room.isprintable():
             raise CompanionError('invalid_room')
@@ -365,6 +380,7 @@ class FileCompanion:
         self.io = _IO()
         self.inspector = LegacyInspector(backend, owner_token_file, io=self.io)
         self.workspaces = FileWorkspaces(self.state_dir / 'workspaces.json', default_mylib_root or os.environ.get('SUPERMONO_MYLIB', 'D:/aicoding/mylib'))
+        self.library = CompanionLibrary(self.workspaces, self.state_dir)
         self._ws, self._generation, self._closed = None, 0, False
         self._pending, self._tasks, self._deliveries = {}, set(), set()
         self._queued = {}
@@ -502,13 +518,39 @@ class FileCompanion:
         finally:
             self._pending.pop(identity, None)
 
+    def _upload_drop_probe(self):
+        """(canonical path, ready) for the central drop; never creates it."""
+        root = self._upload_drop_root
+        if root is None:
+            try:
+                root = default_upload_drop()
+            except (ValueError, OSError):
+                root = None
+        if root is None:
+            return None, False
+        try:
+            path, status = _directory(root)
+            _directory(Path(path).anchor, required=True)
+        except (ValueError, OSError):
+            return None, False
+        return path, True
+
+    def _upload_drop(self):
+        """Canonical central drop directory; TransferStore creates it on delivery."""
+        path, ready = self._upload_drop_probe()
+        if not ready:
+            raise CompanionError('upload_dir_unavailable')
+        return path
+
     async def _workspace(self, session):
         binding = await self.inspector.fresh(session)
         cfg = await self.io(self.workspaces.get, binding['window_id'], binding['cwd'])
         library = await self.io(self.workspaces.get_mylib)
+        upload_dir, upload_ready = await self.io(self._upload_drop_probe)
         return {**cfg, 'session_id': session, 'daemon_epoch': binding['daemon_epoch'],
                 'mylib_root': library['mylib_root'], 'mylib_revision': library['revision'],
-                'mylib_status': library['status'], 'host_id': self.identity['host_id']}
+                'mylib_status': library['status'], 'host_id': self.identity['host_id'],
+                'upload_dir': upload_dir, 'upload_ready': upload_ready}
 
     async def _route(self, body, generation):
         identity = body.get('id')
@@ -526,10 +568,8 @@ class FileCompanion:
             elif action == 'workspace.set' and set(data) == {'project_dir', 'exchange_dir', 'expected_revision'}:
                 result = await self.io(self.workspaces.save, binding['window_id'], data['project_dir'], data['exchange_dir'], expected_revision=data['expected_revision'])
                 result = await self._workspace(session)
-            elif action == 'library.get' and not data:
-                result = await self.io(self.workspaces.get_mylib)
-            elif action == 'library.set' and set(data) == {'mylib_root', 'expected_revision'}:
-                result = await self.io(self.workspaces.save_mylib, data['mylib_root'], expected_revision=data['expected_revision'])
+            elif action.startswith('library.'):
+                result = await self.io(self.library.action, action, data)
             else:
                 raise CompanionError('invalid_request')
             if not self.inspector.current(binding):
@@ -537,7 +577,9 @@ class FileCompanion:
             await self._send({'type': 'host_response', 'id': identity, 'ok': True, 'result': result}, generation)
         except (ValueError, OSError, TimeoutError, WebSocketException) as error:
             code = 'directory_unavailable'
-            if isinstance(error, RevisionConflict):
+            if isinstance(error, LocalLibraryError):
+                code = str(error)
+            elif isinstance(error, RevisionConflict):
                 code = 'revision_conflict'
             elif isinstance(error, ProjectSelectionRequired):
                 code = 'project_required'
@@ -580,8 +622,11 @@ class FileCompanion:
             raise CompanionError('saved_file_changed')
 
     def _begin(self, job, binding):
-        cfg = self.workspaces.guard(binding['window_id'], binding['cwd'], job['workspace_revision'])
-        target = Path(cfg['exchange_dir']) / job['name']
+        cfg = self.workspaces.get(binding['window_id'], binding['cwd'])
+        if cfg['revision'] != job['workspace_revision']:
+            raise RevisionConflict(job['workspace_revision'], cfg['revision'])
+        drop = self._upload_drop()
+        target = Path(drop) / job['name']
         row = self._row(job)
         if row:
             if row[1] != str(target):
@@ -603,7 +648,7 @@ class FileCompanion:
                     old.unlink()
         elif _present(target):
             raise CompanionError('target_conflict')
-        store = TransferStore(cfg['exchange_dir'])
+        store = TransferStore(drop)
         transfer = store.begin(self.identity['host_id'], job['session_id'], job['name'], job['size'], job['sha256'])
         try:
             with self._db_lock, self._db:
@@ -615,24 +660,27 @@ class FileCompanion:
         return store, transfer, None
 
     def _finish(self, store, transfer, job, binding, generation):
-        with self.workspaces.publish_guard(binding['window_id'], binding['cwd'], job['workspace_revision']) as cfg:
-            expected = Path(cfg['exchange_dir']) / job['name']
-            if store.root != Path(cfg['exchange_dir']):
-                raise CompanionError('target_changed')
-            if generation != self._generation or not self.inspector.current(binding) or self._closed:
-                raise CompanionError('target_changed')
-            if _present(expected):
-                raise CompanionError('target_conflict')
-            path = store.finish(self.identity['host_id'], transfer,
-                can_publish=lambda: generation == self._generation and self.inspector.current(binding) and not self._closed,
-                strict_name=True)
-            if path != str(expected):
-                raise CompanionError('target_conflict')
-            receipt = {name: job[name] for name in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision')}
-            receipt['path'] = path
-            with self._db_lock, self._db:
-                self._db.execute('UPDATE deliveries SET partial=NULL,receipt=? WHERE file_id=?', (json.dumps(receipt), job['file_id']))
-            return receipt
+        cfg = self.workspaces.get(binding['window_id'], binding['cwd'])
+        if cfg['revision'] != job['workspace_revision']:
+            raise RevisionConflict(job['workspace_revision'], cfg['revision'])
+        drop = self._upload_drop()
+        expected = Path(drop) / job['name']
+        if store.root != Path(drop):
+            raise CompanionError('target_changed')
+        if generation != self._generation or not self.inspector.current(binding) or self._closed:
+            raise CompanionError('target_changed')
+        if _present(expected):
+            raise CompanionError('target_conflict')
+        path = store.finish(self.identity['host_id'], transfer,
+            can_publish=lambda: generation == self._generation and self.inspector.current(binding) and not self._closed,
+            strict_name=True)
+        if path != str(expected):
+            raise CompanionError('target_conflict')
+        receipt = {name: job[name] for name in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision')}
+        receipt['path'] = path
+        with self._db_lock, self._db:
+            self._db.execute('UPDATE deliveries SET partial=NULL,receipt=? WHERE file_id=?', (json.dumps(receipt), job['file_id']))
+        return receipt
 
     def _http_open(self, job, ticket, binding, generation):
         path = '/file/download/' + job['file_id']
@@ -736,7 +784,9 @@ class FileCompanion:
             self._progress(file_id, {'state': 'downloading', 'received': 0, 'size': job['size']})
             if saved:
                 await self.inspector.fresh(job['session_id'])
-                await self.io(self.workspaces.guard, binding['window_id'], binding['cwd'], job['workspace_revision'])
+                saved_cfg = await self.io(self.workspaces.get, binding['window_id'], binding['cwd'])
+                if saved_cfg['revision'] != job['workspace_revision']:
+                    raise RevisionConflict(job['workspace_revision'], saved_cfg['revision'])
                 receipt = {name: job[name] for name in ('file_id', 'name', 'size', 'sha256', 'daemon_epoch', 'workspace_revision')}
                 receipt['path'] = saved
             else:
@@ -948,6 +998,7 @@ class FileCompanion:
 
     async def close(self):
         self._closed = True
+        self.library.close()
         self._generation += 1
         self._abort_http()
         if self._ws:
@@ -964,6 +1015,7 @@ def main():
     parser.add_argument('--broker-token-file', type=Path)
     parser.add_argument('--enrollment-key-file', required=True, type=Path)
     parser.add_argument('--download-mode', choices=('http', 'ws'), default='http')
+    parser.add_argument('--upload-drop-root', type=Path)
     parser.add_argument('--status-id', default='')
     parser.add_argument('--room')
     args = parser.parse_args()
@@ -975,7 +1027,7 @@ def main():
             room = socket.gethostname()
     companion = FileCompanion(args.backend, args.broker, room, args.state_dir,
         args.owner_token_file, args.enrollment_key_file, broker_token_file=args.broker_token_file,
-        download_mode=args.download_mode)
+        download_mode=args.download_mode, upload_drop_root=args.upload_drop_root)
     if args.status_id and not re.fullmatch('[a-f0-9]{32}', args.status_id):
         parser.error('Invalid status identity')
     companion.status_id = args.status_id

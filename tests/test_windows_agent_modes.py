@@ -182,3 +182,28 @@ async def check_isolation(tmp_path,playwright):
                     await browser.close()
         finally:
             uplink.cancel();await asyncio.gather(uplink,return_exceptions=True)
+
+
+def test_cursor_tui_output_selects_profile_without_cli_metadata(tmp_path):
+    asyncio.run(check_cursor_content_detection(tmp_path, browser_api()))
+
+
+async def check_cursor_content_detection(tmp_path, playwright):
+    async with surface(tmp_path, False) as (daemon, sessions, origin, _relay):
+        async with playwright.async_playwright() as runtime:
+            browser = await runtime.chromium.launch(executable_path=str(EDGE), headless=True)
+            try:
+                page = await browser.new_page(viewport={'width': 1100, 'height': 760})
+                await page.goto(origin + '/workspace?direct=1&renderer=dom#token=' + daemon.token)
+                await wait_ui(page, 'window.smaWorkspace?.connected&&smaWorkspace.panes.size===2')
+                await page.evaluate('id=>smaWorkspace.openSession(id,false)', sessions[0].id)
+                sessions[0].pty.inbox.put('Finished Check changed files\r\n→ Add a follow-up\r\nAuto · 79.3% · 11 files edited\r\n'.encode())
+                errors = []
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                await wait_ui(page, "smaWorkspace.activePane.agentProfile==='cursor-cli'")
+                assert await page.locator('#agent-mode').input_value() == 'auto'
+                assert 'Cursor CLI' in await page.locator('.pane.active .pane-header').inner_text()
+                assert all(not session.pty.written for session in sessions)
+                assert not errors
+            finally:
+                await browser.close()

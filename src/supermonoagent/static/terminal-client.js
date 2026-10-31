@@ -84,6 +84,21 @@
     for(const value of [session.title,title]){const id=classify(value);if(id)return id;}
     return 'auto';
   }
+  function inferAgentContent(text){
+    if(typeof text!=='string'||!text||text.length>32768)return '';
+    const finished=/^[ \t]*Finished[ \t]+\S/m.test(text),followUp=/^[ \t]*(?:→[ \t]+)?Add a follow-up[ \t]*$/m.test(text);
+    const auto=/\bAuto[ \t]+·[ \t]*\d+(?:\.\d+)?%[ \t]+·[ \t]*\d+[ \t]+files edited\b/.test(text);
+    return finished&&(followUp||auto)?'cursor-cli':'';
+  }
+  function createAgentDetector(term,{isUnknown,onDetected,delay=750,schedule=root.setTimeout,cancel=root.clearTimeout}={}){
+    if(typeof isUnknown!=='function'||typeof onDetected!=='function')throw new Error('Invalid agent detector');
+    let dead=false,timer=null;
+    function scan(){timer=null;if(dead||!isUnknown())return;const buffer=term.buffer.active,lines=[];
+      for(let row=Math.max(0,buffer.length-48);row<buffer.length;row++)lines.push(buffer.getLine(row)?.translateToString(true)||'');
+      const mode=inferAgentContent(lines.join('\n').slice(-32768));if(mode)onDetected(mode);
+    }
+    return {request(){if(!dead&&timer===null&&isUnknown())timer=schedule(scan,delay);},dispose(){dead=true;if(timer!==null)cancel(timer);timer=null;}};
+  }
   function highlightSpans(line,cols,profile=commonAgentProfile){
     profile=validateAgentProfile(profile);
     cols=Math.min(500,Math.max(0,Math.floor(cols)||0));
@@ -188,12 +203,13 @@
     return {session,context,bytes:payload.subarray(start+length)};
   }
   function historyFrameBytes(context,bytes,cursor) {
-    if(context.kind==='snapshot')return {bytes,position:context.v===2?context.end_position:null,reset:true};
-    if(context.v!==2)return {bytes,position:null,reset:false};
-    if(!cursor||cursor.stream_id!==context.stream_id)return null;
+    if(context.v!==2)return {bytes,position:null,reset:context.kind==='snapshot'};
+    if(context.kind==='snapshot'&&(!cursor||cursor.stream_id!==context.stream_id||cursor.epoch!==context.epoch))
+      return {bytes,position:context.end_position,reset:true};
+    if(!cursor||cursor.stream_id!==context.stream_id||context.kind!=='output'&&cursor.epoch!==context.epoch)return null;
     const start=context.end_position-bytes.length;
-    if(start<0||cursor.position<start)return null;
-    if(cursor.position>=context.end_position)return {bytes:new Uint8Array(),position:context.end_position,reset:false};
+    if(start<0||cursor.position<start)return context.kind==='snapshot'?{bytes,position:context.end_position,reset:true}:null;
+    if(cursor.position>=context.end_position)return {bytes:new Uint8Array(),position:cursor.position,reset:false};
     return {bytes:bytes.subarray(cursor.position-start),position:context.end_position,reset:false};
   }
   function terminalInput(text, replaying = false) {
@@ -259,7 +275,9 @@
     // This only releases the local view. It has no socket or process-close operation.
     panes.delete(session);pane.ready=false;if(pane.redrawTimer)clearTimeout(pane.redrawTimer);if(pane.resizeRequest)clearTimeout(pane.resizeRequest.timer);pane.observer.disconnect();
     const addon=pane.webgl;pane.webgl=null;if(addon)addon.dispose();
-    pane.highlighter?.dispose();pane.questions?.dispose();pane.term.dispose();pane.el.remove();return true;
+    pane.highlighter?.dispose();pane.agentDetector?.dispose();pane.questions?.dispose();
+    try{pane.term._core?.viewport?.dispose?.();}catch{}
+    pane.term.dispose();pane.el.remove();return true;
   }
   function secureEndpoint(value) {
     const url=new URL(value),authority=String(value).match(/^[a-z]+:\/\/([^/?#]*)/i)?.[1]||'';
@@ -284,7 +302,54 @@
   function updateHintRevision(message) {
     return message?.op==='ui_update'&&typeof message.revision==='string'&&/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(message.revision)&&!message.revision.includes('..')&&Number.isSafeInteger(message.sequence)&&message.sequence>0?message.revision:'';
   }
-  const api = {agentProfiles,commonAgentProfile,validateAgentProfile,loadAgentProfile,agentModeFromSession,highlightSpans,createHighlighter,pack, unpack, targetFrame, sessionPayload, historyPayload, historyFrameBytes, terminalInput, cursorKey, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,updateHintRevision,
+  function createScreenHistory({maxFrames=120,maxBytes=1048576,minInterval=750,now=()=>performance.now()}={}){
+    if(!Number.isSafeInteger(maxFrames)||maxFrames<1||!Number.isSafeInteger(maxBytes)||maxBytes<1||!Number.isFinite(minInterval)||minInterval<0||typeof now!=='function')throw new TypeError('Invalid screen history limits');
+    const encoder=new TextEncoder();
+    let frames=[],bytes=0,selected=null,nextID=0,lastCheckpoint=0;
+    const index=()=>selected===null?-1:frames.findIndex(entry=>entry.frame.id===selected);
+    const current=()=>frames[index()]?.frame||null;
+    function trim(){
+      while(frames.length>maxFrames||bytes>maxBytes){
+        let at=frames.findIndex((entry,i)=>entry.frame.id!==selected&&i<frames.length-1);
+        if(at<0)at=0;
+        bytes-=frames.splice(at,1)[0].size;
+      }
+      if(selected!==null&&index()<0)selected=frames[0]?.frame.id??null;
+    }
+    return {
+      record(value){
+        const cols=value?.cols,rows=value?.rows,lines=value?.lines;
+        if(!Number.isInteger(cols)||cols<2||cols>500||!Number.isInteger(rows)||rows<1||rows>200||!Array.isArray(lines)||lines.length!==rows||Array.from(lines).some(line=>typeof line!=='string'||line.length>cols*2||/[\x00-\x1f\x7f]/.test(line)))return false;
+        const latest=frames[frames.length-1]?.frame;
+        if(latest&&latest.cols===cols&&latest.rows===rows&&latest.lines.every((line,i)=>line===lines[i]))return false;
+        const time=now();if(!Number.isFinite(time)||time<0)return false;
+        const timestamp=Math.max(time,latest?.timestamp||0);
+        const frame=Object.freeze({id:nextID+1,cols,rows,lines:Object.freeze([...lines]),timestamp});
+        const size=encoder.encode(JSON.stringify(frame)).length;
+        if(size>maxBytes)return false;
+        if(frames.length>1&&latest.id!==selected&&timestamp-lastCheckpoint<minInterval)bytes-=frames.pop().size;
+        else lastCheckpoint=timestamp;
+        frames.push({frame,size});bytes+=size;nextID++;trim();return true;
+      },
+      previous(){
+        if(!frames.length)return null;
+        const at=index();selected=frames[at<0?Math.max(0,frames.length-2):Math.max(0,at-1)].frame.id;return current();
+      },
+      next(){
+        const at=index();if(at<0)return null;
+        selected=frames[at+1]?.frame.id??null;return current();
+      },
+      top(){selected=frames[0]?.frame.id??null;return current();},
+      bottom(){selected=null;return null;},
+      clear(){frames=[];bytes=0;selected=null;lastCheckpoint=0;},
+      get length(){return frames.length;},
+      get bytes(){return bytes;},
+      get current(){return current();},
+      get atTop(){return !frames.length||selected===frames[0].frame.id;},
+      get atBottom(){return selected===null;}
+    };
+  }
+  const api = {agentProfiles,commonAgentProfile,validateAgentProfile,loadAgentProfile,agentModeFromSession,inferAgentContent,createAgentDetector,highlightSpans,createHighlighter,createScreenHistory,pack, unpack, targetFrame, sessionPayload, historyPayload, historyFrameBytes, terminalInput, cursorKey, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,updateHintRevision,
     retryDelay: attempt => Math.min(15000, 500 * 2 ** Math.min(10, attempt)),
     rendererName: name => ['auto', 'dom', 'webgl'].includes(name) ? name : 'auto'};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

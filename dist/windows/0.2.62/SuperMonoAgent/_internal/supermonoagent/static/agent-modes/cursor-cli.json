@@ -1,0 +1,110 @@
+{
+  "id": "cursor-cli",
+  "label": "Cursor CLI",
+  "theme": {
+    "background": "#11151b",
+    "foreground": "#d6d9df",
+    "cursor": "#d6d9df",
+    "cursorAccent": "#11151b",
+    "selectionBackground": "#344253",
+    "selectionForeground": "#d6d9df",
+    "black": "#8b929c",
+    "red": "#e06c75",
+    "green": "#98c379",
+    "yellow": "#e5c07b",
+    "blue": "#82cfff",
+    "magenta": "#82cfff",
+    "cyan": "#82cfff",
+    "white": "#d6d9df",
+    "brightBlack": "#8b929c",
+    "brightRed": "#e06c75",
+    "brightGreen": "#98c379",
+    "brightYellow": "#e5c07b",
+    "brightBlue": "#82cfff",
+    "brightMagenta": "#82cfff",
+    "brightCyan": "#82cfff",
+    "brightWhite": "#d6d9df"
+  },
+  "tokens": [
+    {
+      "pattern": "\"[^\"\\n]+\"|\\x27[^\\x27\\n]+\\x27",
+      "flags": "gu",
+      "color": "#e5c07b"
+    },
+    {
+      "pattern": "(?:\\u9519\\u8bef|\\u5931\\u8d25|\\u5f02\\u5e38)|\\b(?:Error|Exception|ERROR|FAIL|FAILED)\\b",
+      "flags": "gu",
+      "color": "#e06c75"
+    },
+    {
+      "pattern": "\\b(?:Cursor|Agent|Composer|Apply|Applied|Files|Diff|Thinking|Working|Plan|Planning|Explored|Updated)\\b|^\\s*Review\\b",
+      "flags": "giu",
+      "color": "#82cfff"
+    },
+    {
+      "pattern": "https?://[^\\s<>\"'\\x60]+",
+      "flags": "giu",
+      "color": "#56b6c2"
+    },
+    {
+      "pattern": "[\\p{L}\\p{N}_./\\\\:-]+\\.(?:py|js|jsx|ts|tsx|css|html|json|md|exe|ps1|sh|yaml|yml|toml|java|go|rs|cpp|h)(?::\\d+)?",
+      "flags": "gu",
+      "color": "#e5c07b"
+    },
+    {
+      "pattern": "\\b(?:Read|Write|Edit|MultiEdit|Bash|Task|Glob|Grep|Search|WebSearch|WebFetch|TodoWrite|NotebookEdit|Shell|Execute|Run|View|Create|StrReplace|KillShell|BashOutput)(?:\\s*\\(|\\s*:)",
+      "flags": "giu",
+      "color": "#c678dd"
+    },
+    {
+      "pattern": "`[^`\\n]+`|\\b[A-Za-z_][\\w]*\\(\\)",
+      "flags": "gu",
+      "color": "#e5c07b"
+    },
+    {
+      "pattern": "\\b(?:Ran|Running|cmd(?:\\.exe)?|powershell(?:\\.exe)?|git|python|pytest|node|npm|pnpm|yarn|adb)\\b",
+      "flags": "giu",
+      "color": "#56b6c2"
+    },
+    {
+      "pattern": "\\b\\d+(?:\\.\\d+)?(?:\\s?(?:KiB|MiB|ms|tokens|\\u5b57\\u8282))?",
+      "flags": "gu",
+      "color": "#e5c07b"
+    },
+    {
+      "pattern": "\\b(?:Success|SUCCESS|Passed|PASSED)\\b|(?:\\u6210\\u529f|\\u5df2\\u5b8c\\u6210)",
+      "flags": "gu",
+      "color": "#98c379"
+    },
+    {
+      "pattern": "^#{1,6} [^\\n]+|\\*\\*[^*\\n]+\\*\\*",
+      "flags": "gu",
+      "color": "#82cfff"
+    },
+    {
+      "pattern": "(?:\\u8b66\\u544a)|\\b(?:Warning|Caution)\\b",
+      "flags": "giu",
+      "color": "#e5c07b"
+    },
+    {
+      "pattern": "\\bFinished\\b",
+      "flags": "giu",
+      "color": "#98c379"
+    },
+    {
+      "pattern": "Add a follow-up|\\bAuto\\b",
+      "flags": "giu",
+      "color": "#56b6c2"
+    },
+    {
+      "pattern": "\\bedited\\b",
+      "flags": "gu",
+      "color": "#82cfff"
+    },
+    {
+      "pattern": "\\bRun[ \\t]+Every\\w*\\b",
+      "flags": "giu",
+      "color": "#c678dd"
+    }
+  ]
+}

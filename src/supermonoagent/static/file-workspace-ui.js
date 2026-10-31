@@ -13,7 +13,7 @@
     route_timeout:'目标文件助手未响应。',unauthorized:'目标电脑未确认窗口所有者权限。',
     session_unavailable:'目标窗口已关闭或尚未就绪。',target_changed:'窗口或连接已变化，请重新打开设置。',
     revision_conflict:'目录配置已被修改，请重新加载后再保存。',directory_unavailable:'目标目录不可用；交换目录必须在项目目录内。',
-    project_required:'请先在底部选择当前项目目录；附件将保存到该项目的 tmp，不能使用用户主目录。',
+    project_required:'请先在底部选择当前项目目录；附件保存到目标电脑中央暂存目录（优先 D:\\aicoding\\supermonoagent\\tmp，无 D 盘时为 C 盘对应目录），不能使用用户主目录。',
     missing_token:'当前连接缺少文件服务 Token。',insecure_endpoint:'文件服务需要 WSS 加密连接。',
     invalid_endpoint:'文件服务地址无效。',unsupported:'当前客户端不支持文件工作区。'};
   const message=error=>Object.hasOwn(messages,error?.code)?messages[error.code]:'文件工作区暂不可用，请检查目标电脑的文件助手。';
@@ -23,13 +23,13 @@
   async function boot(){
     if(stopped||installing||root.SuperMonoFileWorkspaces||!root.smaWorkspace||!root.SuperMonoFileClient)return;
     const native=root.pywebview?.api?.file_exchange_config;
-    if(!object(root.SuperMonoFileWorkspaceConfig)&&typeof native!=='function')return;
+    if(!object(root.SuperMonoFileWorkspaceConfig)&&typeof native!=='function'){if(!stopped)setTimeout(boot,2000);return;}
     installing=true;
     let nativeConfig;
     try{nativeConfig=object(root.SuperMonoFileWorkspaceConfig)?root.SuperMonoFileWorkspaceConfig:await native();}
-    catch{installing=false;return;}
+    catch{installing=false;if(!stopped)setTimeout(boot,2000);return;}
     installing=false;
-    if(stopped||!object(nativeConfig)||nativeConfig.enabled!==true)return;
+    if(stopped||!object(nativeConfig)||nativeConfig.enabled!==true){if(!stopped)setTimeout(boot,2000);return;}
     const W=root.smaWorkspace,F=root.SuperMonoFileClient,footer=document.querySelector('main footer')||document.querySelector('footer');
     if(!footer)return;
     let destroyed=false,active=null,reading=0,modalTarget=null,modalRevision=null,browseSequence=0,browseField='',browsePage=null,autoExchange=false;
@@ -106,7 +106,7 @@
     projectButton.type=exchangeButton.type='button';paths.append(projectButton,exchangeButton);footer.prepend(paths);
     footer.setAttribute('data-file-workspaces','true');if(originalStatus)originalStatus.hidden=true;
     const dialog=create('dialog');dialog.id='file-workspace-dialog';dialog.setAttribute('aria-label','窗口文件目录');
-    const form=create('form'),heading=create('h2','窗口文件目录'),targetLabel=create('p'),note=create('p','交换目录必须位于项目内；留空使用项目/tmp。此设置不会改变终端当前目录。');
+    const form=create('form'),heading=create('h2','窗口文件目录'),targetLabel=create('p'),note=create('p','交换目录必须位于项目内；留空使用项目/tmp。中继附件实际保存到目标电脑中央暂存目录（优先 D:\\aicoding\\supermonoagent\\tmp，无 D 盘时为 C 盘对应目录）。此设置不会改变终端当前目录。');
     targetLabel.id='file-workspace-target';
     const project=create('input'),exchange=create('input');project.id='file-project';exchange.id='file-exchange';
     project.type=exchange.type='text';project.maxLength=exchange.maxLength=4096;project.autocomplete=exchange.autocomplete='off';project.required=true;

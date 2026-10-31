@@ -77,6 +77,7 @@ class Client:
     reliable: bool = False
     history_context: bool = False
     history_resume: bool = False
+    history_chunks: bool = False
     subscriptions: set[str] = field(default_factory=set)
     failure: str = ""
     feed_offsets: dict[str, int] = field(default_factory=dict)
@@ -420,7 +421,7 @@ class Hub:
         client.channel = channel
         session = self.sessions.get(client.session_id or "")
         if session is not None and self._channel_ok(client, session):
-            self._send(client, self._session_snapshot(client, session))
+            self._send_snapshot(client, session)
 
     def open_window(self, title: str | None = None, group_id: str | None = None, owner: str = "") -> Window:
         home = self.ensure_owner(owner)
@@ -475,7 +476,7 @@ class Hub:
             return
         with self._lock:
             client.session_id = session.id
-        self._send(client, self._session_snapshot(client, session))
+        self._send_snapshot(client, session)
 
     def follow(self, client: Client, session_id: str) -> None:
         session = self.sessions.get(session_id)
@@ -484,7 +485,7 @@ class Hub:
         with self._lock:
             client.window_id = session.window_id
             client.session_id = session.id
-        self._send(client, self._session_snapshot(client, session))
+        self._send_snapshot(client, session)
 
     def write(self, client: Client, data: bytes) -> None:
         session = self.view(client)
@@ -550,7 +551,7 @@ class Hub:
         limit = max(1, client.queue.maxsize // 2)
         if (not client.remote_paused and not client.pending_replays
                 and (not client.queue.maxsize or client.queue.qsize() < limit)):
-            self._send(client, self._session_snapshot(client, session))
+            self._send_snapshot(client, session)
             return
         client.pending_replays.add(session.id)
         if not client.remote_paused and client.replay_handle is None and self.loop is not None:
@@ -572,7 +573,7 @@ class Hub:
             if session is not None:
                 # Capture bytes and their position only when the bounded queue can
                 # accept them. Live flushes for deferred sessions are covered here.
-                self._send(client, self._session_snapshot(client, session))
+                self._send_snapshot(client, session)
             else:
                 client.history_after.pop(sid, None)
         if not client.remote_paused and client.pending_replays and self.loop is not None:
@@ -630,7 +631,7 @@ class Hub:
             if session is not None:
                 # A snapshot supersedes the skipped stream bytes; the low-water
                 # gate leaves headroom for state frames behind it.
-                self._send(client, self._session_snapshot(client, session))
+                self._send_snapshot(client, session)
         if not client.remote_paused and client.resync_pending and self.loop is not None:
             client.resync_handle = self.loop.call_later(.004, self._drain_resyncs, client)
 
@@ -688,7 +689,8 @@ class Hub:
         return {
             sid: {"cols": session.cols, "rows": session.rows, "owner": session.resize_owner == client.key,
                   "busy": session.resize_owner not in {None, client.key},
-                  **({"history_epoch": session.pump.history_context()['epoch']} if client.history_context else {})}
+                  **({"history_epoch": session.pump.history_context()['epoch']} if client.history_context else {}),
+                  **({"history_end": session.pump.position()} if client.history_chunks else {})}
             for sid in client.subscriptions
             if (session := self.sessions.get(sid)) is not None and self._channel_ok(client, session)
         }
@@ -865,6 +867,34 @@ class Hub:
             return pack(OP_SNAPSHOT, b"")
         return self._session_snapshot(client, session)
 
+    def _send_snapshot(self, client: Client, session: Session) -> None:
+        for frame in self._session_snapshot_frames(client, session):
+            self._send(client, frame)
+
+    def _session_snapshot_frames(self, client: Client, session: Session) -> list[bytes]:
+        if not (client.multiplex and client.history_context and client.history_resume and client.history_chunks):
+            return [self._session_snapshot(client, session)]
+        session.pump.mark_grid(session.cols, session.rows)
+        cursor = client.history_after.pop(session.id, None)
+        if cursor is not None:
+            data, position, context = session.pump.history_resume_position(cursor['position'], cursor['epoch'], cursor['stream_id'])
+        else:
+            data, position, context = session.pump.history_snapshot_position()
+        client.feed_offsets[session.id] = position
+        context.update(v=2, stream_id=session.pump.stream_id)
+        start = position - len(data)
+        if len(data) <= 192 * 1024:
+            context.update(end_position=position)
+            return [pack_history_context(session.id, context, data)]
+        frames = []
+        for offset in range(0, len(data), 192 * 1024):
+            chunk = data[offset:offset + 192 * 1024]
+            part = {**context, 'kind': context['kind'] if offset == 0 else 'resume',
+                    'end_position': start + offset + len(chunk)}
+            frames.append(pack_history_context(session.id, part, chunk))
+        frames.append(pack_history_context(session.id, {**context, 'kind': 'resume', 'end_position': position}, b''))
+        return frames
+
     def _session_snapshot(self, client: Client, session: Session) -> bytes:
         if client.multiplex and client.history_context:
             session.pump.mark_grid(session.cols, session.rows)
@@ -950,7 +980,8 @@ class Hub:
             if client.multiplex and client.history_context:
                 try:
                     if overflow:
-                        frame = self._session_snapshot(client, session)
+                        self._send_snapshot(client, session)
+                        continue
                     else:
                         context = session.pump.flushed_history_context()
                         if client.history_resume:

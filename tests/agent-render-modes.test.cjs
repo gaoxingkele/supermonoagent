@@ -63,6 +63,24 @@ test('Grok Claude Code and Cursor CLI distinguish tools commands links and warni
   }finally{term.dispose();}
 });
 
+test('Cursor CLI content inference and status tokens require distinctive TUI evidence',async()=>{
+  const p=profile('cursor-cli'),term=new Terminal({cols:120,rows:4,allowProposedApi:true});
+  const expect=(row,token,color)=>{
+    const line=term.buffer.active.getLine(row),x=line.translateToString(true).indexOf(token);
+    assert.ok(x>=0,token);assert.ok(C.highlightSpans(line,term.cols,p).some(span=>span.x===x&&span.width===token.length&&span.foregroundColor===color),token);
+  };
+  try{
+    await write(term,'Finished Check files\r\n→ Add a follow-up\r\nAuto · 79.3% · 11 files edited\r\nRun Everything\r\n');
+    expect(0,'Finished','#98c379');expect(1,'Add a follow-up','#56b6c2');
+    expect(2,'Auto','#56b6c2');expect(2,'edited','#82cfff');expect(3,'Run Everything','#c678dd');
+    assert.equal(C.inferAgentContent('Finished Check files\n→ Add a follow-up'),'cursor-cli');
+    assert.equal(C.inferAgentContent('Auto · 79.3% · 11 files edited\nFinished Check files'),'cursor-cli');
+    assert.equal(C.inferAgentContent('Finished work alone'),'');
+    assert.equal(C.inferAgentContent('→ Add a follow-up'),'');
+    assert.equal(C.inferAgentContent('x'.repeat(32769)),'');
+  }finally{term.dispose();}
+});
+
 test('profiles load individually with exact identity and bounded same-origin fetch',async()=>{
   const beforeFetch=globalThis.fetch,beforeLocation=globalThis.location;let calls=0;
   globalThis.location={href:'https://ui.example/workspace',origin:'https://ui.example'};

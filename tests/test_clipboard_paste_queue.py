@@ -11,7 +11,7 @@ def test_consecutive_file_paste_events_keep_each_captured_room(tmp_path):
 
 
 async def check_consecutive(playwright, folder):
-    from test_file_companion import environment
+    from test_file_companion import drop_dir, environment
     async with environment(folder) as (_broker, url, parents, _companions):
         async with browser_page(playwright, url) as (page, errors, _sockets):
             await page.expose_function('fixtureDigest', lambda data: list(hashlib.sha256(bytes(data)).digest()))
@@ -30,8 +30,8 @@ async def check_consecutive(playwright, folder):
             await page.evaluate('fixtureSelect(1);pasteFile("B.docx","owned-B");pasteFile("C.png","owned-C");')
             await page.evaluate('releaseRead()')
             await page.wait_for_function('!SuperMonoFilePaste.busy')
-            savedA = [p for p in (parents[0].project/'tmp').glob('*') if p.is_file()]
-            savedB = [p for p in (parents[1].project/'tmp').glob('*') if p.is_file()]
+            savedA = [p for p in drop_dir(folder).glob('*') if p.is_file()]
+            savedB = [p for p in drop_dir(folder,'B').glob('*') if p.is_file()]
             assert len(savedA) == 1 and savedA[0].read_bytes() == b'owned-A'
             assert sorted(p.read_bytes() for p in savedB) == [b'owned-B', b'owned-C']
             assert not errors
@@ -45,7 +45,7 @@ def test_native_snapshots_are_immediate_fifo_and_released(tmp_path, boundary):
 
 async def check_native(playwright, folder, boundary):
     from supermonoagent.windows_clipboard import ClipboardFiles
-    from test_file_companion import environment
+    from test_file_companion import drop_dir, environment
     sources = []
     for name in ['first.pdf', 'second.docx', 'third.png']:
         path = folder/name
@@ -85,8 +85,8 @@ async def check_native(playwright, folder, boundary):
                     await page.evaluate('fixtureHosts[1].config.token="changed-fixture-token"')
                 await page.evaluate('releaseRead()')
                 await page.wait_for_function('!SuperMonoFilePaste.busy')
-                filesA = [p for p in (parents[0].project/'tmp').glob('*') if p.is_file()]
-                filesB = [p for p in (parents[1].project/'tmp').glob('*') if p.is_file()]
+                filesA = [p for p in drop_dir(folder).glob('*') if p.is_file()]
+                filesB = [p for p in drop_dir(folder,'B').glob('*') if p.is_file()]
                 if boundary == 'cancel':
                     assert not filesA and not filesB
                 else:
@@ -109,7 +109,7 @@ async def check_native(playwright, folder, boundary):
 
 def test_queue_bound_cancel_and_plain_text_not_intercepted(tmp_path):
     async def exercise(playwright, folder):
-        from test_file_companion import environment
+        from test_file_companion import drop_dir, environment
         async with environment(folder) as (_broker, url, parents, _companions):
             async with browser_page(playwright, url) as (page, errors, _sockets):
                 await page.evaluate('''()=>{
@@ -130,7 +130,7 @@ def test_queue_bound_cancel_and_plain_text_not_intercepted(tmp_path):
                 await page.locator('#file-transfer-progress>button').click()
                 await page.evaluate('releaseRead()')
                 await page.wait_for_function('!SuperMonoFilePaste.busy&&SuperMonoFilePaste.queued===0')
-                assert not (parents[0].project/'tmp').exists()
+                assert not drop_dir(folder).exists()
                 assert not errors
                 assert all(not p.pty_written for p in parents)
     run(exercise, tmp_path)
@@ -139,7 +139,7 @@ def test_queue_bound_cancel_and_plain_text_not_intercepted(tmp_path):
 @pytest.mark.parametrize('mode', ['pending', 'project_required', 'finish-ack-lost'])
 def test_queued_failures_are_explicit_and_never_auto_retried(tmp_path, mode):
     async def exercise(playwright, folder):
-        from test_file_companion import environment
+        from test_file_companion import drop_dir, environment
         async with environment(folder) as (_broker, url, parents, _companions):
             async with browser_page(playwright, url) as (page, errors, _sockets):
                 await page.expose_function('fixtureDigest', lambda data: list(hashlib.sha256(bytes(data)).digest()))
@@ -166,7 +166,7 @@ def test_queued_failures_are_explicit_and_never_auto_retried(tmp_path, mode):
                     assert await page.locator('#file-transfer-queue button').filter(has_text='重试').count() == 0
                     if mode == 'finish-ack-lost':
                         async with asyncio.timeout(3):
-                            while len([p for p in (parents[0].project/'tmp').glob('*') if p.is_file()]) != 1:
+                            while len([p for p in drop_dir(folder).glob('*') if p.is_file()]) != 1:
                                 await asyncio.sleep(.02)
                         assert await page.evaluate('beginCount') == 1
                         assert await page.locator('#file-transfer-queue button').count() == 1

@@ -38,9 +38,15 @@ from .file_workspaces import timestamped_name
 
 PROTOCOL = 'sma-files-1'
 MAX_FRAME = 262144
-_ROUTED = frozenset({'workspace.get', 'workspace.browse', 'workspace.set', 'library.get', 'library.set'})
+_ROUTED = frozenset({'workspace.get', 'workspace.browse', 'workspace.set', 'library.get', 'library.set',
+                     'library.status', 'library.recommend', 'library.read_skill', 'library.pull',
+                     'library.commit_preview', 'library.commit', 'library.run_evolution', 'library.apply_evolution'})
 _HOST_ERRORS = frozenset({'invalid_request', 'session_unavailable', 'unauthorized', 'revision_conflict',
-                          'target_changed', 'directory_unavailable', 'unavailable', 'permission_denied', 'project_required'})
+                          'target_changed', 'directory_unavailable', 'unavailable', 'permission_denied', 'project_required',
+                          'invalid_path', 'invalid_config', 'source_unavailable', 'source_limit', 'dirty_worktree',
+                          'non_fast_forward', 'changes_changed', 'no_changes', 'git_failed', 'git_unavailable',
+                          'sync_busy', 'cancelled', 'git_timeout', 'invalid_revision', 'invalid_signal',
+                          'unknown_skill', 'revision_mismatch', 'unknown_suggestion', 'source_drift', 'state_invalid'})
 _ID = re.compile(r'[A-Za-z0-9_-]{1,64}\Z')
 _HEX = re.compile(r'[a-f0-9]{64}\Z')
 
@@ -484,7 +490,8 @@ class Broker:
                                         'session': session, 'data': data})
             except (ConnectionClosed, TimeoutError):
                 _fail('host_unavailable')
-            done, _ = await asyncio.wait([future, closed], timeout=self.route_timeout,
+            timeout = 180 if action in {'library.pull', 'library.commit'} else self.route_timeout
+            done, _ = await asyncio.wait([future, closed], timeout=timeout,
                                          return_when=asyncio.FIRST_COMPLETED)
             if future in done:
                 return future.result()
@@ -534,7 +541,7 @@ class Broker:
                         or target.get('daemon_epoch') != data['daemon_epoch']
                         or type(target.get('revision')) is not int or target['revision'] != data['workspace_revision']):
                     _fail('target_changed')
-                if target.get('project_status') == 'selection_required':
+                if target.get('project_status') == 'selection_required' and target.get('upload_ready') is not True:
                     _fail('project_required')
                 return await self._io(self._begin, connection, session, data)
             if action in {'upload.chunk', 'upload.finish', 'upload.cancel'}:

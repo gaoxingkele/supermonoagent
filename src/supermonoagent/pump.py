@@ -9,7 +9,7 @@ import secrets
 from .ansi_state import bounded_snapshot
 from .history_context import ReplayRenditionState
 
-RING_BYTES = 256 * 1024
+RING_BYTES = 2 * 1024 * 1024
 PENDING_BYTES = 128 * 1024
 COALESCE_S = 0.02
 
@@ -85,10 +85,15 @@ class OutputPump:
         with self._lock:
             return self._history_context_locked('output')
 
+    def _history_snapshot_locked(self):
+        if self._history_epoch > 0 and not self._epoch_ring and self._ring:
+            return self._snapshot_locked()
+        return bounded_snapshot(bytes(self._epoch_ring), RING_BYTES,
+                                self._epoch_head_style, cropped=self._epoch_cropped)
+
     def history_snapshot_position(self):
         with self._lock:
-            data = bounded_snapshot(bytes(self._epoch_ring), RING_BYTES,
-                                    self._epoch_head_style, cropped=self._epoch_cropped)
+            data = self._history_snapshot_locked()
             return data, self._position, self._history_context_locked('snapshot')
 
     def history_resume_position(self, position, epoch, stream_id):
@@ -102,8 +107,7 @@ class OutputPump:
                 data = bytes(self._epoch_ring[offset:])
                 context = self._history_context_locked('resume')
             else:
-                data = bounded_snapshot(bytes(self._epoch_ring), RING_BYTES,
-                                        self._epoch_head_style, cropped=self._epoch_cropped)
+                data = self._history_snapshot_locked()
                 context = self._history_context_locked('snapshot')
             context.update(v=2, end_position=self._position, stream_id=self.stream_id)
             return data, self._position, context

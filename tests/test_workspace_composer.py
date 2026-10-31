@@ -62,6 +62,8 @@ async def prepared(browser, url, endpoint=None, sessions=None):
       const valid=t=>smaWorkspace.panes.get(t.key)===t.pane&&t.host.ws===t.ws&&t.host.generation===t.generation
         &&t.host.connected&&t.pane.raw===t.session&&t.host.config.token===t.token&&t.host.config.code===t.room;
       window.SuperMonoFilePaste={captureTarget:capture,isCurrent:valid,upload:async(files,options)=>{
+        const fixtureModes={'A.pdf':'gated','cancel.pdf':'gated','pending.pdf':'queued','committed.png':'queued-cancel','upgrade.pdf':'missing-profile','unknown.pdf':'unknown-commit','no-helper.pdf':'failure'};
+        if(files.length===1&&fixtureModes[files[0].name])composerMode=fixtureModes[files[0].name];
         composerCalls.push({host:options.target.host.id,session:options.target.session,names:files.map(f=>f.name)});
         window.composerUploadSignal=options.signal;window.composerEntered=true;
         if(composerMode==='gated'||composerMode==='late')await new Promise((yes,no)=>{
@@ -152,17 +154,16 @@ async def check_attachments(playwright):
         page, errors = await prepared(browser, url)
         await page.locator('#terminal-composer-open').click()
         await page.locator('#terminal-composer-text').fill('keep my prompt')
+        await page.evaluate('composerMode="partial"')
         await page.locator('#terminal-composer-files-input').set_input_files([
             {'name': 'photo.png', 'mimeType': 'image/png', 'buffer': b'owned png'},
             {'name': 'report.docx', 'mimeType': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'buffer': b'owned word'}])
-        assert await page.locator('#terminal-composer-files li').count() == 2
-        await page.evaluate('composerMode="partial"')
-        await page.locator('#terminal-composer-upload').click()
         await page.wait_for_function('!SuperMonoTerminalComposer.busy')
         assert await page.locator('#terminal-composer-receipts li').count() == 1
         assert await page.locator('#terminal-composer-files li').count() == 1
         assert '已保存 1 项' in await page.locator('#terminal-composer-state').inner_text()
-        assert await page.locator('#terminal-composer-text').input_value() == 'keep my prompt'
+        assert 'keep my prompt\n附件：' in await page.locator('#terminal-composer-text').input_value()
+        assert await page.locator('#terminal-composer-insert').is_disabled()
         await page.locator('#terminal-composer-close').click()
         await page.locator('#terminal-composer-open').click()
         assert await page.locator('#terminal-composer-receipts li').count() == 1
@@ -176,7 +177,7 @@ async def check_attachments(playwright):
         assert all(not session.pty.written for owned in sessions for session in owned)
         await page.locator('#terminal-composer-receipts button').first.click()
         draft = await page.locator('#terminal-composer-text').input_value()
-        assert draft.startswith('keep my prompt\nC:/owned-') and 'photo.png' in draft
+        assert draft.startswith('keep my prompt\n附件："C:/owned-') and 'photo.png' in draft
         assert all(not session.pty.written for owned in sessions for session in owned)
         assert '尚未插入' in await page.locator('#terminal-composer-state').inner_text()
         assert not errors
@@ -194,7 +195,6 @@ async def check_target_switch(playwright):
         await page.locator('#terminal-composer-text').fill('A draft stays A')
         await page.locator('#terminal-composer-files-input').set_input_files({'name': 'A.pdf', 'mimeType': 'application/pdf', 'buffer': b'owned A pdf'})
         await page.evaluate('composerMode="gated"')
-        await page.locator('#terminal-composer-upload').click()
         await page.wait_for_function('window.composerEntered===true')
         await page.evaluate('''sid=>{
           const remote=[...smaWorkspace.connections.values()].find(host=>host.config.code==='profile-room-1');
@@ -215,7 +215,7 @@ async def check_target_switch(playwright):
         await page.locator('#terminal-composer-close').click()
         await page.evaluate('sid=>smaWorkspace.openHostSession("local",sid,false)', sessions[0][0].id)
         await page.locator('#terminal-composer-open').click()
-        assert await page.locator('#terminal-composer-text').input_value() == 'A draft stays A'
+        assert (await page.locator('#terminal-composer-text').input_value()).startswith('A draft stays A\n附件：')
         assert await page.locator('#terminal-composer-receipts li').count() == 1
         assert all(not session.pty.written for owned in sessions for session in owned)
         assert not errors
@@ -233,7 +233,6 @@ async def check_cancel(playwright):
         await page.locator('#terminal-composer-text').fill('preserved on cancellation')
         await page.locator('#terminal-composer-files-input').set_input_files({'name': 'cancel.pdf', 'mimeType': 'application/pdf', 'buffer': b'owned cancel'})
         await page.evaluate('composerMode="gated"')
-        await page.locator('#terminal-composer-upload').click()
         await page.wait_for_function('window.composerEntered===true')
         await page.locator('#terminal-composer-cancel').click()
         await page.wait_for_function('!SuperMonoTerminalComposer.busy')
@@ -267,9 +266,10 @@ async def check_missing_api(playwright):
         await page.locator('#terminal-composer-files-input').set_input_files({'name': 'pending.pdf', 'mimeType': 'application/pdf', 'buffer': b'owned'})
         assert await page.locator('#terminal-composer-upload').is_disabled()
         assert '缺少' in await page.locator('#terminal-composer-capability').inner_text()
-        assert not await page.locator('#terminal-composer-insert').is_disabled()
+        assert await page.locator('#terminal-composer-insert').is_disabled()
         await page.locator('#terminal-composer-files button').click()
         assert await page.locator('#terminal-composer-files li').count() == 0
+        assert not await page.locator('#terminal-composer-insert').is_disabled()
         assert all(not session.pty.written for owned in sessions for session in owned)
         assert not errors
 
@@ -294,12 +294,13 @@ async def check_selection_limits(playwright):
         assert await page.locator('#terminal-composer-files li').count() == 0
         assert '64 MiB' in await page.locator('#terminal-composer-state').inner_text()
         await page.evaluate('chooseComposerFixture([{name:"boundary.pdf",size:64*1024*1024,webkitRelativePath:""}])')
-        assert await page.locator('#terminal-composer-files li').count() == 1
+        await page.wait_for_function('document.querySelectorAll("#terminal-composer-receipts li").length===1')
+        assert await page.evaluate('composerCalls.length===1&&composerReadCount===0')
         await page.evaluate('chooseComposerFixture(Array.from({length:31},(_,i)=>({name:"small-"+i+".png",size:1,webkitRelativePath:""})))')
-        assert await page.locator('#terminal-composer-files li').count() == 32
+        await page.wait_for_function('document.querySelectorAll("#terminal-composer-receipts li").length===32')
         await page.evaluate('chooseComposerFixture([{name:"extra.pdf",size:1,webkitRelativePath:""}])')
-        assert await page.locator('#terminal-composer-files li').count() == 32
-        assert await page.evaluate('composerCalls.length===0&&composerReadCount===0')
+        await page.wait_for_function('document.querySelectorAll("#terminal-composer-receipts li").length===33')
+        assert await page.evaluate('composerCalls.length===3&&composerReadCount===0')
         assert all(not session.pty.written for owned in sessions for session in owned)
         assert not errors
 
@@ -352,7 +353,6 @@ async def check_pending(playwright):
         await page.locator('#terminal-composer-text').fill('keep pending draft')
         await page.locator('#terminal-composer-files-input').set_input_files({'name': 'pending.pdf', 'mimeType': 'application/pdf', 'buffer': b'owned queued'})
         await page.evaluate('composerMode="queued"')
-        await page.locator('#terminal-composer-upload').click()
         await page.wait_for_function('!SuperMonoTerminalComposer.busy')
         assert await page.locator('#terminal-composer-receipts li').count() == 0
         assert '待目标确认' in await page.locator('#terminal-composer-files').inner_text()
@@ -364,14 +364,13 @@ async def check_pending(playwright):
         await page.locator('#terminal-composer-close').click()
         await page.locator('#terminal-composer-open').click()
         assert '不会再次上传' in await page.locator('#terminal-composer-state').inner_text()
-        await page.locator('#terminal-composer-files-input').set_input_files({'name': 'next.docx', 'mimeType': 'application/octet-stream', 'buffer': b'owned next'})
         await page.evaluate('composerMode="success"')
-        await page.locator('#terminal-composer-upload').click()
+        await page.locator('#terminal-composer-files-input').set_input_files({'name': 'next.docx', 'mimeType': 'application/octet-stream', 'buffer': b'owned next'})
         await page.wait_for_function('!SuperMonoTerminalComposer.busy')
         assert await page.evaluate('composerCalls.map(call=>call.names)') == [['pending.pdf'], ['next.docx']]
-        assert await page.locator('#terminal-composer-receipts li').count() == 1
+        assert await page.locator('#terminal-composer-receipts li').count() == 1, await page.locator('#terminal-composer').inner_text()
         assert await page.locator('#terminal-composer-files li').count() == 1
-        assert await page.locator('#terminal-composer-text').input_value() == 'keep pending draft'
+        assert (await page.locator('#terminal-composer-text').input_value()).startswith('keep pending draft\n附件：')
         assert all(not session.pty.written for owned in sessions for session in owned)
         assert not errors
 
@@ -387,7 +386,6 @@ async def check_committed_cancel(playwright):
         await page.locator('#terminal-composer-open').click()
         await page.locator('#terminal-composer-files-input').set_input_files({'name': 'committed.png', 'mimeType': 'image/png', 'buffer': b'owned png'})
         await page.evaluate('composerMode="queued-cancel"')
-        await page.locator('#terminal-composer-upload').click()
         await page.wait_for_function('window.composerCommitted===true')
         assert await page.locator('#terminal-composer-receipts li').count() == 0
         assert '等待目标保存确认' in await page.locator('#terminal-composer-state').inner_text()
@@ -432,7 +430,6 @@ def test_lost_finish_ack_holds_attachment_without_claiming_committed_or_allowing
             await page.locator('#terminal-composer-open').click()
             await page.locator('#terminal-composer-files-input').set_input_files({'name':'unknown.pdf','mimeType':'application/pdf','buffer':b'owned'})
             await page.evaluate('composerMode="unknown-commit"')
-            await page.locator('#terminal-composer-upload').click()
             await page.wait_for_function('!SuperMonoTerminalComposer.busy')
             assert '提交结果待确认' in await page.locator('#terminal-composer-state').inner_text()
             assert '中继已暂存' not in await page.locator('#terminal-composer-files').inner_text()
@@ -462,17 +459,17 @@ def test_public_paste_clipboard_and_add_files_use_captured_editor_draft():
             assert await page.locator('#terminal-composer-text').input_value() == 'one NEW three'
             assert await page.evaluate('nativeReads') == 1
             assert await page.evaluate('SuperMonoTerminalComposer.addFiles([new File(["pdf"],"queued.pdf")])') is True
-            assert await page.locator('#terminal-composer-files li').count() == 1
+            await page.wait_for_function('document.querySelectorAll("#terminal-composer-receipts li").length===1')
             await page.evaluate('''()=>{
               pywebview.api.clipboard_has_files=async()=>true;
               SuperMonoFilePaste.uploadClipboard=async options=>{nativeUploads++;return SuperMonoFilePaste.upload([new File(['image'],'native.png')],options);};
             }''')
             assert await page.evaluate('SuperMonoTerminalComposer.pasteClipboard()') is True
             assert await page.evaluate('nativeUploads') == 1
-            assert await page.locator('#terminal-composer-receipts li').count() == 1
-            assert await page.locator('#terminal-composer-files li').count() == 1
-            assert 'queued.pdf' in await page.locator('#terminal-composer-files').inner_text()
-            assert await page.locator('#terminal-composer-text').input_value() == 'one NEW three'
+            assert await page.locator('#terminal-composer-receipts li').count() == 2
+            assert await page.locator('#terminal-composer-files li').count() == 0
+            assert 'native.png' in await page.locator('#terminal-composer-text').input_value()
+            assert (await page.locator('#terminal-composer-text').input_value()).startswith('one NEW three\n附件：')
             assert all(not s.pty.written for owned in sessions for s in owned)
             assert not errors
     run(exercise)
@@ -523,7 +520,7 @@ def test_consecutive_editor_native_pastes_reach_captured_projects_through_real_b
     from supermonoagent.desktop_files import DesktopFiles
     from supermonoagent.windows_clipboard import ClipboardFiles
     from test_desktop_files_exchange import Window
-    from test_file_companion import environment
+    from test_file_companion import drop_dir, environment
     from test_file_workspace_ui import browser_page, STATIC
     import asyncio
     sources=[]
@@ -562,15 +559,17 @@ def test_consecutive_editor_native_pastes_reach_captured_projects_through_real_b
                 assert snapshots==['first.png','second.pdf']
                 await page.evaluate('releaseEditorRead()')
                 assert await page.evaluate('Promise.all([pasteA,pasteB])')==[True,True]
-                assert await page.locator('#terminal-composer-text').input_value()=='B prompt stays B'
+                text_b=await page.locator('#terminal-composer-text').input_value()
+                assert text_b.startswith('B prompt stays B\n附件：') and 'second.pdf' in text_b
                 assert await page.locator('#terminal-composer-receipts li').count()==1
                 assert 'second.pdf' in await page.locator('#terminal-composer-receipts').inner_text()
                 await page.evaluate('SuperMonoTerminalComposer.close();fixtureSelect(0);SuperMonoTerminalComposer.open()')
-                assert await page.locator('#terminal-composer-text').input_value()=='A prompt stays A'
+                text_a=await page.locator('#terminal-composer-text').input_value()
+                assert text_a.startswith('A prompt stays A\n附件：') and 'first.png' in text_a
                 assert await page.locator('#terminal-composer-receipts li').count()==1
                 assert 'first.png' in await page.locator('#terminal-composer-receipts').inner_text()
-                savedA=[p for p in (parents[0].project/'tmp').glob('*') if p.is_file()]
-                savedB=[p for p in (parents[1].project/'tmp').glob('*') if p.is_file()]
+                savedA=[p for p in drop_dir(tmp_path).glob('*') if p.is_file()]
+                savedB=[p for p in drop_dir(tmp_path,'B').glob('*') if p.is_file()]
                 assert len(savedA)==len(savedB)==1
                 assert savedA[0].read_bytes()==b'owned image' and savedB[0].read_bytes()==b'owned pdf'
                 assert not errors and all(not parent.pty_written for parent in parents)
@@ -579,3 +578,63 @@ def test_consecutive_editor_native_pastes_reach_captured_projects_through_real_b
     finally:
         bridge._close()
         if bridge._retire_thread:bridge._retire_thread.join(2)
+
+
+def test_saved_receipt_is_required_before_text_submission():
+    run(check_saved_before_text)
+
+
+async def check_saved_before_text(playwright):
+    async with fixture(playwright) as (browser, url, _endpoint, _trap, _messages, _daemons,
+                                      _ops, _windows, sessions):
+        page, errors = await prepared(browser, url)
+        await page.locator('#terminal-composer-open').click()
+        await page.locator('#terminal-composer-text').fill('long instruction and attachment paths')
+        await page.locator('#terminal-composer-files-input').set_input_files({'name': 'A.pdf', 'mimeType': 'application/pdf', 'buffer': b'owned A pdf'})
+        await page.wait_for_function('window.composerEntered===true')
+        assert await page.locator('#terminal-composer-insert').is_disabled()
+        await page.locator('#terminal-composer-insert').evaluate('button=>{button.disabled=false;button.click();}')
+        assert all(not session.pty.written for owned in sessions for session in owned)
+        await page.evaluate('composerRelease()')
+        await page.wait_for_function('!SuperMonoTerminalComposer.busy')
+        text = await page.locator('#terminal-composer-text').input_value()
+        assert text.startswith('long instruction and attachment paths\n附件：') and 'A.pdf' in text
+        assert not await page.locator('#terminal-composer-insert').is_disabled()
+        selected = await page.evaluate('smaWorkspace.activePane.raw')
+        receiver = next(session for session in sessions[0] if session.id == selected)
+        await page.locator('#terminal-composer-insert').click()
+        payload = text.replace('\n', '\r').encode()
+        bracketed = await page.evaluate('smaWorkspace.activePane.term.modes.bracketedPasteMode')
+        expected = b'\x1b[200~' + payload + b'\x1b[201~' if bracketed else payload
+        await eventually(lambda: bytes(receiver.pty.written) == expected)
+        assert not errors
+        assert all(not other.pty.written for owned in sessions for other in owned if other is not receiver)
+
+
+def test_copy_all_paths_button_copies_quoted_receipt_paths():
+    run(check_copy_all_paths)
+
+
+async def check_copy_all_paths(playwright):
+    async with fixture(playwright) as (browser, url, _endpoint, _trap, _messages, _daemons,
+                                      _ops, _windows, sessions):
+        page, errors = await prepared(browser, url)
+        await page.evaluate('''()=>{window.copiedTexts=[];Object.defineProperty(navigator,'clipboard',{configurable:true,
+          value:{writeText:async text=>{window.copiedTexts.push(text);},readText:async()=>''}});}''')
+        await page.locator('#terminal-composer-open').click()
+        assert await page.locator('#terminal-composer-copy-paths').is_disabled()
+        await page.locator('#terminal-composer-files-input').set_input_files([
+            {'name': 'one.pdf', 'mimeType': 'application/pdf', 'buffer': b'first owned pdf'},
+            {'name': 'two.png', 'mimeType': 'image/png', 'buffer': b'owned image bytes'},
+        ])
+        await page.wait_for_function('!SuperMonoTerminalComposer.busy')
+        assert await page.locator('#terminal-composer-receipts li').count() == 2
+        assert not await page.locator('#terminal-composer-copy-paths').is_disabled()
+        await page.locator('#terminal-composer-copy-paths').click()
+        await page.wait_for_function('window.copiedTexts.length===1')
+        assert await page.evaluate('window.copiedTexts[0]') == '"C:/owned-local/tmp/one.pdf" "C:/owned-local/tmp/two.png"'
+        assert '已复制 2 个附件完整路径' in await page.locator('#terminal-composer-state').inner_text()
+        text = await page.locator('#terminal-composer-text').input_value()
+        assert '附件："C:/owned-local/tmp/one.pdf"' in text and 'two.png' in text
+        assert not errors
+        assert all(not session.pty.written for owned in sessions for session in owned)

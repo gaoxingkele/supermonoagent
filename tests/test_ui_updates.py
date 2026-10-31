@@ -1,4 +1,4 @@
-﻿"""Real OpenSSL publisher signatures, Windows built-in CNG verification and atomic stores."""
+"""Real OpenSSL publisher signatures, Windows built-in CNG verification and atomic stores."""
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import copy
@@ -88,11 +88,12 @@ class UiUpdatesTest(unittest.TestCase):
 
     def test_signed_expiry_future_schema_sequence_native_and_allowlist_rejections(self):
         mutations=[lambda p:p.update(expires=p['created']-1),lambda p:p.update(created=int(time.time())+301,expires=int(time.time())+86400),lambda p:p.update(schema=True),lambda p:p.update(sequence=True),lambda p:p.update(revision='../escape'),lambda p:p['artifacts']['desktop'].update(native_api=U.NATIVE_API+1),lambda p:p['artifacts']['desktop']['files'].update({'update-trust.json':{'size':0,'sha256':'0'*64}}),lambda p:p['artifacts']['desktop'].update(size=U.MAX_ARCHIVE+1),lambda p:p['artifacts']['desktop']['files']['workspace.js'].update(size=U.MAX_FILE+1)]
-        for mutate in mutations:
-            with self.subTest(mutate=mutate):
+        now=int(time.time())
+        for mutation, mutate in enumerate(mutations):
+            with self.subTest(mutation=mutation):
                 raw,_,_,_=self.candidate(mutate=mutate)
                 with self.assertRaises(U.UpdateError):
-                    U.verify_envelope(raw,self.trust,'desktop')
+                    U.verify_envelope(raw,self.trust,'desktop',now=now)
 
     def test_api2_defaults_reject_legacy_and_explicit_api_parameter_is_preserved(self):
         self.assertEqual(U.NATIVE_API,2)

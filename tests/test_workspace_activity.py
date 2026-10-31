@@ -51,6 +51,14 @@ async def _check_activity(playwright, edge):
                     assert await second.get_attribute('data-state') == 'waiting'
                     assert await first.locator('.session-dot').evaluate('(el)=>({color:getComputedStyle(el).backgroundColor,animation:getComputedStyle(el).animationName})') == {'color':'rgb(94, 220, 139)', 'animation':'workspace-session-pulse'}
                     await page.screenshot(path=str(out / 'live-green-quiet-yellow.png'))
+                    await page.locator('#window-order').click()
+                    assert await page.locator('#tree').get_attribute('data-order') == 'hot'
+                    assert await page.locator('#tree .computer-tree').count() == 0
+                    sessions[1].pty.inbox.put(b'Newest quiet window output\r\n')
+                    await page.wait_for_function('id=>document.querySelector("#tree .session-row").dataset.session===id', arg=sessions[1].id)
+                    await page.locator('#window-order').click()
+                    assert await page.locator('#tree .computer-tree').count() == 1
+                    assert await page.locator('#window-order').get_attribute('aria-pressed') == 'false'
                     await page.emulate_media(reduced_motion='reduce')
                     assert await first.locator('.session-dot').evaluate('(el)=>getComputedStyle(el).animationName') == 'none'
                     await page.wait_for_function('id=>document.querySelector(`[data-session="${id}"].session-row`).dataset.state==="waiting"', arg=sessions[0].id)

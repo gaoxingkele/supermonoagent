@@ -16,7 +16,7 @@ from websockets.exceptions import ConnectionClosed
 from supermonoagent.protocol import (OP_HELLO, OP_HELLO_OK, OP_INPUT_SESSION, OP_OUTPUT,
                                      OP_SUBSCRIBE, pack, pack_json, unpack_json)
 from supermonoagent.relay import Relay
-from supermonoagent.relay_bridge import RelayBridge, socket_url, ensure_running
+from supermonoagent.relay_bridge import RelayBridge, socket_url, ensure_running, _local_health
 from supermonoagent.defaults import DEFAULT_RELAY
 from supermonoagent.web import text_response
 from test_client_integration import isolated_host, receive_op, barrier
@@ -94,6 +94,11 @@ class StartupTest(unittest.TestCase):
             self.assertIsNone(ensure_running("http://127.0.0.1:6769", self.state))
             health.assert_not_called()
             process.assert_not_called()
+
+    def test_health_timeout_is_not_evidence_of_an_occupied_port(self):
+        with patch("http.client.HTTPConnection") as connection:
+            connection.return_value.request.side_effect = TimeoutError()
+            self.assertEqual(_local_health(6791), (False, None))
 
     def test_invalid_targets_or_missing_credentials_never_probes_or_spawns(self):
         with patch("supermonoagent.relay_bridge._local_health") as health, patch("subprocess.Popen") as process:

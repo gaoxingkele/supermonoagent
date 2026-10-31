@@ -199,6 +199,23 @@ def test_epoch_snapshot_does_not_reinterpret_earlier_grids_and_legacy_is_unchang
     assert b'FIRST-GRIDSECOND-GRIDTHIRD-GRID' in pump.snapshot()
 
 
+def test_empty_resized_epoch_snapshot_retains_bounded_previous_history():
+    pump = OutputPump()
+    pump.mark_grid(100, 28)
+    stream = b'\x1b[H\x1b[2JPREVIOUS-GRID\r\n'
+    pump.remember(stream)
+    legacy = pump.snapshot()
+    pump.begin_resize()
+    pump.mark_grid(80, 24)
+    assert not pump._epoch_ring
+    data, end, context = pump.history_snapshot_position()
+    assert b'PREVIOUS-GRID' in data
+    assert end == len(stream) and context['partial'] and context['reason'] == 'resize_boundary'
+    data, _, context = pump.history_resume_position(0, 0, pump.stream_id)
+    assert b'PREVIOUS-GRID' in data and context['kind'] == 'snapshot'
+    assert pump.snapshot() == legacy
+
+
 def test_preexisting_unlabelled_bytes_are_not_guessed_into_the_current_grid():
     pump = OutputPump()
     pump.remember(b'old unknown grid')
@@ -536,3 +553,28 @@ async def _real_resume_checks():
         frame = daemon.hub._session_snapshot(client, session)
         daemon.hub.detach(client.key)
         assert await daemon.snapshot_supplement(client, frame) is None
+
+
+def test_chunked_snapshot_preserves_order_commit_and_legacy_budget():
+    hub, client, session = hub_fixture()
+    client.history_resume = True
+    client.history_chunks = True
+    source = ''.join(f'HISTORY_ROW_{index:06d}\r\n' for index in range(60000)).encode()
+    session.pump.remember(source)
+    expected = session.pump.history_snapshot_position()[0]
+    frames = hub._session_snapshot_frames(client, session)
+    decoded = [unpack_history_context(unpack(frame)[1]) for frame in frames]
+    assert len(frames) > 2 and len(frames) <= 16
+    assert decoded[0][1]['kind'] == 'snapshot'
+    assert all(item[1]['kind'] == 'resume' for item in decoded[1:])
+    assert decoded[-1][2] == b''
+    assert decoded[-1][1]['end_position'] == session.pump.position()
+    assert b''.join(item[2] for item in decoded) == expected
+    positions = [item[1]['end_position'] for item in decoded]
+    assert positions == sorted(positions)
+    assert client.feed_offsets[session.id] == session.pump.position()
+    client.history_chunks = False
+    legacy = hub._session_snapshot_frames(client, session)
+    assert len(legacy) == 1
+    _, context, data = unpack_history_context(unpack(legacy[0])[1])
+    assert context['kind'] == 'snapshot' and context['partial'] and len(data) < len(expected)

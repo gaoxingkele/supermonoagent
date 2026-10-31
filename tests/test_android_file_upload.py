@@ -1,4 +1,5 @@
 """Android attachments reach the owned project through the file broker, without OP21."""
+import asyncio
 from pathlib import Path
 from urllib.parse import quote
 import json
@@ -7,7 +8,7 @@ import pytest
 from websockets.asyncio.server import serve
 
 from supermonoagent import web
-from test_file_companion import environment
+from test_file_companion import drop_dir, environment
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,8 +24,14 @@ def test_android_file_and_image_upload_without_op21(tmp_path):
 
 
 async def check_upload(playwright, tmp_path):
-    async with environment(tmp_path) as (broker, _url, parents, _companions):
+    async with environment(tmp_path) as (broker, _url, parents, companions):
         parent = parents[0]
+        release = asyncio.Event()
+        deliver = companions[0]._deliver
+        async def gated(job, generation):
+            await release.wait()
+            return await deliver(job, generation)
+        companions[0]._deliver = gated
         async def http(connection, request):
             path = request.path.split('?', 1)[0]
             if path.startswith('/mobile/'):
@@ -74,16 +81,21 @@ async def check_upload(playwright, tmp_path):
                         {'name': 'android-image.png', 'mimeType': 'image/png', 'buffer': image},
                         {'name': 'android-document.pdf', 'mimeType': 'application/pdf', 'buffer': document_bytes},
                     ])
-                    await page.wait_for_function("document.getElementById('upload-files').disabled===false")
-                    await page.locator('#upload-files').click()
+                    await page.wait_for_function("document.getElementById('attachment-status').textContent.includes('等待目标保存确认')", timeout=20000)
+                    assert await page.locator('#send').is_disabled()
+                    assert await page.locator('#quick-send').is_disabled()
+                    await page.evaluate("document.getElementById('send').disabled=false;document.getElementById('send').click()")
+                    assert all(not parent.pty_written for parent in parents)
+                    release.set()
                     await page.wait_for_function("document.getElementById('attachment-status').textContent.includes('路径已加入草稿')", timeout=20000)
-                    saved = [path for path in (parents[0].project / 'tmp').glob('*') if path.is_file()]
+                    assert not await page.locator('#send').is_disabled()
+                    saved = [path for path in drop_dir(tmp_path).glob('*') if path.is_file()]
                     assert len(saved) == 2
                     for name, data in [('android-image.png', image), ('android-document.pdf', document_bytes)]:
                         match = next(path for path in saved if path.name.endswith('-' + name))
                         assert match.read_bytes() == data
                         assert match.name in await page.locator('#draft').input_value()
-                    assert not (parents[1].project / 'tmp').exists()
+                    assert not (tmp_path / 'drop-B').exists()
                     assert all(not parent.pty_written for parent in parents)
                     assert any(url.endswith('/file/ws') for url in sockets)
                     assert not errors, errors
@@ -91,4 +103,5 @@ async def check_upload(playwright, tmp_path):
                     artifacts.mkdir(parents=True, exist_ok=True)
                     await page.screenshot(path=str(artifacts / 'saved.png'))
                 finally:
+                    release.set()
                     await browser.close()

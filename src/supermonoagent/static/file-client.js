@@ -109,7 +109,8 @@
       const ws=socket,generation=epoch,id=prefix+'_'+(++sequence).toString(36);
       const raw=JSON.stringify({type:'request',id,action,session,data:copied});
       return new Promise((resolve,reject)=>{
-        const timer=setTimeout(()=>{if(pending.delete(id))reject(new FileClientError('request_timeout'));},TIMEOUT);
+        const timeout=['library.pull','library.commit'].includes(action)?180000:TIMEOUT;
+        const timer=setTimeout(()=>{if(pending.delete(id))reject(new FileClientError('request_timeout'));},timeout);
         pending.set(id,{resolve,reject,timer});
         try{if(ws!==socket||generation!==epoch)fail('disconnected');ws.send(raw);}
         catch{disconnect('disconnected',ws,generation);}

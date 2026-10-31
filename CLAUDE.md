@@ -25,7 +25,7 @@ Windows 桌面窗口（WebView2，不开系统浏览器）：
 
 ## 布局
 
-- `src/supermonoagent/web.py` 桌面。每个 CLI 是一张可拖动、可拉伸、可最大化和最小化的子窗口，按 z 序叠放。只有点中的那张接收键盘，其余继续收自己的输出。顶部「窗口」菜单排列当前 Project 里没有最小化的窗口：层叠 Ctrl+Alt+L，横向平铺 Ctrl+Alt+H，纵向平铺 Ctrl+Alt+V，网格平铺 Ctrl+Alt+G。顶栏左边有「收起菜单 / 展开菜单」，收起后按钮留在侧栏右边。窄屏上顶栏默认收起，点「展开菜单」打开，点进终端会再藏起来；侧栏点「侧栏 / 收起」开合，当前窗口铺满可视区域。`?shell=desktop` 时终端用 WebGL 画字形，中文宽度走 Unicode 11，字体用 Cascadia Mono。
+- `src/supermonoagent/web.py` 桌面。每个 CLI 是一张可拖动、可拉伸、可最大化和最小化的子窗口，按 z 序叠放。只有点中的那张接收键盘，其余继续收自己的输出。顶部「窗口」菜单排列当前 Project 里没有最小化的窗口：层叠 Ctrl+Alt+L，横向平铺 Ctrl+Alt+H，纵向平铺 Ctrl+Alt+V，网格平铺 Ctrl+Alt+G。顶栏左边有「收起菜单 / 展开菜单」，收起后按钮留在侧栏右边。窄屏上顶栏默认收起，点「展开菜单」打开，点进终端会再藏起来；侧栏默认按电脑—窗口分组，「热模式」按新输出排序；点「侧栏 / 收起」开合，当前窗口铺满可视区域。`?shell=desktop` 时终端用 WebGL 画字形，中文宽度走 Unicode 11，字体用 Cascadia Mono。
 - `src/supermonoagent/desktop.py` Windows 桌面窗口。用 WebView2 打开同一张页面，不替换网页，也不把协议改成 Electron。
 - `src/supermonoagent/hub.py` 窗口、分组和 CLI。分组有名称和频道。直连窗口只收到自己这条 CLI 的原始输出。中继客户端订阅一个频道，只收该频道里打开的窗口，帧头带会话号，页面先剥掉再画。命令行预设和分组存在 `%USERPROFILE%\.supermonoagent\desktop.json`。
 - `src/supermonoagent/daemon.py` 主机。网页每个连接自己选窗口。可以同时向外连接多台中继，列表在 `%USERPROFILE%\.supermonoagent\relays.json`。每台中继上的手机单独编号。

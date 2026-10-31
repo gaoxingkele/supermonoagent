@@ -10,12 +10,12 @@
   const style=node('style');style.id='terminal-composer-style';
   style.textContent=`#terminal-composer-open{flex:none;white-space:nowrap;font-size:10px}footer:has(>#terminal-composer-open){min-width:0;overflow-x:auto}#terminal-composer{width:620px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);padding:18px;overflow:auto;overflow-wrap:anywhere}#terminal-composer h2{font-size:16px;overflow-wrap:anywhere;line-height:1.5}#terminal-composer label{display:block;margin:10px 0 5px}#terminal-composer-text{box-sizing:border-box;width:100%;min-width:0;max-width:100%;min-height:120px;height:220px;max-height:40dvh;resize:vertical;border:1px solid #555;border-radius:5px;padding:9px;background:#141414;color:inherit;font:inherit;font-size:13px;line-height:1.6;white-space:pre-wrap;overflow:auto}#terminal-composer .composer-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}#terminal-composer input[type=file]{max-width:100%;min-width:0;width:100%}#terminal-composer-files,#terminal-composer-receipts{list-style:none;padding:0;margin:8px 0;max-height:160px;overflow:auto}#terminal-composer li{display:flex;gap:6px;align-items:center;min-width:0;padding:4px 0;border-bottom:1px solid #383838}#terminal-composer li>span{flex:1;min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}#terminal-composer li>button{flex:none;font-size:11px}#terminal-composer p{margin:8px 0;font-size:12px;line-height:1.5;white-space:pre-wrap}#terminal-composer-state{color:#ddd}#terminal-composer-progress{width:100%;height:10px}#terminal-composer-hint,#terminal-composer-capability{color:#aaa}@media(max-width:600px){#terminal-composer{padding:13px}#terminal-composer-text{height:170px;min-height:90px}#terminal-composer-files,#terminal-composer-receipts{max-height:110px}}`;
   document.head.append(style);
-  const openButton=button('terminal-composer-open','编辑');openButton.title='编辑文本与附件';toolbar.prepend(openButton);
-  const dialog=node('dialog');dialog.id='terminal-composer';dialog.setAttribute('aria-label','编辑文本与附件');
-  const heading=node('h2','编辑文本与附件'),label=node('label','多行文本');label.htmlFor='terminal-composer-text';
+  const openButton=button('terminal-composer-open','指令 / 附件');openButton.title='编辑长指令，选择多个文件或图片一起提交';toolbar.prepend(openButton);
+  const dialog=node('dialog');dialog.id='terminal-composer';dialog.setAttribute('aria-label','编辑长指令与附件');
+  const heading=node('h2','编辑长指令与附件'),label=node('label','多行长指令');label.htmlFor='terminal-composer-text';
   const textarea=node('textarea');textarea.id='terminal-composer-text';textarea.rows=8;textarea.spellcheck=false;
-  textarea.placeholder='自由编辑多行文本；支持正常 Ctrl+V';
-  const hint=node('p','编辑后粘贴到当前终端，不额外按 Enter；提交行为由终端程序决定。草稿会保留。');hint.id='terminal-composer-hint';
+  textarea.placeholder='输入长指令；支持正常 Ctrl+V、多文件和图片';
+  const hint=node('p','附件选择后立即上传，目标电脑确认保存后才允许提交文本；附件保存到目标电脑 D:\\aicoding\\supermonoagent\\tmp（无 D 盘时为 C 盘对应目录），完整路径自动加入草稿，也可一键复制。文本通过终端粘贴提交，不额外按 Enter。');hint.id='terminal-composer-hint';
   const paste=button('terminal-composer-paste','粘贴文本'),fileLabel=node('label','选择附件（每批最多 32 个，每个不超过 64 MiB）');
   const picker=node('input');picker.id='terminal-composer-files-input';picker.type='file';picker.multiple=true;picker.hidden=true;fileLabel.htmlFor=picker.id;
   const chooseFiles=button('terminal-composer-choose-files','选择文件'),chooseImages=button('terminal-composer-choose-images','选择图片');
@@ -24,8 +24,9 @@
   const progress=node('progress');progress.id='terminal-composer-progress';progress.max=100;progress.value=0;progress.hidden=true;
   const state=node('p');state.id='terminal-composer-state';state.setAttribute('role','status');state.setAttribute('aria-live','polite');
   const upload=button('terminal-composer-upload','上传附件'),cancel=button('terminal-composer-cancel','取消上传'),insert=button('terminal-composer-insert','插入输入行'),close=button('terminal-composer-close','关闭');
+  const copyPaths=button('terminal-composer-copy-paths','复制全部路径');
   insert.className='primary';
-  const actions=node('div');actions.className='composer-actions';actions.append(paste,chooseFiles,chooseImages,upload,cancel,insert,close);
+  const actions=node('div');actions.className='composer-actions';actions.append(paste,chooseFiles,chooseImages,upload,cancel,copyPaths,insert,close);
   dialog.append(heading,label,textarea,hint,fileLabel,picker,files,receipts,capability,progress,state,actions);document.body.append(dialog);
   const drafts=[],transfers=new Set();let current=null,inflight=null,nextFile=0,destroyed=false,openError='',listDraft=null,listSignature='';
   function windowOf(host,session){return host.catalog?.find(win=>(win.sessions||[]).some(item=>item.id===session));}
@@ -68,31 +69,43 @@
   function usableUpload(target){return live(target)&&!!target.bound&&typeof target.api?.upload==='function'&&typeof target.api?.captureTarget==='function'&&typeof target.api?.isCurrent==='function';}
   function receipt(value){return value&&plain(value.name,256)&&plain(value.path,4096)&&!value.path.includes('://')
     &&Number.isSafeInteger(value.size)&&value.size>=0&&typeof value.sha256==='string'&&/^[a-fA-F0-9]{64}$/.test(value.sha256);}
+  function appendPaths(draft,values){
+    const added=values.filter(value=>!draft.text.includes(value.path));
+    if(!added.length)return;
+    if(current?.draft===draft)remember();
+    draft.text+=(draft.text&&!draft.text.endsWith('\n')?'\n':'')+added.map(value=>'附件：'+JSON.stringify(value.path)).join('\n');draft.revision++;
+    if(current?.draft===draft)textarea.value=draft.text;
+  }
   function adopt(draft,values){
+    const added=[];
     for(const value of values||[]){
       if(!receipt(value))continue;
-      if(!draft.receipts.some(old=>old.path===value.path&&old.sha256===value.sha256))draft.receipts.push(Object.freeze({name:value.name,path:value.path,size:value.size,sha256:value.sha256}));
+      if(!draft.receipts.some(old=>old.path===value.path&&old.sha256===value.sha256)){draft.receipts.push(Object.freeze({name:value.name,path:value.path,size:value.size,sha256:value.sha256}));added.push(value);}
     }
+    appendPaths(draft,added);
   }
   function render(){
-    const ctx=current,draft=ctx?.draft,target=ctx?.target;
-    insert.disabled=!ctx||!canInsert(target)||!draft.text||draft.inserted===draft.revision;
-    paste.disabled=!ctx;picker.disabled=!ctx||inflight?.draft===draft;chooseFiles.disabled=chooseImages.disabled=picker.disabled;
-    upload.disabled=!ctx||!!inflight||!draft.files.some(item=>!item.pending&&!item.nativeClipboard)||!usableUpload(target)||!active(target);
+    const ctx=current,draft=ctx?.draft,target=ctx?.target,uploading=[...transfers].some(item=>item.draft===draft);
+    insert.disabled=!ctx||!canInsert(target)||!draft.text||draft.inserted===draft.revision||!!draft.files.length||uploading;
+    insert.textContent=uploading?'等待附件保存':draft?.files.length?'请先处理附件':'提交文本';
+    insert.title='附件必须先收到目标电脑的保存回执；文本通过终端粘贴提交，不额外按 Enter。';
+    paste.disabled=!ctx;picker.disabled=!ctx||uploading;chooseFiles.disabled=chooseImages.disabled=picker.disabled;
+    upload.disabled=!ctx||uploading||!draft.files.some(item=>!item.pending&&!item.nativeClipboard)||!usableUpload(target)||!active(target);
     cancel.disabled=!inflight||inflight.controller.signal.aborted;
-    capability.textContent=ctx&&!usableUpload(target)?'附件上传不可用：当前客户端缺少目标绑定上传入口，或目标连接已变化。文本草稿仍保留。':'附件仅上传保存到目标目录；不会自动导入模型。';
+    copyPaths.disabled=!draft?.receipts.length;
+    capability.textContent=ctx&&!usableUpload(target)?'附件上传不可用：当前客户端缺少目标绑定上传入口，或目标连接已变化。文本草稿仍保留。':'选择后自动上传；目标电脑确认保存后才允许提交文本，附件路径自动加入草稿。';
     if(ctx&&!active(target))capability.textContent+=' 当前活动窗口已变化；返回此窗口或重新选择编辑目标后再插入。';
-    const signature=JSON.stringify([(draft?.files||[]).map(item=>[item.id,item.pending,item.pendingFileId,item.pendingUploadId,item.unknownCommit]),(draft?.receipts||[]).map(item=>[item.path,item.sha256]),inflight?.draft===draft]);
+    const signature=JSON.stringify([(draft?.files||[]).map(item=>[item.id,item.pending,item.pendingFileId,item.pendingUploadId,item.unknownCommit,item.failed]),(draft?.receipts||[]).map(item=>[item.path,item.sha256]),uploading]);
     if(listDraft!==draft||listSignature!==signature){listDraft=draft;listSignature=signature;files.replaceChildren();receipts.replaceChildren();
     for(const item of draft?.files||[]){
-      const pending=item.pending?(item.unknownCommit?' · 提交结果待确认，勿重复':' · 中继已暂存，待目标确认')+(item.pendingFileId?' · 任务 '+item.pendingFileId:item.pendingUploadId?' · 上传 '+item.pendingUploadId:''):item.nativeClipboard?' · 原生附件未完成，请重新复制后粘贴':'';
+      const pending=item.pending?(item.unknownCommit?' · 提交结果待确认，勿重复':' · 中继已暂存，待目标确认')+(item.pendingFileId?' · 任务 '+item.pendingFileId:item.pendingUploadId?' · 上传 '+item.pendingUploadId:''):item.failed?' · 上传失败，可重试或移除':item.nativeClipboard?' · 原生附件未完成，请重新复制后粘贴':'';
       const row=node('li'),name=node('span',item.file.name+' · '+item.file.size+' 字节'+pending),remove=button('',item.pending?'待确认':'移除');
-      remove.removeAttribute('id');remove.disabled=inflight?.draft===draft||item.pending===true;
+      remove.removeAttribute('id');remove.disabled=uploading||item.pending===true;
       remove.onclick=()=>{draft.files=draft.files.filter(value=>value!==item);render();};row.append(name,remove);files.append(row);
     }
     for(const saved of draft?.receipts||[]){
       const row=node('li'),name=node('span','已保存: '+saved.path),add=button('','路径加到草稿');add.removeAttribute('id');
-      add.onclick=()=>{if(!current||current.draft!==draft)return;remember();draft.text+=(draft.text&&!draft.text.endsWith('\n')?'\n':'')+saved.path;draft.revision++;textarea.value=draft.text;draft.message='路径已加到草稿，尚未插入终端或导入模型。';render();};
+      add.onclick=()=>{if(!current||current.draft!==draft)return;appendPaths(draft,[saved]);draft.message='附件路径已在草稿中，尚未插入终端或导入模型。';render();};
       row.append(name,add);receipts.append(row);
     }
     }
@@ -136,7 +149,8 @@
     if(chosen.some(file=>!plain(file.name,256)||!Number.isSafeInteger(file.size)||file.size<0||file.size>64*1024*1024||file.webkitRelativePath)){
       draft.message='请选择普通文件；每个文件不超过 64 MiB，暂不支持整个文件夹。';render();return false;
     }
-    draft.files.push(...chosen.map(file=>({id:++nextFile,file})));draft.message='已选择附件，尚未上传保存。';render();return true;
+    draft.files.push(...chosen.map(file=>({id:++nextFile,file})));draft.message='正在准备附件；收到保存回执前不会发送文本。';render();
+    const ctx=current;queueMicrotask(()=>{if(current===ctx&&dialog.open)startUpload(false,ctx);});return true;
   }
   chooseFiles.onclick=()=>{picker.accept='';picker.click();};
   chooseImages.onclick=()=>{picker.accept='image/*';picker.click();};
@@ -148,13 +162,14 @@
     event.preventDefault();event.stopImmediatePropagation();
     const ctx=current;
     if(!ctx||!active(ctx.target)){if(ctx){ctx.draft.message='目标窗口已变化，请重新选择后再粘贴附件。';render();}return;}
-    if(selected.length&&!addFiles(selected))return;
-    startUpload(selected.length===0,ctx);
+    if(selected.length){addFiles(selected);return;}
+    startUpload(true,ctx);
   });
   picker.addEventListener('change',()=>{const chosen=[...(picker.files||[])];picker.value='';addFiles(chosen);});
-  async function startUpload(native=false,ctx=current){
-    if(!ctx||(!native&&inflight)||transfers.size>=32||!usableUpload(ctx.target)||!active(ctx.target)||(!native&&!ctx.draft.files.some(item=>!item.pending&&!item.nativeClipboard)))return false;
-    const transfer={target:ctx.target,draft:ctx.draft,native,files:native?[]:ctx.draft.files.filter(item=>!item.pending&&!item.nativeClipboard),controller:new AbortController(),saved:new Set(),phase:'',index:0,pendingId:null};transfers.add(transfer);if(!inflight)inflight=transfer;
+  async function startUpload(native=false,ctx=current,retry=false){
+    const eligible=item=>!item.pending&&!item.nativeClipboard&&(retry||!item.failed);
+    if(!ctx||transfers.size>=32||[...transfers].some(item=>item.draft===ctx.draft)||!usableUpload(ctx.target)||!active(ctx.target)||(!native&&!ctx.draft.files.some(eligible)))return false;
+    const transfer={target:ctx.target,draft:ctx.draft,native,files:native?[]:ctx.draft.files.filter(eligible),controller:new AbortController(),saved:new Set(),phase:'',index:0,pendingId:null};transfers.add(transfer);if(!inflight)inflight=transfer;
     transfer.draft.message='正在上传到 '+transfer.target.machine+' / '+transfer.target.title+'…';progress.value=0;render();
     const markSaved=(value,index)=>{
       if(!receipt(value))return;
@@ -187,7 +202,7 @@
       if(!Array.isArray(values)||values.length!==transfer.files.length||values.some(value=>!receipt(value)))throw Error('目标未返回有效保存凭据。');
       values.forEach((value,index)=>markSaved(value,index));
       if(transfer.saved.size!==transfer.files.length)throw Error('目标未返回完整保存凭据。');
-      transfer.draft.message='已保存 '+values.length+' 个附件到捕获目标；'+(transfer.controller.signal.aborted?'已提交项保存完成，取消后不会继续新文件。':'')+'尚未导入模型。可将路径显式加到草稿。';
+      transfer.draft.message='已保存 '+values.length+' 个附件到捕获目标；路径已加入草稿，'+(transfer.controller.signal.aborted?'已提交项保存完成，取消后不会继续新文件。':'')+'现在可以一起提交文本。';
       return true;
     }catch(error){
       if(Array.isArray(error?.receipts))error.receipts.forEach((value,index)=>markSaved(value,index));
@@ -196,19 +211,30 @@
       const uncertain=pending&&!transfer.saved.has(pending.id)&&(pendingId||transfer.phase==='receiving'||unknownCommit);
       if(uncertain){pending.pending=true;pending.pendingFileId=pendingId;pending.unknownCommit=unknownCommit;
         if(typeof error?.pendingUploadId==='string'&&/^[a-f0-9]{48}$/.test(error.pendingUploadId))pending.pendingUploadId=error.pendingUploadId;}
+      for(const item of transfer.files)if(!transfer.saved.has(item.id)&&!item.pending)item.failed=true;
       const missing=/文件交换助手尚未安装|更新完整客户端/.test(typeof error?.message==='string'?error.message:'');
       transfer.draft.message=transfer.files.length>0&&transfer.saved.size===transfer.files.length?'附件均已收到保存确认；捕获目标状态已变化，尚未导入模型。草稿和凭据保留。':
         (transfer.saved.size?'已保存 '+transfer.saved.size+' 项；':'')+(uncertain?(unknownCommit?'提交结果待确认，勿重复；已挂起且不会再次上传，请先核对目标项目 tmp。':'另有文件已中继暂存但未获目标保存确认，已挂起且不会再次上传。请核对任务状态。'):
         missing?'文件交换助手尚未安装，请更新完整客户端及接收机助手。':transfer.limitExceeded?'附件队列最多32项，请先移除或处理已有项目。':transfer.controller.signal.aborted?'未提交项上传已取消。':'其余附件未完成，请检查目标后台能力或连接。')+' 文本、附件记录及保存凭据均保留。';return false;
     }finally{transfers.delete(transfer);if(inflight===transfer)inflight=transfers.values().next().value||null;if(!destroyed)render();}
   }
-  upload.onclick=()=>startUpload();
+  upload.onclick=()=>startUpload(false,current,true);
+  copyPaths.onclick=async()=>{
+    const draft=current?.draft;if(!draft||!draft.receipts.length)return;
+    const text=draft.receipts.map(value=>'"'+value.path.replace(/"/g,'\\"')+'"').join(' ');
+    let copied=false;
+    try{const api=window.pywebview?.api;if(typeof api?.clipboard_write_text==='function'){await api.clipboard_write_text(text);copied=true;}}catch{}
+    if(!copied)try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(text);copied=true;}}catch{}
+    draft.message=copied?('已复制 '+draft.receipts.length+' 个附件完整路径（引号分隔一行），可粘贴到编码工具的输入框。'):'复制失败，请手动从下方已保存列表复制路径。';
+    render();
+  };
   cancel.onclick=()=>{if(inflight){for(const item of transfers)item.controller.abort();inflight.draft.message=inflight.phase==='receiving'?
     '本项已提交中继，不能撤销；正在等待目标确认，之后停止后续附件。':inflight.phase==='submitting'?
     '提交结果尚待确认；取消后不会继续后续附件，请勿重复上传。':'正在取消未提交上传；已保存项会保留。';render();}};
   insert.onclick=()=>{
     const ctx=current;if(!ctx)return;remember();
     if(!canInsert(ctx.target)){ctx.draft.message='当前活动窗口或输入能力已变化；请返回捕获窗口并检查输入权限。';render();return;}
+    if(ctx.draft.files.length||[...transfers].some(item=>item.draft===ctx.draft)){ctx.draft.message='附件尚未全部确认保存，文本未发送；请等待完成或移除失败附件。';render();return;}
     if(!ctx.draft.text||ctx.draft.inserted===ctx.draft.revision)return;
     try{ctx.target.term.paste(ctx.draft.text);ctx.draft.inserted=ctx.draft.revision;ctx.draft.message='已通过终端粘贴插入；未额外发送 Enter。草稿与附件保存凭据保留。';}
     catch{ctx.draft.message='无法插入当前输入行；草稿已保留，请检查终端连接。';}

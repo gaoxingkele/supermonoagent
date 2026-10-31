@@ -12,7 +12,7 @@
       ||typeof value.daemon_epoch!=='string'||!value.daemon_epoch||value.daemon_epoch.length>128
       ||!Number.isSafeInteger(value.revision)||value.revision<0
       ||value.session_id!==undefined&&value.session_id!==session)throw Error('文件目录回执无效。');
-    if(value.project_status==='selection_required')throw Object.assign(Error('请先在底部选择当前项目目录，附件将保存到该项目的 tmp。'),{code:'project_required'});
+    if(value.project_status==='selection_required'&&value.upload_ready!==true)throw Object.assign(Error('请先在底部选择当前项目目录，附件将保存到该项目的 tmp。'),{code:'project_required'});
     return value;
   }
   function validateSource(source){
