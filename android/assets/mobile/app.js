@@ -78,12 +78,12 @@
     if(!force&&agentModeRequest?.term===current&&agentModeRequest.mode===mode&&agentModeRequest.key===key&&agentModeRequest.hostGeneration===hostGeneration&&agentModeRequest.revision===revision)return;
     const generation=++agentModeGeneration;agentModeRequest={term:current,mode,key,hostGeneration,revision};
     const valid=()=>generation===agentModeGeneration&&term===current&&highlighter===decorator&&selected()===host&&host.generation===hostGeneration&&agentModeKey()===key&&agentModeRevision()===revision;
-    const apply=profile=>{if(!valid())return;current.options.theme={...profile.theme};decorator.setProfile(profile);$('screen').dataset.agentMode=mode;$('screen').dataset.agentPreference=preference;$('agent-mode-status').textContent=(preference==='auto'?'Auto · ':'')+profile.label;};
+    const apply=profile=>{if(!valid())return;current.options.theme={...profile.theme};current.options.cursorStyle=profile.id==='cursor-cli'?'bar':'block';decorator.setProfile(profile);$('screen').dataset.agentMode=mode;$('screen').dataset.agentPreference=preference;$('agent-mode-status').textContent=(preference==='auto'?'Auto · ':'')+profile.label;};
     if(mode==='auto'){apply(C.commonAgentProfile);return;}
     const url=new URL('agent-modes/'+mode+'.json',location.href);url.search='';url.hash='';url.searchParams.set('ui_revision',revision);
     $('agent-mode-status').textContent='Loading '+mode+'…';
     C.loadAgentProfile(url.toString(),mode).then(apply).catch(()=>{
-      if(!valid())return;current.options.theme={...C.commonAgentProfile.theme};decorator.setProfile(C.commonAgentProfile);$('screen').dataset.agentMode='auto';$('agent-mode-status').textContent='Profile unavailable · '+C.commonAgentProfile.label;
+      if(!valid())return;current.options.theme={...C.commonAgentProfile.theme};current.options.cursorStyle='block';decorator.setProfile(C.commonAgentProfile);$('screen').dataset.agentMode='auto';$('agent-mode-status').textContent='Profile unavailable · '+C.commonAgentProfile.label;
     });
   }
   $('agent-mode').disabled=true;

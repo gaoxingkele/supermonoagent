@@ -4,7 +4,7 @@
   "theme": {
     "background": "#11151b",
     "foreground": "#d6d9df",
-    "cursor": "#d6d9df",
+    "cursor": "#7ee787",
     "cursorAccent": "#11151b",
     "selectionBackground": "#344253",
     "selectionForeground": "#d6d9df",
@@ -37,7 +37,7 @@
       "color": "#e06c75"
     },
     {
-      "pattern": "\\b(?:Cursor|Agent|Composer|Apply|Applied|Files|Diff|Thinking|Working|Plan|Planning|Explored|Updated)\\b|^\\s*Review\\b",
+      "pattern": "\\bCursor\\b|^\\s*(?:Agent|Composer|Thinking|Working|Plan|Planning|Explored|Updated|Files|Diff)\\b|^\\s*Review\\b|\\b(?:Apply|Applied)\\b|\\bthinking[ \\t]*:[ \\t]*(?:max|high|medium|low)\\b|\\bcontext[ \\t]*:[ \\t]*\\d+(?:\\.\\d+)?%[ \\t]*\\([^)\\n]*\\)",
       "flags": "giu",
       "color": "#82cfff"
     },

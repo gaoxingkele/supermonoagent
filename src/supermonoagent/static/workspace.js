@@ -417,6 +417,7 @@
     const apply=profile=>{
       if(!livePane(pane)||pane.agentGeneration!==generation)return;
       pane.term.options.theme={background:'#121212',foreground:'#dedede',cursor:'#ddd',selectionBackground:'#55555588',...profile.theme};
+      pane.term.options.cursorStyle=profile.id==='cursor-cli'?'bar':'block';
       pane.highlighter.setProfile(profile);pane.agentProfile=profile.id;
       if(active===pane.sid)updateFooter();
     };

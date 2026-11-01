@@ -2,7 +2,7 @@
 
 支持“自动”、Codex、Claude Code、Grok、Kimi、pi.dev、Cursor CLI。Windows 在终端底部选择模式；Android 在终端设置中选择。选择按电脑、房间和终端分别保存，切换模式只修改显示，不发送按键、不清空终端、不重启 agent。
 
-自动模式优先使用会话提供的 agent 信息，再参考命令与标题；无法识别时使用基础高亮。对尚无明确类型的终端，也会在输出完成后有界检查最近 48 行，只有同时出现多个 Cursor CLI 界面信号时才采用 `cursor-cli`，不覆盖已有类型或手动选择。检测器延迟 750ms 合并处理，没有后台持续扫描，关闭视图时释放；窗口名本身不作为推断依据。Cursor 的 `Finished` 使用绿色，后续输入提示使用青色，编辑状态和工具命令分别使用蓝色、紫色，保留普通正文和原生 ANSI 样式。
+自动模式优先使用会话提供的 agent 信息，再参考命令与标题；无法识别时使用基础高亮。对尚无明确类型的终端，也会在输出完成后有界检查最近 48 行，只有出现成组的 Cursor CLI 界面信号时才采用 `cursor-cli`，包括 `Finished`/后续输入提示、Auto 文件统计，或同时出现的 `thinking:` 与 `context:` 状态栏；不覆盖已有类型或手动选择。检测器延迟 750ms 合并处理，没有后台持续扫描，关闭视图时释放；窗口名本身不作为推断依据。Cursor 的 `Finished` 使用绿色，后续输入提示使用青色，编辑状态和工具命令分别使用蓝色、紫色，保留普通正文和原生 ANSI 样式。
 
 ## 跨端共享配置
 
@@ -19,13 +19,13 @@
 
 格式为 `id`、`label`、`theme`、`tokens`。`theme` 控制终端背景、文字及 ANSI 调色板；`tokens` 是文本匹配规则，每条包含 `pattern`、`flags`、`color`。文件通过字段、大小、对比度与规则限制校验后才能应用。字格解析、传输、输入处理和高亮器也由两端共用。
 
-补色作用于未指定前景/背景的文字，不覆盖程序明确给出的 ANSI 前景、背景、反色和隐藏属性；真彩色值保持原样。模式并非完整的编程语言语法解析器，也不替换 agent 的交互协议。
+补色作用于未指定前景/背景的文字，不覆盖程序明确给出的 ANSI 前景、背景、反色、隐藏和暗淡属性；真彩色值保持原样。光标所在的输入段暂不加补色，避免光标寻址 TUI 把普通输入误判为结构文本；终端自己绘制的幽灵提示和输入区保留原样式。模式并非完整的编程语言语法解析器，也不替换 agent 的交互协议。
 
 ### Grok、Claude Code 与 Cursor CLI 的语义细分
 
 Grok、Claude Code 与 Cursor CLI 在共用主题上进一步区分工具调用、命令和链接：工具调用使用紫色 `#c678dd`，命令和 URL 使用青色 `#56b6c2`；Agent 与思考/搜索状态沿用蓝色，路径、字符串、数字和行内代码沿用黄色。警告使用黄色，错误使用红色，成功使用绿色。工具规则先于通用函数规则，避免 `Read(...)` 被当成普通函数着色；普通正文不整行补色。
 
-这些配置只修饰默认前景字格，不改变终端字节、原生 ANSI/真彩色、暗淡提示或输入区。Grok 额外覆盖搜索、引用及常见读写/执行工具，Claude Code 覆盖 Read、Write、Edit、MultiEdit、Bash、Task、Glob、Grep、TodoWrite、WebSearch 等工具，Cursor CLI 覆盖 Cursor、Agent、Composer、Review、Apply、Diff 等状态与同类工具。
+这些配置只修饰默认前景字格，不改变终端字节、原生 ANSI/真彩色、暗淡提示或输入区。共享主题使用绿色 `#7ee787` 光标；Windows 与 Android 在 Cursor CLI 下改用条形光标，其他模式保持块形光标。Grok 额外覆盖搜索、引用及常见读写/执行工具，Claude Code 覆盖 Read、Write、Edit、MultiEdit、Bash、Task、Glob、Grep、TodoWrite、WebSearch 等工具，Cursor CLI 覆盖行首状态、`thinking:`/`context:` 状态栏、Review、Apply、Diff 等状态与同类工具。
 
 ## 统一修改与调试
 

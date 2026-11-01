@@ -39,7 +39,7 @@
     compiledProfiles.set(profile,rules);return profile;
   }
   const commonAgentProfile=validateAgentProfile({id:'common',label:'自动',theme:{
-    background:'#11151b',foreground:'#d6d9df',cursor:'#d6d9df',cursorAccent:'#11151b',
+    background:'#11151b',foreground:'#d6d9df',cursor:'#7ee787',cursorAccent:'#11151b',
     selectionBackground:'#344253',selectionForeground:'#d6d9df',
     black:'#8b929c',red:'#e06c75',green:'#98c379',yellow:'#e5c07b',blue:'#82cfff',magenta:'#82cfff',cyan:'#82cfff',white:'#d6d9df',
     brightBlack:'#8b929c',brightRed:'#e06c75',brightGreen:'#98c379',brightYellow:'#e5c07b',brightBlue:'#82cfff',brightMagenta:'#82cfff',brightCyan:'#82cfff',brightWhite:'#d6d9df'
@@ -88,7 +88,9 @@
     if(typeof text!=='string'||!text||text.length>32768)return '';
     const finished=/^[ \t]*Finished[ \t]+\S/m.test(text),followUp=/^[ \t]*(?:→[ \t]+)?Add a follow-up[ \t]*$/m.test(text);
     const auto=/\bAuto[ \t]+·[ \t]*\d+(?:\.\d+)?%[ \t]+·[ \t]*\d+[ \t]+files edited\b/.test(text);
-    return finished&&(followUp||auto)?'cursor-cli':'';
+    const thinking=/\bthinking[ \t]*:[ \t]*(?:max|high|medium|low)\b/i.test(text);
+    const context=/\bcontext[ \t]*:[ \t]*\d+(?:\.\d+)?%[ \t]*\([^)\n]*\)/i.test(text);
+    return (finished&&(followUp||auto))||(thinking&&context)?'cursor-cli':'';
   }
   function createAgentDetector(term,{isUnknown,onDetected,delay=750,schedule=root.setTimeout,cancel=root.clearTimeout}={}){
     if(typeof isUnknown!=='function'||typeof onDetected!=='function')throw new Error('Invalid agent detector');

@@ -4,7 +4,7 @@
   "theme": {
     "background": "#11151b",
     "foreground": "#d6d9df",
-    "cursor": "#d6d9df",
+    "cursor": "#7ee787",
     "cursorAccent": "#11151b",
     "selectionBackground": "#344253",
     "selectionForeground": "#d6d9df",

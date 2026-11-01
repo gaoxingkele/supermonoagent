@@ -75,6 +75,10 @@ test('Cursor CLI content inference and status tokens require distinctive TUI evi
     expect(2,'Auto','#56b6c2');expect(2,'edited','#82cfff');expect(3,'Run Everything','#c678dd');
     assert.equal(C.inferAgentContent('Finished Check files\n→ Add a follow-up'),'cursor-cli');
     assert.equal(C.inferAgentContent('Auto · 79.3% · 11 files edited\nFinished Check files'),'cursor-cli');
+    const status='Never Ask  K3.1 Pro thinking: high  [1 task running] F:\\repo main [+708 -13]  ctrl+o expand\ncontext: 23% (238k/1M)';
+    assert.equal(C.inferAgentContent(status),'cursor-cli');
+    assert.equal(C.inferAgentContent('thinking: high only'),'');
+    assert.equal(C.inferAgentContent('context: 23% (238k/1M) only'),'');
     assert.equal(C.inferAgentContent('Finished work alone'),'');
     assert.equal(C.inferAgentContent('→ Add a follow-up'),'');
     assert.equal(C.inferAgentContent('x'.repeat(32769)),'');

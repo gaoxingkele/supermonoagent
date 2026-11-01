@@ -83,9 +83,11 @@ async def check_profiles(tmp_path,frontend,playwright):
                     await page.locator('#agent-mode').select_option(mode)
                     await wait_ui(page,'mode=>smaWorkspace.activePane.agentProfile===mode',arg=mode)
                     await wait_ui(page,'profileDecos.length>0&&document.querySelectorAll(".xterm-decoration").length>0')
-                    value=await page.evaluate("""() => {const p=smaWorkspace.activePane;return {theme:p.term.options.theme,screen:("""+SCREEN+""")(p),ansi:p.term.buffer.active.getLine(0).getCell(0).getFgColor(),decos:profileDecos,domColors:[...document.querySelectorAll('.xterm-decoration')].map(d=>getComputedStyle(d).color),nativeDOM:[...p.el.querySelectorAll('.xterm-rows span')].filter(el=>el.textContent.includes('NATIVE')).map(el=>getComputedStyle(el).color),background:getComputedStyle(p.el.querySelector('.xterm-viewport')).backgroundColor};}""")
+                    value=await page.evaluate("""() => {const p=smaWorkspace.activePane;return {theme:p.term.options.theme,cursorStyle:p.term.options.cursorStyle,screen:("""+SCREEN+""")(p),ansi:p.term.buffer.active.getLine(0).getCell(0).getFgColor(),decos:profileDecos,domColors:[...document.querySelectorAll('.xterm-decoration')].map(d=>getComputedStyle(d).color),nativeDOM:[...p.el.querySelectorAll('.xterm-rows span')].filter(el=>el.textContent.includes('NATIVE')).map(el=>getComputedStyle(el).color),background:getComputedStyle(p.el.querySelector('.xterm-viewport')).backgroundColor};}""")
                     profile=json.loads((Path(__file__).parents[1]/'src/supermonoagent/static/agent-modes'/f'{mode}.json').read_text(encoding='utf-8'))
                     assert value['theme']['background']==profile['theme']['background']
+                    assert value['theme']['cursor']==profile['theme']['cursor']=='#7ee787'
+                    assert value['cursorStyle']==('bar' if mode=='cursor-cli' else 'block')
                     assert value['screen']==await page.evaluate('originalScreen')
                     assert value['ansi']==0xF0B4D2
                     assert 'rgb(240, 180, 210)' in value['nativeDOM'],value
@@ -197,11 +199,12 @@ async def check_cursor_content_detection(tmp_path, playwright):
                 await page.goto(origin + '/workspace?direct=1&renderer=dom#token=' + daemon.token)
                 await wait_ui(page, 'window.smaWorkspace?.connected&&smaWorkspace.panes.size===2')
                 await page.evaluate('id=>smaWorkspace.openSession(id,false)', sessions[0].id)
-                sessions[0].pty.inbox.put('Finished Check changed files\r\n→ Add a follow-up\r\nAuto · 79.3% · 11 files edited\r\n'.encode())
+                sessions[0].pty.inbox.put('Never Ask  K3.1 Pro thinking: high  [1 task running] F:\\aicoding\\repo main  ctrl+o expand\r\ncontext: 23% (238k/1M)\r\n'.encode())
                 errors = []
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 await wait_ui(page, "smaWorkspace.activePane.agentProfile==='cursor-cli'")
                 assert await page.locator('#agent-mode').input_value() == 'auto'
+                assert await page.evaluate("smaWorkspace.activePane.term.options.cursorStyle") == 'bar'
                 assert 'Cursor CLI' in await page.locator('.pane.active .pane-header').inner_text()
                 assert all(not session.pty.written for session in sessions)
                 assert not errors
