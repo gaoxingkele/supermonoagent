@@ -92,6 +92,58 @@ async def check_modal(playwright):
         assert await page.locator('#owned-field').evaluate('field=>document.activeElement===field')
 
 
+def test_ctrl_c_copies_while_context_menu_open():
+    run(check_menu_open_copy)
+
+
+async def check_menu_open_copy(playwright):
+    async with fixture(playwright) as (browser, url, *_):
+        page = await browser.new_page()
+        await page.goto(url)
+        await page.wait_for_function('smaWorkspace.activePane?.ready')
+        await page.evaluate(SCRIPT.read_text(encoding='utf-8'))
+        await page.evaluate(r'''async()=>{
+          window.copied=[];window.pywebview={api:{clipboard_write_text:async value=>copied.push(value)}};
+          const t=smaWorkspace.activePane.term;
+          await new Promise(done=>t.write('\x1b[2J\x1b[HOWNED_SELECTION',done));
+          t.select(0,0,15);t.focus();
+          t.textarea.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:300,clientY:300}));
+        }''')
+        assert await page.evaluate('document.activeElement===document.querySelector("#clipboard-context-copy")')
+        await page.keyboard.press('Control+c')
+        await page.wait_for_function('copied.length===1')
+        assert await page.evaluate('copied') == ['OWNED_SELECTION']
+        await server_barrier(page, 'local')
+
+
+def test_dismissing_context_menu_restores_terminal_focus_for_ctrl_c():
+    run(check_dismiss_copy)
+
+
+async def check_dismiss_copy(playwright):
+    async with fixture(playwright) as (browser, url, *_):
+        page = await browser.new_page()
+        await page.goto(url)
+        await page.wait_for_function('smaWorkspace.activePane?.ready')
+        await page.evaluate(SCRIPT.read_text(encoding='utf-8'))
+        await page.evaluate(r'''async()=>{
+          window.copied=[];window.pywebview={api:{clipboard_write_text:async value=>copied.push(value)}};
+          const t=smaWorkspace.activePane.term;
+          await new Promise(done=>t.write('\x1b[2J\x1b[HOWNED_SELECTION',done));
+          t.select(0,0,15);t.focus();
+          t.textarea.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:300,clientY:300}));
+        }''')
+        await page.evaluate('''()=>{
+          document.body.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true}));
+        }''')
+        assert await page.evaluate('document.activeElement===smaWorkspace.activePane.term.textarea')
+        assert await page.evaluate('smaWorkspace.activePane.term.hasSelection()')
+        await page.keyboard.press('Control+c')
+        await page.wait_for_function('copied.length===1')
+        assert await page.evaluate('copied') == ['OWNED_SELECTION']
+        await server_barrier(page, 'local')
+
+
 def test_terminal_selection_copy_uses_native_bridge_without_interrupt():
     run(check_copy)
 

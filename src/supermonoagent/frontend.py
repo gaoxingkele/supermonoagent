@@ -33,7 +33,7 @@ from .pty import ConptyInputFilter
 NATIVE_UPDATE_API = 2
 UPDATE_CHECK_SECONDS = 6 * 60 * 60
 UI_FILES = ("workspace.html", "workspace.js", "workspace.css", "terminal-client.js", "tab-themes.js", "tab-themes.css",
-            "xterm.js", "xterm.css", "xterm-fit.js", "xterm-unicode11.js", "xterm-webgl.js",
+            "xterm.js", "xterm.css", "xterm-fit.js", "xterm-unicode11.js", "xterm-webgl.js", "xterm-links.js",
             "agent-modes/codex.json", "agent-modes/claude-code.json", "agent-modes/grok.json",
             "agent-modes/kimi.json", "agent-modes/pi-dev.json", "agent-modes/cursor-cli.json")
 STATIC_ROOT = Path(__file__).parent / "static"

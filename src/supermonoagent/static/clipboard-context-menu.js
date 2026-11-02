@@ -61,7 +61,10 @@
   }
   function context(event){const target=locate(event.target);if(!target)return;event.preventDefault();event.stopPropagation();mount(target);current=target;copy.disabled=!target.selected;paste.disabled=!target.canPaste;menu.hidden=false;
     menu.style.left=Math.max(4,Math.min(event.clientX,innerWidth-menu.offsetWidth-4))+'px';menu.style.top=Math.max(4,Math.min(event.clientY,innerHeight-menu.offsetHeight-4))+'px';(copy.disabled?paste:copy).focus();}
-  function down(event){if(!event.target.closest?.('#clipboard-context-menu'))close();}
+  function down(event){if(event.target.closest?.('#clipboard-context-menu'))return;const target=current;close();
+    // Dismissing the menu must not strand focus on the hidden button: give the
+    // terminal its keyboard back so Ctrl+C keeps working on the visible selection.
+    if(target?.kind==='terminal'&&valid(target))target.identity.pane.term.focus();}
   function dialogClosed(event){if(event.target===menu.closest('dialog'))close();}
   function filePaste(event){
     if(event.target?.id!=='terminal-composer-text'||event.target.disabled||event.target.readOnly||!event.clipboardData?.files?.length||!window.SuperMonoTerminalComposer?.addFiles)return;
@@ -69,7 +72,17 @@
     window.SuperMonoTerminalComposer.addFiles([...event.clipboardData.files]);
   }
   function key(event){
-    if(!menu.hidden&&event.key==='Escape'){event.preventDefault();event.stopPropagation();const target=current;close();if(valid(target)){if(target.kind==='terminal')target.identity.pane.term.focus();else target.field.focus();}return;}
+    if(!menu.hidden){
+      if(event.key==='Escape'){event.preventDefault();event.stopPropagation();const target=current;close();if(valid(target)){if(target.kind==='terminal')target.identity.pane.term.focus();else target.field.focus();}return;}
+      // Focus sits on a menu button while the menu is open, so locate(event.target)
+      // would find nothing; resolve accelerators against the menu's own target.
+      if(event.ctrlKey&&!event.metaKey&&!event.altKey&&!event.shiftKey){
+        const letter=event.key.toLowerCase(),target=current;
+        if(letter==='c'&&target?.selected&&typeof api()?.clipboard_write_text==='function'){event.preventDefault();event.stopPropagation();close();copyText(target);return;}
+        if(letter==='v'&&target?.kind==='field'&&typeof api()?.clipboard_read_text==='function'){event.preventDefault();event.stopPropagation();close();pasteText(target);return;}
+      }
+      return;
+    }
     if(!event.ctrlKey||event.metaKey||event.altKey||event.shiftKey)return;
     const target=locate(event.target);if(!target)return;
     const letter=event.key.toLowerCase();

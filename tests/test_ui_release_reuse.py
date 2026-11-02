@@ -104,8 +104,8 @@ def test_reuse_preserves_exact_android_bytes_catalog_and_api_despite_dirty_sourc
     expected = copy.deepcopy(fixture['metadata']['artifacts']['android'])
     expected['url'] = 'releases/0.2.39/android.zip'
     assert payload['artifacts']['android'] == expected
-    assert len(payload['artifacts']['desktop']['files']) == 17
-    assert len(payload['artifacts']['android']['files']) == 18
+    assert len(payload['artifacts']['desktop']['files']) == 18
+    assert len(payload['artifacts']['android']['files']) == 19
     assert all(item['native_api'] == 2 for item in payload['artifacts'].values())
     assert set(path.name for path in folder.iterdir()) == {'desktop.zip', 'android.zip', 'manifest.json'}
 

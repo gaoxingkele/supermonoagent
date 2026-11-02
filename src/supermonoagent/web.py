@@ -2089,6 +2089,7 @@ STATIC = {
     "/xterm-fit.js": ("xterm-fit.js", "text/javascript; charset=utf-8"),
     "/xterm-webgl.js": ("xterm-webgl.js", "text/javascript; charset=utf-8"),
     "/xterm-unicode11.js": ("xterm-unicode11.js", "text/javascript; charset=utf-8"),
+    "/xterm-links.js": ("xterm-links.js", "text/javascript; charset=utf-8"),
 }
 
 

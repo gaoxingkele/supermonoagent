@@ -332,6 +332,11 @@ def main(argv: list[str] | None = None, *, browser: bool = False) -> None:
             clipboard = DesktopFiles(window, url, file_config_provider=file_provider)
         except (OSError, ValueError):
             pass
+        try:
+            from .desktop_shell import DesktopShell
+            DesktopShell(window, url)
+        except (OSError, ValueError):
+            pass
     recovery = NativeUpdateRecovery(window, url) if not args.url and urlsplit(url).path.rstrip("/") == "/workspace" else None
     if args.smoke_test:
         result = {}

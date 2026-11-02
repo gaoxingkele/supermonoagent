@@ -20,6 +20,7 @@ import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.RenderProcessGoneDetail;
@@ -501,6 +502,14 @@ public final class MainActivity extends Activity {
             terminal.setBackgroundColor(Color.rgb(12,16,23));WebSettings settings=terminal.getSettings();
             settings.setJavaScriptEnabled(true);settings.setDomStorageEnabled(true);settings.setTextZoom(100);settings.setSupportZoom(false);settings.setBuiltInZoomControls(false);settings.setDisplayZoomControls(false);settings.setCacheMode(WebSettings.LOAD_NO_CACHE);settings.setAllowFileAccess(false);settings.setAllowContentAccess(false);settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);settings.setSupportMultipleWindows(false);settings.setMediaPlaybackRequiresUserGesture(true);CookieManager.getInstance().setAcceptThirdPartyCookies(terminal,false);
             final String base=localBase;
+            terminal.addJavascriptInterface(new Object(){
+                @JavascriptInterface public void openExternal(String url){
+                    if(url==null)return;
+                    String value=url.trim();
+                    if(!value.startsWith("http://")&&!value.startsWith("https://"))return;
+                    try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(value)));}catch(Exception ignored){}
+                }
+            },"smaShell");
             terminal.setWebChromeClient(new WebChromeClient(){
                 @Override public boolean onShowFileChooser(WebView web,ValueCallback<Uri[]> callback,FileChooserParams params){
                     if(web!=terminal||generation!=documentGeneration||!trustedDocument()||(params.getMode()!=FileChooserParams.MODE_OPEN&&params.getMode()!=FileChooserParams.MODE_OPEN_MULTIPLE)){callback.onReceiveValue(null);return true;}

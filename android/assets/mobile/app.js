@@ -639,6 +639,12 @@
     if(writer)writer.dispose();writer=null;if(highlighter)highlighter.dispose();highlighter=null;if(webgl)webgl.dispose();webgl=null;
     if(term)cacheTerminal(term);term=null;fit=null;$('screen').replaceChildren();
   }
+  function openExternalUrl(url){
+    if(typeof url!=='string'||!url)return;
+    if(/^www\./i.test(url))url='https://'+url;
+    try{if(window.smaShell&&typeof window.smaShell.openExternal==='function'){window.smaShell.openExternal(url);return;}}catch{}
+    try{window.open(url,'_blank');}catch{}
+  }
   function activate(sid){
     if(attachmentReturnKey&&attachmentReturnKey!==sessionKey(sid))attachmentReturnKey=null;
     cancelTouchMomentum();if(scrollFrame!==null)cancelAnimationFrame(scrollFrame);scrollFrame=null;scrollRows=0;gesture=M.createGesture();
@@ -664,7 +670,7 @@
       if(next)currentHost.agents.set(sid,next);else currentHost.agents.delete(sid);
       session.learnedAgent=next;renderList();refreshAgentMode();return false;
     });
-    fit=new FitAddon.FitAddon();term.loadAddon(fit);term.loadAddon(new Unicode11Addon.Unicode11Addon());term.unicode.activeVersion='11';term.open($('screen'));term.textarea.readOnly=true;term.textarea.inputMode='none';term.textarea.setAttribute('aria-readonly','true');}
+    fit=new FitAddon.FitAddon();term.loadAddon(fit);term.loadAddon(new Unicode11Addon.Unicode11Addon());term.unicode.activeVersion='11';if(window.WebLinksAddon?.WebLinksAddon){try{term.loadAddon(new WebLinksAddon.WebLinksAddon(openExternalUrl));}catch{}}term.open($('screen'));term.textarea.readOnly=true;term.textarea.inputMode='none';term.textarea.setAttribute('aria-readonly','true');}
     setRenderer();
     highlighter=C.createHighlighter(current,{enabled:$('highlight').checked,profile:C.commonAgentProfile});
     refreshAgentMode(true);

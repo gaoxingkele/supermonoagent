@@ -70,6 +70,13 @@
   const sessionInfo = sid => { for(const win of catalog){const session=(win.sessions||[]).find(s=>s.id===sid);if(session)return {win,session};}return null; };
   const visibleIDs = () => { if(!layout)return [];if(mobile()||maximized)return active?[active]:[];const ids=[];const walk=n=>{if(typeof n==='string')ids.push(n);else if(n){walk(n.a);walk(n.b);}};walk(layout);return [...new Set(ids)]; };
   const notice = message => { $('notice').textContent=message;$('notice').hidden=!message; };
+  function openExternalUrl(url){
+    if(typeof url!=='string'||!url)return;
+    if(/^www\./i.test(url))url='https://'+url;
+    const api=window.pywebview?.api;
+    if(api&&typeof api.open_external==='function'){api.open_external(url);return;}
+    try{window.open(url,'_blank','noopener');}catch{}
+  }
   function status(text) { $('status').textContent=text; }
   function socketSend(host,message){
     if(!host?.ws||host.ws.readyState!==WebSocket.OPEN)return false;
@@ -298,6 +305,7 @@
       theme:{background:'#121212',foreground:'#dedede',cursor:'#ddd',selectionBackground:'#55555588'},rendererType:'dom'});
     const fit=new FitAddon.FitAddon();term.loadAddon(fit);
     if(window.Unicode11Addon?.Unicode11Addon){try{term.loadAddon(new Unicode11Addon.Unicode11Addon());term.unicode.activeVersion='11';}catch{}}
+    if(window.WebLinksAddon?.WebLinksAddon){try{term.loadAddon(new WebLinksAddon.WebLinksAddon(openExternalUrl));}catch{}}
     term.open(screen);
     // Native clipboard accelerators must not also send SYN/interrupt bytes.
     // Without a selection, Ctrl+C remains the CLI's ordinary interrupt key.

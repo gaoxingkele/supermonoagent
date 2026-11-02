@@ -62,7 +62,7 @@ Copy-Item -LiteralPath "$repoRoot/android/assets/update-bridge.js" -Destination 
 Copy-Item -LiteralPath "$repoRoot/android/assets/update-api.json" -Destination (Join-Path $stagedAssets 'update-api.json')
 $changesPath = Join-Path $repoRoot 'android/CHANGELOG.txt'
 if (Test-Path -LiteralPath $changesPath) { Copy-Item -LiteralPath $changesPath -Destination (Join-Path $stagedAssets 'CHANGELOG.txt') }
-foreach ($name in @('xterm.js', 'xterm.css', 'xterm-fit.js', 'xterm-unicode11.js', 'xterm-webgl.js', 'terminal-client.js', 'file-client.js', 'file-upload.js')) {
+foreach ($name in @('xterm.js', 'xterm.css', 'xterm-fit.js', 'xterm-unicode11.js', 'xterm-webgl.js', 'xterm-links.js', 'terminal-client.js', 'file-client.js', 'file-upload.js')) {
     Copy-Item -LiteralPath "$repoRoot/src/supermonoagent/static/$name" -Destination "$mobileAssets/vendor"
 }
 # Hash the exact packaged bytes, keeping shared vendor files in their existing source location.
