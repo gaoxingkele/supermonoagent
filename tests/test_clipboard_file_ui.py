@@ -34,6 +34,18 @@ async def check_paste(playwright, tmp_path):
             assert (daemons[0].receive_dir / source.name).read_bytes() == content
             assert await page.evaluate('SuperMonoFilePaste.queued') == 0
             assert not any(session.pty.written for owned in sessions for session in owned)
+            # The success panel offers the saved full path and a copy button.
+            saved_path = daemons[0].receive_dir / source.name
+            assert str(saved_path) in await page.locator('#file-transfer-progress').inner_text()
+            assert await page.locator('#file-transfer-copy').is_visible()
+            assert await page.locator('#file-transfer-cancel').inner_text() == '关闭'
+            await page.evaluate('()=>{window.copiedPath=null;window.pywebview.api.clipboard_write_text=async value=>{window.copiedPath=value;};}')
+            await page.locator('#file-transfer-copy').click()
+            await page.wait_for_function('window.copiedPath!==null')
+            assert await page.evaluate('window.copiedPath') == '"' + str(saved_path) + '"'
+            # A following transfer hides the copy button again.
+            await page.locator('#file-transfer-cancel').click()
+            assert await page.locator('#file-transfer-progress').is_hidden()
             # A plain text paste takes the original xterm path unchanged.
             sid = await page.evaluate('smaWorkspace.activePane.raw')
             await page.evaluate('''()=>{window.supermonoClipboardHasFiles=false;const d=new DataTransfer();d.setData('text/plain','ordinary-text');smaWorkspace.terminal.textarea.dispatchEvent(new ClipboardEvent('paste',{clipboardData:d,bubbles:true,cancelable:true}));}''')
@@ -83,7 +95,7 @@ async def check_boundary(playwright, folder, boundary):
                 if boundary == 'switch':
                     await page.evaluate('fixtureSelect(1)')
                 elif boundary == 'cancel':
-                    await page.locator('#file-transfer-progress>button').click()
+                    await page.locator('#file-transfer-cancel').click()
                 elif boundary == 'reconnect':
                     await page.evaluate('fixtureHosts[0].generation++')
                 else:

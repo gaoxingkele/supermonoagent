@@ -6,8 +6,21 @@
   let busy=false;const jobs=[];let activeJob=null;const MAX_JOBS=32,MAX_QUEUED_BYTES=512*1024*1024;
   const box=document.createElement('aside');box.id='file-transfer-progress';box.hidden=true;
   box.style.cssText='position:fixed;right:12px;bottom:38px;z-index:1300;max-width:calc(100vw - 24px);width:360px;background:#222;color:#eee;border:1px solid #666;border-radius:7px;padding:12px;overflow-wrap:anywhere';
-  const text=document.createElement('p'),cancel=document.createElement('button');cancel.textContent='取消传输';cancel.onclick=cancelAll;const list=document.createElement('ul');list.id='file-transfer-queue';list.style.cssText='padding:0;list-style:none;max-height:160px;overflow:auto';box.append(text,list,cancel);document.body.append(box);
-  function status(message){box.hidden=false;text.textContent=message;}
+  const text=document.createElement('p'),cancel=document.createElement('button'),copy=document.createElement('button');
+  cancel.id='file-transfer-cancel';cancel.textContent='取消传输';cancel.onclick=cancelAll;
+  copy.id='file-transfer-copy';copy.textContent='复制路径';copy.title='复制完整文件路径';copy.hidden=true;
+  let lastReceipts=[];
+  copy.onclick=async()=>{
+    if(!lastReceipts.length)return;
+    const value=lastReceipts.map(receipt=>'"'+receipt.path.replace(/"/g,'\\"')+'"').join(' ');
+    let copied=false;
+    try{const api=window.pywebview?.api;if(typeof api?.clipboard_write_text==='function'){await api.clipboard_write_text(value);copied=true;}}catch{}
+    if(!copied)try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(value);copied=true;}}catch{}
+    copy.textContent=copied?'已复制':'复制失败';setTimeout(()=>copy.textContent='复制路径',1600);
+  };
+  const list=document.createElement('ul');list.id='file-transfer-queue';list.style.cssText='padding:0;list-style:none;max-height:160px;overflow:auto';box.append(text,list,copy,cancel);document.body.append(box);
+  function status(message){box.hidden=false;text.textContent=message;copy.hidden=true;}
+  function showSaved(receipts){lastReceipts=receipts;status('已保存到目标电脑暂存目录（D:\\aacoding\\supermonoagent\\tmp，无 D 盘时为 C 盘）：'+receipts.map(r=>r.path).join('、'));copy.hidden=false;}
   const windowOf=(host,session)=>host.catalog?.find(w=>(w.sessions||[]).some(s=>s.id===session))?.id;
   function target(){const p=W.activePane;if(!p||!p.ready||!p.host.connected)throw Error('请先选择已连接的终端窗口。');return Object.freeze({pane:p,key:p.sid,host:p.host,generation:p.host.generation,paneGeneration:p.generation,ws:p.host.ws,session:p.raw,window_id:windowOf(p.host,p.raw),token:p.host.config?.token,room:p.host.config?.code,relay:p.host.config?.relay,authMode:p.host.config?.authMode});}
   function valid(t){return !!t&&W.panes.get(t.key||t.pane?.sid)===t.pane&&t.pane.host===t.host&&t.pane.raw===t.session&&windowOf(t.host,t.session)===t.window_id&&t.pane.generation===t.paneGeneration&&t.pane.ready&&t.host.ws===t.ws&&t.host.generation===t.generation&&t.host.connected&&t.host.config?.token===t.token&&t.host.config?.code===t.room&&t.host.config?.relay===t.relay&&t.host.config?.authMode===t.authMode;}
@@ -34,7 +47,7 @@
   }
   async function drain(){if(activeJob)return;const job=jobs.find(j=>j.state==='queued');if(!job){busy=false;renderQueue();return;}activeJob=job;busy=true;job.state='reading';status('正在读取粘贴文件…');renderQueue();
     try{await job.ready;if(job.controller.signal.aborted)throw Error('文件传输已取消。');if(job.sourceError)throw job.sourceError;if(!job.sources.length){if(!job.retain)throw Error('没有可上传的文件或图片。');job.fallback?.();job.resolve([]);await forget(job);}
-      else{job.state='sending';renderQueue();const receipts=await transferExchange(job.pinned,job.sources.filter(s=>!s.saved),{...job.options,signal:job.controller.signal,exchangeTarget:job.exchange});job.resolve(receipts);status('已保存到目标电脑暂存目录（D:\\aicoding\\supermonoagent\\tmp，无 D 盘时为 C 盘）：'+receipts.map(r=>r.path).join('、'));await forget(job);}}
+      else{job.state='sending';renderQueue();const receipts=await transferExchange(job.pinned,job.sources.filter(s=>!s.saved),{...job.options,signal:job.controller.signal,exchangeTarget:job.exchange});job.resolve(receipts);showSaved(receipts);await forget(job);}}
     catch(error){if(error.code==='project_required')error.message='请先在底部选择当前项目目录，附件将保存到该项目的 tmp。';job.reject(error);status(String(error.message||error));if(job.retain&&(!job.controller.signal.aborted||error.unknownCommit||error.pendingFileId)&&job.sources.length){job.state=error.unknownCommit?'unknown':error.pendingFileId?'pending':'failed';job.pendingFileId=error.pendingFileId;job.pendingUploadId=error.pendingUploadId;renderQueue();}else await forget(job);}
     finally{activeJob=null;busy=false;drain();}
   }

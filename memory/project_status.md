@@ -1,5 +1,7 @@
 # 状态
 
+2026-11-06（0.2.67）：粘贴文件上传成功面板（clipboard-files.js 的 #file-transfer-progress）新增「复制路径」按钮 #file-transfer-copy（引号分隔一行格式，同 composer 复制全部路径），cancel 按钮补 id #file-transfer-cancel，两个相关测试选择器已改。中继"连不上"实为 /usr/local/nginx 把 8817 的 /ws 改成了 426（11-05/06 配置改造引入，非服务重启导致）；已恢复 proxy_pass 到 127.0.0.1:6770 并 reload，备份 nginx.conf.bak-relayws-*。默认 wss://117.50.48.22/ws（443）始终正常；注意 8817 是明文 WS，建议终端逐步迁到 443。
+
 2026-11-01（0.2.66，提交 8d1c26e）：右键剪贴板菜单不再弄丢 Ctrl+C——菜单一开焦点落在菜单按钮上导致快捷键失效；修复为菜单打开期间 Ctrl+C 直接复制、点击外部关闭后焦点自动回终端。终端输出里的 http(s) 链接可点击：桌面端走 pywebview `open_external` 桥（desktop_shell.py），Android 走 MainActivity 注入的 `smaShell.openExternal`（ACTION_VIEW），`www.` 自动补 https；新增 xterm-links.js（registerLinkProvider，注意 xterm 链接坐标是 1-based 行、起始列 +1、行尾 exclusive 列不变）。UI 更新目录已含 xterm-links.js（桌面 18／手机 19 文件），发布脚本 DESKTOP/VENDOR 同步。0.2.66 已发布 stable 更新频道并验证公网 manifest 与双端 zip 哈希；Windows 完整安装包 feed 也已发布。远端 117.50.48.22：supermono-files 与 supermono-mylib-mcp 升级到 HEAD，sma-relay 与 files-v2 是带运维定制的 pinned 版本（relay 有 ops/token-discovery shim，新 relay.py 参数不兼容，已回滚），download_server 与 HEAD 一致未动。本机桌面已跑 0.2.66（前端 6776 接旧 host 6769，终端保留）。发布用 SSH 密钥 ~/.ssh/sma_publish（已加入 root authorized_keys）。
 
 2026-10-21：Windows 空控制台隐藏修复已写入 omx_wiki/windows-hidden-startup.md；LLM 修改日志见 omx_wiki/llm-log-2026-10-21.md，索引 omx_wiki/index.md。图形入口使用 dist/windows-hidden 下 VBS；后台移除与 CREATE_NO_WINDOW 冲突的 DETACHED_PROCESS，保留真实 native-attach 控制台。执行记录显示隐藏 3 个项目空窗、没有结束进程或重启已有服务；本次回写复核 20 项测试与 6 个子测试通过。

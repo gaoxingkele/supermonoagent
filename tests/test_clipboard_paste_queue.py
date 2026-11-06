@@ -80,7 +80,7 @@ async def check_native(playwright, folder, boundary):
                         await asyncio.sleep(.01)
                 assert snapshots == [p.name for p in sources]
                 if boundary == 'cancel':
-                    await page.locator('#file-transfer-progress>button').click()
+                    await page.locator('#file-transfer-cancel').click()
                 elif boundary == 'stale':
                     await page.evaluate('fixtureHosts[1].config.token="changed-fixture-token"')
                 await page.evaluate('releaseRead()')
@@ -127,7 +127,7 @@ def test_queue_bound_cancel_and_plain_text_not_intercepted(tmp_path):
                 assert await page.evaluate('readCount') == 1
                 assert await page.evaluate('''()=>{const d=new DataTransfer();d.setData('text/plain','ordinary text');
                   const e=new ClipboardEvent('paste',{clipboardData:d,bubbles:true,cancelable:true});smaWorkspace.activePane.term.textarea.dispatchEvent(e);return e.defaultPrevented;}''') is False
-                await page.locator('#file-transfer-progress>button').click()
+                await page.locator('#file-transfer-cancel').click()
                 await page.evaluate('releaseRead()')
                 await page.wait_for_function('!SuperMonoFilePaste.busy&&SuperMonoFilePaste.queued===0')
                 assert not drop_dir(folder).exists()
