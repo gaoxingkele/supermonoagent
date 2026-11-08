@@ -64,3 +64,13 @@ Honor FLC-AN00，Android 16。13 组实际页面/截图检查已覆盖横竖屏�
 修改 `android/src/dev/supermonoagent/mobile/RemoteUpdates.java` 的默认地址，新增 `tests/test_android_remote_updates.py` 回归，锁定原生地址与发布器默认地址一致及 ZIP 相对路径正确。修改前失败，修复后远程更新套件 29 项通过；未调整公网服务器。
 
 最终手机原生版本 **0.2.69 / 构建 71**，保留数据覆盖安装成功；APK v2/v3 签名、ZIP CRC、资源 SHA256 和 DEX 内正式更新地址检查通过。手机实际点击 Update 显示 `UI is current`，活动签名界面为 0.2.67；原生 APK 版本与界面版本独立。再次触摸切换另一终端成功，列表 18 项，连接和 ready 正常，无页面异常，随后返回原窗口；已有草稿仍在，没有发送终端输入。临时 ADB 转发已删除，原有 tcp:5999 保留。证据：`.omx/artifacts/android-update-feed-0.2.69/verification.json`、`device-verification.json`、`draft-verification.json`、`update-check-dialog.json` 与 `window-open-physical.png`。
+
+## 2026-11-08：荣耀平板横竖屏候选 0.2.71
+
+用户要求同时适配长竖屏与宽横屏。ROD2-W09 的 ADB 分辨率为 1920×3000、400dpi。大屏入口改为“适配本屏 / 跟随电脑”，复用已有明确接管和后台确认流程；接管后自然行距与原字号不变，旋转自动适配行列，跟随时不抢占。触摸目标、输入栏与弹窗利用平板尺寸，没有新增解析器或依赖。源文件、使用方法与边界见 [平板适配](../docs/tablet-layout.md)。
+
+10 项布局相关回归通过；补强的 DOM/WebGL 测试检查 6500 行历史、顶部/中段满行显示、横竖屏及输入法缩小视口、草稿保留。模拟竖屏 96×56、横屏 152×31，真实设备行列以可用视口与字格计算为准。扩大 ConPTY 网格出现的最新页空尾行与纯 xterm resize 对照一致，保留真实光标，不删除空行伪造满屏。证据 `.omx/artifacts/android-tablet-layout/`。
+
+已安装 0.2.69 基线并填入用户指定 Token（密码隐藏、长度核对完整）；随后设备离开 ADB，0.2.71 / 构建 73 尚待覆盖安装及真机旋转/键盘验收。公开产物保持无凭据，在线 UI 最后核对仍为 0.2.67。
+
+后续审查发现历史工具栏仍小于 44px，低高度视口的提示／返回历史条可能覆盖页头控制按钮。新增触摸高度断言当前失败，保留该回归以供后续恢复。用户已要求停止本轮平板调试并再次提交全部当前状态；仅作独立 WIP 分支备份，没有继续设备操作、修改此两处问题或生成后续版本。详细未完成项见 `docs/tablet-layout.md`。

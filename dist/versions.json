@@ -4,10 +4,23 @@
   "latest": {
     "android": "0.2.69",
     "windows": "0.2.67",
-    "uiCandidate": "0.2.70",
-    "observedLiveUI": "0.2.67"
+    "uiCandidate": "0.2.71",
+    "observedLiveUI": "0.2.67",
+    "androidCandidate": "0.2.71"
   },
   "android": [
+    {
+      "version": "0.2.71",
+      "path": "dist/android/0.2.71/SuperMonoAgent.apk",
+      "sha256": "7fef00fe0bf2f1e2f9e6fb2eea111519b9b668c190dfce22260429d794a98c0b",
+      "status": "candidate-not-device-accepted"
+    },
+    {
+      "version": "0.2.70",
+      "path": "dist/android/0.2.70/SuperMonoAgent.apk",
+      "sha256": "e9c5da494dbe75c8cafc52aa453768e85c8e94d4e5104956b56d5507a6311171",
+      "status": "candidate-not-device-accepted"
+    },
     {
       "version": "0.2.69",
       "path": "dist/android/0.2.69/SuperMonoAgent.apk",
@@ -371,6 +384,26 @@
     }
   ],
   "ui": [
+    {
+      "revision": "0.2.71",
+      "path": "dist/ui/0.2.71/",
+      "status": "candidate-not-published",
+      "sequence": 1794149357545276,
+      "files": {
+        "manifest.json": {
+          "bytes": 6872,
+          "sha256": "63c450b3faabe5fd1077d0a959f7e76b320ba64fdb8961bc38221610c1ae003b"
+        },
+        "desktop.zip": {
+          "bytes": 210308,
+          "sha256": "c2405d0be8c9e4082750a046846fddecfcf974400dc9e90b8f949bb15e064157"
+        },
+        "android.zip": {
+          "bytes": 174218,
+          "sha256": "eb0407fb56ed1a5555c732a9b7201bdfd0082590d19e687b6660506aeae0c80e"
+        }
+      }
+    },
     {
       "revision": "0.2.70",
       "path": "dist/ui/0.2.70/",
@@ -955,5 +988,15 @@
     "dist/windows-ui-updates/",
     "dist/windows-workspaces/",
     "dist/windows-workspaces-current/"
-  ]
+  ],
+  "tabletWorkStatus": {
+    "status": "stopped-work-in-progress",
+    "candidate": "0.2.71",
+    "physicalAcceptance": false,
+    "knownIssues": [
+      "History toolbar touch targets below44px",
+      "Low-height history resume/notice overlay may cover header controls"
+    ],
+    "requiredFollowup": "Fix the preserved failing tablet regression before acceptance or deployment"
+  }
 }

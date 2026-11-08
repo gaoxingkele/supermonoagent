@@ -739,11 +739,13 @@
     if((takeControl||key!==lastSize)&&send(5,{session:active,...desired,take_control:takeControl})){lastSize=key;return true;}return false;
   }
   function updateControlButton(){
-    const button=$('control');button.textContent=controlAction?'切换中…':control?'跟随':'接管';
+    const tablet=Math.min(window.screen.width||innerWidth,window.screen.height||innerHeight)>=600;
+    document.documentElement.dataset.device=tablet?'tablet':'phone';
+    const button=$('control');button.textContent=controlAction?'切换中…':control?(tablet?'跟随电脑':'跟随'):(tablet?'适配本屏':'接管');
     button.disabled=!!controlAction||!!followReplay||!!pendingRefresh||!ready||!connected;
     $('refresh-screen').disabled=!!controlAction||!!followReplay;
     button.setAttribute('aria-pressed',String(control));
-    button.title=control?'当前手机接管；点击释放尺寸控制并跟随远端':'当前跟随远端；点击按手机屏幕接管尺寸';
+    button.title=tablet?(control?'释放本屏适配，跟随电脑的终端尺寸':'按当前平板宽高适配，旋转后自动调整；其他观看端会跟随此终端尺寸'):(control?'当前手机接管；点击释放尺寸控制并跟随远端':'当前跟随远端；点击按手机屏幕接管尺寸');
     $('screen').dataset.controlMode=control?'phone':'follow';
     const waiting='已跟随：等待远端接回尺寸控制，暂时保持当前网格。';
     if(followIntent&&!control&&ready&&!controlAction&&controls[active]?.busy===false){if($('notice').hidden||replayNoticeTimer!==null)notice(waiting);}
