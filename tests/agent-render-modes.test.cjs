@@ -85,6 +85,24 @@ test('Cursor CLI content inference and status tokens require distinctive TUI evi
   }finally{term.dispose();}
 });
 
+test('Cursor CLI highlights prefixed TUI status labels without painting prose or native styles',async()=>{
+  const p=profile('cursor-cli'),term=new Terminal({cols:160,rows:16,allowProposedApi:true});
+  const labels=[['● ','Thinking'],['│ ','Working'],['→ ','Review'],['> ','Plan'],
+    ['╭─ ','Composer'],['  └ ','Updated'],['* ','Planning'],['› ','Diff']];
+  try{
+    for(const [prefix,label] of labels)await write(term,prefix+label+' remaining prose stays unchanged\r\n');
+    await write(term,'The Working group discussed the Plan\r\n'+
+      '\x1b[38;2;240;180;210m● Thinking\x1b[0m\r\n'+
+      '\x1b[2m│ Working\x1b[0m\r\n');
+    for(const [row,[prefix,label]] of labels.entries()){
+      const line=term.buffer.active.getLine(row),spans=C.highlightSpans(line,term.cols,p),start=prefix.length,end=start+label.length;
+      for(let x=start;x<end;x++)assert.ok(spans.some(s=>s.x<=x&&s.x+s.width>x&&s.foregroundColor==='#82cfff'),prefix+label+' missing blue at '+x);
+      assert.ok(spans.every(s=>s.x+s.width<=end),prefix+label+' painted trailing prose');
+    }
+    for(let row=labels.length;row<labels.length+3;row++)assert.deepEqual(C.highlightSpans(term.buffer.active.getLine(row),term.cols,p),[],'changed prose/native row '+row);
+  }finally{term.dispose();}
+});
+
 test('profiles load individually with exact identity and bounded same-origin fetch',async()=>{
   const beforeFetch=globalThis.fetch,beforeLocation=globalThis.location;let calls=0;
   globalThis.location={href:'https://ui.example/workspace',origin:'https://ui.example'};

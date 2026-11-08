@@ -1,14 +1,18 @@
 # 发布产物
 
-最新签名界面包：**0.2.42**，修复安卓接管／跟随往返切换及桌面重复交接尺寸缓存；保留 0.2.41 高亮、灰色推荐文字、总览入口和默认十六宫格。既有 API2 原生壳可热更新，两端均应更新，无需安装 APK。验证与边界见 [两模式说明](../docs/ui-0.2.42.md)。
+完整版本索引：[VERSIONS.md](VERSIONS.md)；机器可读路径、文件大小与 SHA-256：[versions.json](versions.json)。仓库保留 33 个 Android 数字版本、42 个 Windows 数字／hotfix 版本、28 个完整签名界面快照，以及原有旧命名构建目录。
 
-最新 Windows 构建：**0.2.47**，在历史裁剪后保留终端光标显隐状态，保留 0.2.46 文本粘贴修复、编辑框与独立文件助手；见 [光标修复与边界](../docs/cursor-caret-diagnosis.md)、[文本修复](../docs/windows-text-paste-0.2.46.md)。当前公开 Android APK 为 **0.2.36**。Android 异常／挂死回滚的修复后真机验收尚未完成，见 [TODO](../docs/TODO.md)。
+最新 Android APK：**0.2.69（构建 71）**，修复链接脚本遗漏原生白名单导致终端页面无法打开，以及 Update 指向旧频道的问题；已在荣耀 FLC-AN00 保留数据覆盖安装并完成窗口切换、在线检查与草稿保留验证。0.2.67／0.2.68 原包作为历史版本保留，建议安装 0.2.69。详细证据与范围见 [Android 验收记录](../omx_wiki/android-live-updates.md)。
 
-- Windows 一键安装 ZIP：`windows/SuperMonoAgent-0.2.47-Setup.zip`（通用无凭据版）。自动注入默认 Token 和文件 enrollment 的专用包通过受限下载链接单独提供，不提交 Git。使用方法见 [一键安装说明](../docs/windows-oneclick-install.md)。
+最新 Windows 构建：**0.2.67**，支持上传后复制全部保存路径，保留终端链接打开、复制与焦点修复。
 
-- Windows：`windows/0.2.47/`，保留完整目录，运行 `02-Orca-Workspace.vbs`。助手模型配置见 [说明](../docs/assistant-models.md)。
-- Android：`android/0.2.36/SuperMonoAgent.apk`，支持保留应用数据的覆盖安装。
-- 历史构建保留在各自目录；后续版本使用数字版本号。
+最新签名界面候选：**0.2.70**，改善桌面和手机全部 Cursor CLI 模式的前缀状态高亮；候选包已验证，但尚未发布到在线更新频道，最后核对的在线界面仍为 **0.2.67**。归档历史签名包不表示该包曾上线；旧清单保留原签名和到期时间。说明见 [共享渲染配置](../docs/agent-render-modes.md)。
+
+- [Windows 0.2.67 一键安装 ZIP](windows/SuperMonoAgent-0.2.67-Setup.zip)（通用无凭据版）。专用连接 Token 与文件 enrollment 不提交 Git；使用方法见 [一键安装说明](../docs/windows-oneclick-install.md)。
+- [Windows 0.2.67 完整目录](windows/0.2.67/)，运行 `02-Orca-Workspace.vbs`。
+- [Android 0.2.69 APK](android/0.2.69/SuperMonoAgent.apk)，支持保留应用数据的覆盖安装。
+- [0.2.70 候选界面包](ui/0.2.70/)（桌面、Android、签名清单）。
+- 历史版本位于各自目录，已存在的安装包和签名文件保持原始字节。
 
 所有公开 APK 均不再预填私人连接 Token，旧私人原包只在开发者本地私密备份。旧包重新生成了签名和校验文件，除去连接默认凭据外，其余程序负载逐字节保持。
 

@@ -37,7 +37,12 @@
       "color": "#e06c75"
     },
     {
-      "pattern": "\\bCursor\\b|^\\s*(?:Agent|Composer|Thinking|Working|Plan|Planning|Explored|Updated|Files|Diff)\\b|^\\s*Review\\b|\\b(?:Apply|Applied)\\b|\\bthinking[ \\t]*:[ \\t]*(?:max|high|medium|low)\\b|\\bcontext[ \\t]*:[ \\t]*\\d+(?:\\.\\d+)?%[ \\t]*\\([^)\\n]*\\)",
+      "pattern": "\\bCursor\\b|^[ \\t│┃║>›❯»*+·•●○◦⏺✦✧✓✔➜→─━└┌├┤┬┴┼╭╰╮╯-]*(?:Agent|Composer|Thinking|Working|Plan|Planning|Explored|Updated|Files|Diff|Review)\\b|\\b(?:Apply|Applied)\\b",
+      "flags": "giu",
+      "color": "#82cfff"
+    },
+    {
+      "pattern": "\\bthinking[ \\t]*:[ \\t]*(?:max|high|medium|low)\\b|\\bcontext[ \\t]*:[ \\t]*\\d+(?:\\.\\d+)?%[ \\t]*\\([^)\\n]*\\)",
       "flags": "giu",
       "color": "#82cfff"
     },

@@ -1,0 +1,959 @@
+{
+  "schema": 1,
+  "updated": "2026-11-08",
+  "latest": {
+    "android": "0.2.69",
+    "windows": "0.2.67",
+    "uiCandidate": "0.2.70",
+    "observedLiveUI": "0.2.67"
+  },
+  "android": [
+    {
+      "version": "0.2.69",
+      "path": "dist/android/0.2.69/SuperMonoAgent.apk",
+      "sha256": "abd7812bacefdf88dda99c078c769e22f8694d34aa02012ffe12aba448913fff"
+    },
+    {
+      "version": "0.2.68",
+      "path": "dist/android/0.2.68/SuperMonoAgent.apk",
+      "sha256": "f8974fcf593d25bf77ff5eaea1239ccaf6fe9c619c709334eebdd3cae6622a41"
+    },
+    {
+      "version": "0.2.67",
+      "path": "dist/android/0.2.67/SuperMonoAgent.apk",
+      "sha256": "22195ff066f693f364b4df46a48a1366058b93eb114c9598f27bf2ef0ae56057"
+    },
+    {
+      "version": "0.2.66",
+      "path": "dist/android/0.2.66/SuperMonoAgent.apk",
+      "sha256": "e25fc23972903ef4d585298c486a15a42bb5306e5a6ac2f1b3074c4311f49a51"
+    },
+    {
+      "version": "0.2.65",
+      "path": "dist/android/0.2.65/SuperMonoAgent.apk",
+      "sha256": "b9336194f65e33dcd95028f378c9c76929120100ec0b3a8d3b62f14a34ac73b2"
+    },
+    {
+      "version": "0.2.64",
+      "path": "dist/android/0.2.64/SuperMonoAgent.apk",
+      "sha256": "8111890ccfc367fa69b00182d087011499679681954101ac511020dc46a45b80"
+    },
+    {
+      "version": "0.2.63",
+      "path": "dist/android/0.2.63/SuperMonoAgent.apk",
+      "sha256": "a6257e0f5161ffa3765b637221840fb130ccc2acdbdc2922dd78d91ae182fe13"
+    },
+    {
+      "version": "0.2.62",
+      "path": "dist/android/0.2.62/SuperMonoAgent.apk",
+      "sha256": "18870c101d077cc39382a47ab32d0338fa7d06dc93346a68d7bcf7f3de3b701e"
+    },
+    {
+      "version": "0.2.61",
+      "path": "dist/android/0.2.61/SuperMonoAgent.apk",
+      "sha256": "30103d414c696fa2fda252cfd81a94fbc6f5f50f0c078b4b9a04a121c867b415"
+    },
+    {
+      "version": "0.2.60",
+      "path": "dist/android/0.2.60/SuperMonoAgent.apk",
+      "sha256": "bcc5e967c980a29aecdaa3709ecbea3903e057e778d246fb12eb1c5fd8d61f1e"
+    },
+    {
+      "version": "0.2.59",
+      "path": "dist/android/0.2.59/SuperMonoAgent.apk",
+      "sha256": "e73ba90c5ab56f1a58bce54abcb8e798fb3df6c11e50fcb81f68a38af4d701cf"
+    },
+    {
+      "version": "0.2.58",
+      "path": "dist/android/0.2.58/SuperMonoAgent.apk",
+      "sha256": "e2bf732eb5fa9e2ad90b7b94bfd72714086ee5141b99988f9d21fe80a9365680"
+    },
+    {
+      "version": "0.2.57",
+      "path": "dist/android/0.2.57/SuperMonoAgent.apk",
+      "sha256": "7c84f37544ff428ac5522d9be373aec9d1c7ed222e9686d1f7e27ab6ab99a88a"
+    },
+    {
+      "version": "0.2.56",
+      "path": "dist/android/0.2.56/SuperMonoAgent.apk",
+      "sha256": "cad8cf171c1433959bfa2964c1b8a00308dce36f0891841f86484a6056a9af21"
+    },
+    {
+      "version": "0.2.55",
+      "path": "dist/android/0.2.55/SuperMonoAgent.apk",
+      "sha256": "f8470127fb30ef1289e779171a999616e63b9a07628c4f8cb1db029f7599d55b"
+    },
+    {
+      "version": "0.2.54",
+      "path": "dist/android/0.2.54/SuperMonoAgent.apk",
+      "sha256": "d17fee117fd74d98794a952b115a879fbcbbe388f73861b560bd898fea9731d6"
+    },
+    {
+      "version": "0.2.53",
+      "path": "dist/android/0.2.53/SuperMonoAgent.apk",
+      "sha256": "81610cbb2474220fc33ea790cea73efd8cc107fac2b000171ed2b1065e3b845f"
+    },
+    {
+      "version": "0.2.52",
+      "path": "dist/android/0.2.52/SuperMonoAgent.apk",
+      "sha256": "b5b094087e08f7143d27cfb91318e1b67e86601e65a187386ba338b44706a4bb"
+    },
+    {
+      "version": "0.2.36",
+      "path": "dist/android/0.2.36/SuperMonoAgent.apk",
+      "sha256": "7cd6edd0e002dbcdbc44d3a9d96465ee64c3776aee367a6a38a10e4d0d98b973"
+    },
+    {
+      "version": "0.2.35",
+      "path": "dist/android/0.2.35/SuperMonoAgent.apk",
+      "sha256": "c2427c0c6da3bbded38c6c6d4634b059574de17335e43ec6c90c9c91d205a1c2"
+    },
+    {
+      "version": "0.2.34",
+      "path": "dist/android/0.2.34/SuperMonoAgent.apk",
+      "sha256": "973cbc77ff124371bc1f3b0278ae4ef8a14c18698d686dad0f61589913779615"
+    },
+    {
+      "version": "0.2.33",
+      "path": "dist/android/0.2.33/SuperMonoAgent.apk",
+      "sha256": "0cf112bd0ef5ff13b8a190e53f92e5d3ee5705169d0f5cedbf6c52ec803c2f53"
+    },
+    {
+      "version": "0.2.32",
+      "path": "dist/android/0.2.32/SuperMonoAgent.apk",
+      "sha256": "cac204a63ed737b9af81927828ad1fb9a3e68fe948da62a35834bd5165e0c942"
+    },
+    {
+      "version": "0.2.31",
+      "path": "dist/android/0.2.31/SuperMonoAgent.apk",
+      "sha256": "a847efcd07b03137aaf06b48ef466b37207ce62cc66084045713a8ef36e0dc3c"
+    },
+    {
+      "version": "0.2.30",
+      "path": "dist/android/0.2.30/SuperMonoAgent.apk",
+      "sha256": "748d9a404fcbd1a309ca9186c4d778fc46186a9f088427d0f56e95cda15e3b73"
+    },
+    {
+      "version": "0.2.29",
+      "path": "dist/android/0.2.29/SuperMonoAgent.apk",
+      "sha256": "bc1a0fc4a7620ec27a3ca8255fa4999e077f68ed4cf36e4796e7bb0dd42ca8d0"
+    },
+    {
+      "version": "0.2.28",
+      "path": "dist/android/0.2.28/SuperMonoAgent.apk",
+      "sha256": "2f025541c00b16de5877508d37122432eea39e66fe0f6deff2419ae4b8b6bd66"
+    },
+    {
+      "version": "0.2.25",
+      "path": "dist/android/0.2.25/SuperMonoAgent.apk",
+      "sha256": "583d179c196993e18a5ef951c6a64e051fa286dfa6d0cc9d425fc1136fe6a1f5"
+    },
+    {
+      "version": "0.2.24",
+      "path": "dist/android/0.2.24/SuperMonoAgent.apk",
+      "sha256": "adcac2bb324ccf52fb55a0197f271a21a88a36715fc6638cb78b0557df1adbd2"
+    },
+    {
+      "version": "0.2.23",
+      "path": "dist/android/0.2.23/SuperMonoAgent.apk",
+      "sha256": "de14133d424e31e188bf7fc62b27fe37c06d4f158a23b3044b892cf0b1720813"
+    },
+    {
+      "version": "0.2.22",
+      "path": "dist/android/0.2.22/SuperMonoAgent.apk",
+      "sha256": "1dcde4315738c6de647c8f7809ebd4debdb420c4dfa10fe13d042eb1ac2f719a"
+    },
+    {
+      "version": "0.2.21",
+      "path": "dist/android/0.2.21/SuperMonoAgent.apk",
+      "sha256": "e05d35705045005b1663da58e980ff6ca61cf751c96eb03d6fd7159d420c2a51"
+    },
+    {
+      "version": "0.2.18",
+      "path": "dist/android/0.2.18/SuperMonoAgent.apk",
+      "sha256": "5cd8900faaf2087ba1e315fa651df8864c45b20e1e8a6e9795b32176940c1227"
+    }
+  ],
+  "windows": [
+    {
+      "version": "0.2.67",
+      "path": "dist/windows/0.2.67/",
+      "installer": "dist/windows/SuperMonoAgent-0.2.67-Setup.zip",
+      "installerSha256": "5c5fb81ea3f84d90c278a2c519ff5d92b17c0cb55a851020a0eb6cb23cc071ae"
+    },
+    {
+      "version": "0.2.66",
+      "path": "dist/windows/0.2.66/",
+      "installer": "dist/windows/SuperMonoAgent-0.2.66-Setup.zip",
+      "installerSha256": "e106c589b8ee259ffd89af9875d9b8c72704b71f98932a51ad6505ad28527e68"
+    },
+    {
+      "version": "0.2.65",
+      "path": "dist/windows/0.2.65/"
+    },
+    {
+      "version": "0.2.64",
+      "path": "dist/windows/0.2.64/"
+    },
+    {
+      "version": "0.2.63",
+      "path": "dist/windows/0.2.63/"
+    },
+    {
+      "version": "0.2.62",
+      "path": "dist/windows/0.2.62/"
+    },
+    {
+      "version": "0.2.61",
+      "path": "dist/windows/0.2.61/"
+    },
+    {
+      "version": "0.2.60",
+      "path": "dist/windows/0.2.60/"
+    },
+    {
+      "version": "0.2.59",
+      "path": "dist/windows/0.2.59/"
+    },
+    {
+      "version": "0.2.58",
+      "path": "dist/windows/0.2.58/",
+      "installer": "dist/windows/SuperMonoAgent-0.2.58-Setup.zip",
+      "installerSha256": "d152100dff0fc4b1f2275c9de2beafa332292fa2f0f5b4c5d69af099033cd37c"
+    },
+    {
+      "version": "0.2.57",
+      "path": "dist/windows/0.2.57/"
+    },
+    {
+      "version": "0.2.56",
+      "path": "dist/windows/0.2.56/"
+    },
+    {
+      "version": "0.2.55",
+      "path": "dist/windows/0.2.55/"
+    },
+    {
+      "version": "0.2.54",
+      "path": "dist/windows/0.2.54/"
+    },
+    {
+      "version": "0.2.53",
+      "path": "dist/windows/0.2.53/"
+    },
+    {
+      "version": "0.2.52",
+      "path": "dist/windows/0.2.52/"
+    },
+    {
+      "version": "0.2.48",
+      "path": "dist/windows/0.2.48/"
+    },
+    {
+      "version": "0.2.47",
+      "path": "dist/windows/0.2.47/",
+      "installer": "dist/windows/SuperMonoAgent-0.2.47-Setup.zip",
+      "installerSha256": "88d7756ea949a1f3ef81c43073f139a4e6346dea827873d324ac5681172a2517"
+    },
+    {
+      "version": "0.2.46-hotfix",
+      "path": "dist/windows/0.2.46-hotfix/"
+    },
+    {
+      "version": "0.2.46",
+      "path": "dist/windows/0.2.46/",
+      "installer": "dist/windows/SuperMonoAgent-0.2.46-Setup.zip",
+      "installerSha256": "1a3f30fe2b7f5a23ed760ae6610003930b1cc29736ac4de2c078519172a1ce29"
+    },
+    {
+      "version": "0.2.45",
+      "path": "dist/windows/0.2.45/",
+      "installer": "dist/windows/SuperMonoAgent-0.2.45-Setup.zip",
+      "installerSha256": "97d382f37307ad016c9f735a1c0bd27c7149ad8126bbc0007deb19fae3b570bf"
+    },
+    {
+      "version": "0.2.44",
+      "path": "dist/windows/0.2.44/",
+      "installer": "dist/windows/SuperMonoAgent-0.2.44-Setup.zip",
+      "installerSha256": "6fa5800d174fffb530db38455fa449b139941796c4a0b043792ee81439611a5d"
+    },
+    {
+      "version": "0.2.39",
+      "path": "dist/windows/0.2.39/",
+      "installer": "dist/windows/SuperMonoAgent-0.2.39-Setup.zip",
+      "installerSha256": "55b4c1a2ae8d37b7bc1632aa5f69382727daef061b9458850e938622f74530d8"
+    },
+    {
+      "version": "0.2.38",
+      "path": "dist/windows/0.2.38/",
+      "installer": "dist/windows/SuperMonoAgent-0.2.38-Setup.zip",
+      "installerSha256": "3c32f6110236ec267bb13ce7fe9afe38357f819513e685de0acc82b7c6486cd1"
+    },
+    {
+      "version": "0.2.37",
+      "path": "dist/windows/0.2.37/",
+      "installer": "dist/windows/SuperMonoAgent-0.2.37-Setup.zip",
+      "installerSha256": "d57e231de8b3ca1f34be5e6fdde6b3caf51ec5e2a53f2af919bc71fff54ecd9f"
+    },
+    {
+      "version": "0.2.36",
+      "path": "dist/windows/0.2.36/",
+      "installer": "dist/windows/SuperMonoAgent-0.2.36-Setup.zip",
+      "installerSha256": "2f5e5d1d09940b26f406e8d7233134e67c36b0ea3d76b533a7ba840439875892"
+    },
+    {
+      "version": "0.2.35",
+      "path": "dist/windows/0.2.35/",
+      "installer": "dist/windows/SuperMonoAgent-0.2.35-Setup.zip",
+      "installerSha256": "96d18b92cda9ba49810a75cbc006142d871fe32cdb957fe62425a9b337bb7ef2"
+    },
+    {
+      "version": "0.2.34",
+      "path": "dist/windows/0.2.34/",
+      "installer": "dist/windows/SuperMonoAgent-0.2.34-Setup.zip",
+      "installerSha256": "71b70d6bc933be115726a040ef88ab7fc775f5334ab9030c0a72942af081f6f1"
+    },
+    {
+      "version": "0.2.33",
+      "path": "dist/windows/0.2.33/"
+    },
+    {
+      "version": "0.2.32",
+      "path": "dist/windows/0.2.32/"
+    },
+    {
+      "version": "0.2.31",
+      "path": "dist/windows/0.2.31/"
+    },
+    {
+      "version": "0.2.30",
+      "path": "dist/windows/0.2.30/"
+    },
+    {
+      "version": "0.2.29",
+      "path": "dist/windows/0.2.29/"
+    },
+    {
+      "version": "0.2.28",
+      "path": "dist/windows/0.2.28/"
+    },
+    {
+      "version": "0.2.25",
+      "path": "dist/windows/0.2.25/"
+    },
+    {
+      "version": "0.2.24",
+      "path": "dist/windows/0.2.24/"
+    },
+    {
+      "version": "0.2.23",
+      "path": "dist/windows/0.2.23/"
+    },
+    {
+      "version": "0.2.22",
+      "path": "dist/windows/0.2.22/"
+    },
+    {
+      "version": "0.2.20",
+      "path": "dist/windows/0.2.20/"
+    },
+    {
+      "version": "0.2.19",
+      "path": "dist/windows/0.2.19/"
+    },
+    {
+      "version": "0.2.18",
+      "path": "dist/windows/0.2.18/"
+    },
+    {
+      "version": "0.2.14",
+      "path": "dist/windows/0.2.14/"
+    }
+  ],
+  "ui": [
+    {
+      "revision": "0.2.70",
+      "path": "dist/ui/0.2.70/",
+      "status": "candidate-not-published",
+      "sequence": 1794136517213453,
+      "files": {
+        "manifest.json": {
+          "bytes": 6872,
+          "sha256": "156b4483dd90d5efe9e6543ada0436f4a906113456c9a5529454c936bcdb57b3"
+        },
+        "desktop.zip": {
+          "bytes": 210308,
+          "sha256": "c2405d0be8c9e4082750a046846fddecfcf974400dc9e90b8f949bb15e064157"
+        },
+        "android.zip": {
+          "bytes": 173847,
+          "sha256": "9fdb4cbeb940e070c32b2fa3833476ea5b5956cd02015acb7ad8277b0a75ebd8"
+        }
+      }
+    },
+    {
+      "revision": "0.2.67",
+      "path": "dist/ui/0.2.67/",
+      "status": "archived",
+      "sequence": 1793960550127289,
+      "files": {
+        "manifest.json": {
+          "bytes": 6872,
+          "sha256": "e68c740b087ec4493f5421a5521162bd688cbd0455eb78337eda8108610c1c2a"
+        },
+        "desktop.zip": {
+          "bytes": 210182,
+          "sha256": "d3aca6b60f968ea8bd54094947f3743f299e2029fe1c956ccd315117ecc6256a"
+        },
+        "android.zip": {
+          "bytes": 173721,
+          "sha256": "5c06cc11c9e9b6977535f970a1848736f180c2ce68d66cad5b3a2773fec7835f"
+        }
+      }
+    },
+    {
+      "revision": "0.2.66",
+      "path": "dist/ui/0.2.66/",
+      "status": "archived",
+      "sequence": 1793639568611929,
+      "files": {
+        "manifest.json": {
+          "bytes": 6872,
+          "sha256": "d65cf6a710bc5d9564be2ceb8dbf3c3cba2424d25f27540e9d0639354595b2a3"
+        },
+        "desktop.zip": {
+          "bytes": 209947,
+          "sha256": "b912e21bd9be1a29daec8a911924b919b30d7d7940cf029b0b289b263ba9c8a7"
+        },
+        "android.zip": {
+          "bytes": 173721,
+          "sha256": "5c06cc11c9e9b6977535f970a1848736f180c2ce68d66cad5b3a2773fec7835f"
+        }
+      }
+    },
+    {
+      "revision": "0.2.58",
+      "path": "dist/ui/0.2.58/",
+      "status": "archived",
+      "sequence": 1793378971923862,
+      "files": {
+        "manifest.json": {
+          "bytes": 6568,
+          "sha256": "6132b510502140d3c3cad503f0c17ec8b76b0ffe8d27c3134d29d0caa2725c7b"
+        },
+        "desktop.zip": {
+          "bytes": 202786,
+          "sha256": "a2aa135db3873b44ae909a197ca6008114e10a655465db940610698141752960"
+        },
+        "android.zip": {
+          "bytes": 169581,
+          "sha256": "ef2ff9294ce9ef3eeb9574208b554ba6d462f3217cf6e82f4b0e92001d4dbf5b"
+        }
+      }
+    },
+    {
+      "revision": "0.2.42",
+      "path": "dist/ui/0.2.42/",
+      "status": "archived",
+      "sequence": 1792917931547497,
+      "files": {
+        "manifest.json": {
+          "bytes": 6244,
+          "sha256": "90349de624659790674019b6ada08203ce30a91b94d2bb747b066e131deb238b"
+        },
+        "desktop.zip": {
+          "bytes": 173387,
+          "sha256": "3ab060be71f3a603b55db27813425962a2435113455de7ce1d166c285bde1e20"
+        },
+        "android.zip": {
+          "bytes": 143744,
+          "sha256": "41f0cf2408717cf90dd5ca4a54d41043e2cabf8490b22a7388cb2106f9514369"
+        }
+      }
+    },
+    {
+      "revision": "0.2.41",
+      "path": "dist/ui/0.2.41/",
+      "status": "archived",
+      "sequence": 1792916295905657,
+      "files": {
+        "manifest.json": {
+          "bytes": 6244,
+          "sha256": "ef1e8dcb1068161d45eedf8dd7bb15c178e2e335ab636babd79fa424f91acfaf"
+        },
+        "desktop.zip": {
+          "bytes": 173384,
+          "sha256": "7360c195c26d2ea7cca5f00e2809afe648b4a38100eb1424d96024d5b490e66f"
+        },
+        "android.zip": {
+          "bytes": 142791,
+          "sha256": "5a3e66ceaf33302b9ff01050ec0a4a729e10d2b123838e4a410b92b233629a9a"
+        }
+      }
+    },
+    {
+      "revision": "0.2.40",
+      "path": "dist/ui/0.2.40/",
+      "status": "archived",
+      "sequence": 1792906914361268,
+      "files": {
+        "manifest.json": {
+          "bytes": 6244,
+          "sha256": "6dcb42345e1d40e75cb6a3a2c19de3e19fb5902124336b6f17106c6ba8f8d5f6"
+        },
+        "desktop.zip": {
+          "bytes": 173189,
+          "sha256": "07a6db8e57c38670d3e5076c92e658f3af767bbaee77b7fd76e6651b505cdf48"
+        },
+        "android.zip": {
+          "bytes": 142269,
+          "sha256": "60ce81a5835744e561852e4015cbcbb35d23965490b54b892a050365cf74bd3b"
+        }
+      }
+    },
+    {
+      "revision": "0.2.39",
+      "path": "dist/ui/0.2.39/",
+      "status": "archived",
+      "sequence": 1792889463746380,
+      "files": {
+        "manifest.json": {
+          "bytes": 6244,
+          "sha256": "5bbadfc35052650cc255ae002f19ce561ceaa04443d70352c3c90715a47c5bc2"
+        },
+        "desktop.zip": {
+          "bytes": 173220,
+          "sha256": "b316c8db21b88261b1d7f96a988196180cf709af4e623cd86f7767da30137868"
+        },
+        "android.zip": {
+          "bytes": 137517,
+          "sha256": "338370149a5d9b4992e8237072d56e56e0d0cb0ae540107e6a611f9373f0f085"
+        }
+      }
+    },
+    {
+      "revision": "0.2.34",
+      "path": "dist/ui/0.2.34/",
+      "status": "archived",
+      "sequence": 1792819337333838,
+      "files": {
+        "manifest.json": {
+          "bytes": 6244,
+          "sha256": "259b68d9b8c31c06a0eba40dc42122e8bff2a1181eba3c0d9fa40831061e9bc0"
+        },
+        "desktop.zip": {
+          "bytes": 156735,
+          "sha256": "9eb469d89af1571a279a2b22427e2cac1fb98a02286297ad39517521198baee9"
+        },
+        "android.zip": {
+          "bytes": 137517,
+          "sha256": "338370149a5d9b4992e8237072d56e56e0d0cb0ae540107e6a611f9373f0f085"
+        }
+      }
+    },
+    {
+      "revision": "0.2.33",
+      "path": "dist/ui/0.2.33/",
+      "status": "archived",
+      "sequence": 1792811719829651,
+      "files": {
+        "manifest.json": {
+          "bytes": 6244,
+          "sha256": "68b430c84118b1f0fd48af24f11c473a51f52b8f9f334581d1a33d9cfd118229"
+        },
+        "desktop.zip": {
+          "bytes": 154473,
+          "sha256": "76bcf2cc6aca4d108b90e428e385c9da32f31f19c2b438fb0265f79a3001d247"
+        },
+        "android.zip": {
+          "bytes": 137517,
+          "sha256": "338370149a5d9b4992e8237072d56e56e0d0cb0ae540107e6a611f9373f0f085"
+        }
+      }
+    },
+    {
+      "revision": "0.2.32",
+      "path": "dist/ui/0.2.32/",
+      "status": "archived",
+      "sequence": 1792784922115084,
+      "files": {
+        "manifest.json": {
+          "bytes": 6244,
+          "sha256": "d9deb29822525e54c88dbe0bbf1cfb5b61a7bd6637eb8c9655aa9f445042c358"
+        },
+        "desktop.zip": {
+          "bytes": 152278,
+          "sha256": "460d855e294b430641658096616a46ab79a39b962d35455ff229d83356ed2da7"
+        },
+        "android.zip": {
+          "bytes": 136561,
+          "sha256": "3db9473af0292465d6950a3a3c689bb71604bc86eb7ef36cdad0bdb8a6fc74eb"
+        }
+      }
+    },
+    {
+      "revision": "0.2.31",
+      "path": "dist/ui/0.2.31/",
+      "status": "archived",
+      "sequence": 1792781425346860,
+      "files": {
+        "manifest.json": {
+          "bytes": 6244,
+          "sha256": "9f8c789dafa4b1f007fb93694b906bbff77144d776f17da70f2ee6ddaf834ea5"
+        },
+        "desktop.zip": {
+          "bytes": 151806,
+          "sha256": "652502f166fc981392e1c026e9248d295ba0ea10cb9f932794b9e4a7b4bc995c"
+        },
+        "android.zip": {
+          "bytes": 136561,
+          "sha256": "3db9473af0292465d6950a3a3c689bb71604bc86eb7ef36cdad0bdb8a6fc74eb"
+        }
+      }
+    },
+    {
+      "revision": "0.2.29",
+      "path": "dist/ui/0.2.29/",
+      "status": "archived",
+      "sequence": 1792777334270783,
+      "files": {
+        "manifest.json": {
+          "bytes": 6244,
+          "sha256": "9f55714eb7ee15ad6b9a397d9a75cd2171c4980d9745cfe674ae624dd37c61f1"
+        },
+        "desktop.zip": {
+          "bytes": 151701,
+          "sha256": "225c93f57c5fb4824322b5fe688a5eb121228cd9f5f1d3e78cff8bbc152234ba"
+        },
+        "android.zip": {
+          "bytes": 136456,
+          "sha256": "0c666611bfc642be56c254ceb545133ade10a718f316e01f91256adb6f3098b3"
+        }
+      }
+    },
+    {
+      "revision": "0.2.28",
+      "path": "dist/ui/0.2.28/",
+      "status": "archived",
+      "sequence": 1792775162638831,
+      "files": {
+        "manifest.json": {
+          "bytes": 6244,
+          "sha256": "97fd521457ae38d3c6a945800fbab139fca5aacff59d1a7c1db4b62e09ab8049"
+        },
+        "desktop.zip": {
+          "bytes": 151701,
+          "sha256": "225c93f57c5fb4824322b5fe688a5eb121228cd9f5f1d3e78cff8bbc152234ba"
+        },
+        "android.zip": {
+          "bytes": 136213,
+          "sha256": "24f1bfc3e4c8e1b95812361e0a25254739768b5938fe63774d20c462c747c048"
+        }
+      }
+    },
+    {
+      "revision": "0.2.23",
+      "path": "dist/ui/0.2.23/",
+      "status": "archived",
+      "sequence": 1792744544008082,
+      "files": {
+        "manifest.json": {
+          "bytes": 6244,
+          "sha256": "4439009b4acb29bd5836fd4f5cb10437a08b58e8eb41d6f907380c0db913079c"
+        },
+        "desktop.zip": {
+          "bytes": 150255,
+          "sha256": "0c8e825239bee3a1bb94087be9320b8a3835401e8aba3552d42fc62b3f7be1f2"
+        },
+        "android.zip": {
+          "bytes": 134331,
+          "sha256": "78d45c97e797c24392a27b2b987dd3786a015aae4133d9d83b17a566998cf970"
+        }
+      }
+    },
+    {
+      "revision": "0.2.22",
+      "path": "dist/ui/0.2.22/",
+      "status": "archived",
+      "sequence": 1792742645075610,
+      "files": {
+        "manifest.json": {
+          "bytes": 6244,
+          "sha256": "1444783f25f1b656e37942005cb7af8e4d2c9094e3f198aaaa89db775ab5d807"
+        },
+        "desktop.zip": {
+          "bytes": 150206,
+          "sha256": "568daa7469f1b614f59d792a42c37c9d60eb5f762aeee0e784554eafd9e510eb"
+        },
+        "android.zip": {
+          "bytes": 134331,
+          "sha256": "78d45c97e797c24392a27b2b987dd3786a015aae4133d9d83b17a566998cf970"
+        }
+      }
+    },
+    {
+      "revision": "0.2.19",
+      "path": "dist/ui/0.2.19/",
+      "status": "archived",
+      "sequence": 1792722875871365,
+      "files": {
+        "manifest.json": {
+          "bytes": 4316,
+          "sha256": "01c1c9bbf39678023c0ac7c6bcf7b1a2b6693813192c1dcb0247f7867da4833c"
+        },
+        "desktop.zip": {
+          "bytes": 138879,
+          "sha256": "b0e7e9522fe366312efd59141b29b2919c5eeb858d4fec893185305b70394be8"
+        },
+        "android.zip": {
+          "bytes": 126936,
+          "sha256": "f970de67472e2b761afe90ab37b564d75c98348eb97fa9ee707285d3875f87c9"
+        }
+      }
+    },
+    {
+      "revision": "ui-20261023-wss-readable-controls-r2",
+      "path": "dist/ui/ui-20261023-wss-readable-controls-r2/",
+      "status": "archived",
+      "sequence": 1792689084532281,
+      "files": {
+        "manifest.json": {
+          "bytes": 4436,
+          "sha256": "52ad87adbbd9412c8affba8bd434733818f00a6fbe83d8777f87cb3cc91106de"
+        },
+        "desktop.zip": {
+          "bytes": 135590,
+          "sha256": "7886e65a84f7b809a5e39f18a71468e84465ae8afaf4fae9096f1bf2961d8216"
+        },
+        "android.zip": {
+          "bytes": 123834,
+          "sha256": "d6abe779f24fae24984c7c2d1bb0c40f27419cd985ffe6bf11c81322ab52d10d"
+        }
+      }
+    },
+    {
+      "revision": "ui-20261023-wss-fullscreen-controls",
+      "path": "dist/ui/ui-20261023-wss-fullscreen-controls/",
+      "status": "archived",
+      "sequence": 1792688270549384,
+      "files": {
+        "manifest.json": {
+          "bytes": 4432,
+          "sha256": "416e5eb504aeb40fbcf727ca4c342b1b6946c0c92f85c91d8a57eecb8f9aa957"
+        },
+        "desktop.zip": {
+          "bytes": 135364,
+          "sha256": "8b0438b08962d00f07029d6ed49781d4da90f941e94c02216e22cc72beb19e76"
+        },
+        "android.zip": {
+          "bytes": 123571,
+          "sha256": "a239ef54699a0aff3743bb6d493a42c77b1f924ac7318b48daa6a1d3c672521b"
+        }
+      }
+    },
+    {
+      "revision": "ui-20261023-terminal-readability-r8",
+      "path": "dist/ui/ui-20261023-terminal-readability-r8/",
+      "status": "archived",
+      "sequence": 1792725168469994,
+      "files": {
+        "manifest.json": {
+          "bytes": 4432,
+          "sha256": "883141429079f9dead2a39e5f194f465f075d6260d3f9d1d519e3f22e43b9fc3"
+        },
+        "desktop.zip": {
+          "bytes": 139255,
+          "sha256": "790a2e82c884f1a4e455c1c3c4a1050e9a004f309a74f32f560e046a79c884cb"
+        },
+        "android.zip": {
+          "bytes": 127674,
+          "sha256": "05e23bf10666a695deb3a02d8aeb51acbbd228333c795d97a1c3c39e2cf7dc9e"
+        }
+      }
+    },
+    {
+      "revision": "ui-20261023-relay-auto-discovery-r4",
+      "path": "dist/ui/ui-20261023-relay-auto-discovery-r4/",
+      "status": "archived",
+      "sequence": 1792719342348963,
+      "files": {
+        "manifest.json": {
+          "bytes": 4432,
+          "sha256": "05c40a2a9f2a9a3dfad855f953bbad9c07649e9ec2c0db1c304af73bc10f2810"
+        },
+        "desktop.zip": {
+          "bytes": 136623,
+          "sha256": "865fe59e9034e223e77de582f5e1db48e4fbff583e7bd31e342d4dd2edbfe5a5"
+        },
+        "android.zip": {
+          "bytes": 125468,
+          "sha256": "5e277f1b66abd944e585b76e413ebd0b21c207b003dacfbfcb071d5f70aedb06"
+        }
+      }
+    },
+    {
+      "revision": "ui-20261023-mobile-highlighting-r3",
+      "path": "dist/ui/ui-20261023-mobile-highlighting-r3/",
+      "status": "archived",
+      "sequence": 1792718599897403,
+      "files": {
+        "manifest.json": {
+          "bytes": 4428,
+          "sha256": "a7a47a3524b1f70235736f5a1a038c6c7c2973a623edf4d0f59383cb1b115473"
+        },
+        "desktop.zip": {
+          "bytes": 135590,
+          "sha256": "7886e65a84f7b809a5e39f18a71468e84465ae8afaf4fae9096f1bf2961d8216"
+        },
+        "android.zip": {
+          "bytes": 125468,
+          "sha256": "5e277f1b66abd944e585b76e413ebd0b21c207b003dacfbfcb071d5f70aedb06"
+        }
+      }
+    },
+    {
+      "revision": "ui-20261023-mobile-fit-agent-labels-r7",
+      "path": "dist/ui/ui-20261023-mobile-fit-agent-labels-r7/",
+      "status": "archived",
+      "sequence": 1792724313074515,
+      "files": {
+        "manifest.json": {
+          "bytes": 4444,
+          "sha256": "8a95a14aa52bb5b7fb94abb2303fe7a88775bff81954ec20e9c9917a262fe19d"
+        },
+        "desktop.zip": {
+          "bytes": 139226,
+          "sha256": "435ec90db4d650a8090b1dd4638c57e81c9c0d6e5b1a3392a3355ac1fa152693"
+        },
+        "android.zip": {
+          "bytes": 127634,
+          "sha256": "8d573ff667abbd6a4384ecca02ff3a01d39822dac387a086d3579b86c9322f02"
+        }
+      }
+    },
+    {
+      "revision": "ui-20261023-mobile-auto-discovery-r6",
+      "path": "dist/ui/ui-20261023-mobile-auto-discovery-r6/",
+      "status": "archived",
+      "sequence": 1792721984474059,
+      "files": {
+        "manifest.json": {
+          "bytes": 4436,
+          "sha256": "23f1d430dbb646985357d50340138e81ae4ff0c73a70c277d731fb27f12121d8"
+        },
+        "desktop.zip": {
+          "bytes": 136623,
+          "sha256": "865fe59e9034e223e77de582f5e1db48e4fbff583e7bd31e342d4dd2edbfe5a5"
+        },
+        "android.zip": {
+          "bytes": 126585,
+          "sha256": "6981bd2c6749e7077e5018ed1be1a22edef12219fc401eee55470dba9449365d"
+        }
+      }
+    },
+    {
+      "revision": "ui-20261023-mobile-auto-discovery-r5",
+      "path": "dist/ui/ui-20261023-mobile-auto-discovery-r5/",
+      "status": "archived",
+      "sequence": 1792721781490451,
+      "files": {
+        "manifest.json": {
+          "bytes": 4436,
+          "sha256": "692870adcece83b1a0eb342276a3f3ab8e69bcd481c2161b33c583261efefb8c"
+        },
+        "desktop.zip": {
+          "bytes": 136623,
+          "sha256": "865fe59e9034e223e77de582f5e1db48e4fbff583e7bd31e342d4dd2edbfe5a5"
+        },
+        "android.zip": {
+          "bytes": 126506,
+          "sha256": "24b1e979cbfa1d9109358ce99442d792c1b4cb0b7e1f58ea5cbc4c6e7c581968"
+        }
+      }
+    },
+    {
+      "revision": "ui-20261022-independent-layout",
+      "path": "dist/ui/ui-20261022-independent-layout/",
+      "status": "archived",
+      "sequence": 1792676526581966,
+      "files": {
+        "manifest.json": {
+          "bytes": 4412,
+          "sha256": "66ceffbf9a9b801de6fff190f9ea6b5280ef4aca90cd538a0e215b3742c4ab4c"
+        },
+        "desktop.zip": {
+          "bytes": 135223,
+          "sha256": "c333bc61229e0ed57c93e766fb490daed7450bd1b41ef3925a02e6f692048cf9"
+        },
+        "android.zip": {
+          "bytes": 122182,
+          "sha256": "96a2736aee86394fdef80b2ed92a165b1675b9d007b1f907cffdebf6db239234"
+        }
+      }
+    },
+    {
+      "revision": "ui-20261022-bootstrap",
+      "path": "dist/ui/ui-20261022-bootstrap/",
+      "status": "archived",
+      "sequence": 1792638698818992,
+      "files": {
+        "manifest.json": {
+          "bytes": 4376,
+          "sha256": "a5153d1396b5e095c38a019dc4f04caf23918d3f7cc977eff463038fa132d649"
+        },
+        "desktop.zip": {
+          "bytes": 135227,
+          "sha256": "466d4548df2168cd6cb8428ac11e6e17516a39840ca7bdc2791be23a69959eff"
+        },
+        "android.zip": {
+          "bytes": 121926,
+          "sha256": "1153f9cd17c64e95daeb2eb7e30f9d48d0b3f284539c1f2a66446581efb14c10"
+        }
+      }
+    },
+    {
+      "revision": "20261022T160733Z-3aa0bbbf",
+      "path": "dist/ui/20261022T160733Z-3aa0bbbf/",
+      "status": "archived",
+      "sequence": 1792685253642651,
+      "files": {
+        "manifest.json": {
+          "bytes": 4392,
+          "sha256": "8f430d5184859b274a8763adf8219863b48278417a7aa5c3e3d156aa0fc47dab"
+        },
+        "desktop.zip": {
+          "bytes": 135549,
+          "sha256": "637c2bb1d2c22ad4d0cc87b2762467f000009fc4aa8710df2784745e67da95d8"
+        },
+        "android.zip": {
+          "bytes": 122182,
+          "sha256": "96a2736aee86394fdef80b2ed92a165b1675b9d007b1f907cffdebf6db239234"
+        }
+      }
+    }
+  ],
+  "legacyBuildDirectories": [
+    "dist/android-global-workspace/",
+    "dist/android-icon/",
+    "dist/android-notifications/",
+    "dist/android-notifications-final/",
+    "dist/android-ui-editor/",
+    "dist/android-ui-updates/",
+    "dist/windows-global-workspace/",
+    "dist/windows-hidden/",
+    "dist/windows-independent-layout/",
+    "dist/windows-linked/",
+    "dist/windows-notifications/",
+    "dist/windows-paste-fix/",
+    "dist/windows-relay-accounts/",
+    "dist/windows-render-fixed/",
+    "dist/windows-responsive/",
+    "dist/windows-secure-readable/",
+    "dist/windows-sidebar-status/",
+    "dist/windows-tabs/",
+    "dist/windows-todo-complete/",
+    "dist/windows-ui-updates/",
+    "dist/windows-workspaces/",
+    "dist/windows-workspaces-current/"
+  ]
+}

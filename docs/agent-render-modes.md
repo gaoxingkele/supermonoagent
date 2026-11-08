@@ -27,6 +27,16 @@ Grok、Claude Code 与 Cursor CLI 在共用主题上进一步区分工具调用�
 
 这些配置只修饰默认前景字格，不改变终端字节、原生 ANSI/真彩色、暗淡提示或输入区。共享主题使用绿色 `#7ee787` 光标；Windows 与 Android 在 Cursor CLI 下改用条形光标，其他模式保持块形光标。Grok 额外覆盖搜索、引用及常见读写/执行工具，Claude Code 覆盖 Read、Write、Edit、MultiEdit、Bash、Task、Glob、Grep、TodoWrite、WebSearch 等工具，Cursor CLI 覆盖行首状态、`thinking:`/`context:` 状态栏、Review、Apply、Diff 等状态与同类工具。
 
+### 2026-11-08 Cursor 前缀状态修正（0.2.70 候选）
+
+适用范围：Windows 桌面和 Android 手机的所有 Cursor CLI 显示模式，包括自动识别及手动选择；没有按机器名、窗口名或会话 ID 限制规则。`JINLONG3090 / TimesJEV` 仅作为用户指定的现场检查对象。两端直接加载同一份共享 `cursor-cli.json`，使用一致的状态蓝、工具紫、命令／链接青、路径／数字黄、成功绿和错误红，正文保留灰白。
+
+Cursor 的状态行可能带圆点、框线或箭头，例如 `● Thinking`、`│ Working`、`→ Review`。原规则要求状态词直接位于行首，因此漏掉这些行；Codex 的对应规则没有这个限制。修改 `cursor-cli.json`，仅放宽已知状态标签前的界面符号，并拆分 `thinking:`/`context:` 规则以满足长度限制；主题、正文和原生 ANSI/暗淡文字保持原样。Node 回归先复现失败，修复后 14 项通过；Windows、Android、灰色推荐和打包回归 13 项通过。
+
+`JINLONG3090 / TimesJEV` 手机现场原先为自动模式，后台只有 PowerShell 元数据，无法认出 Cursor。已按用户指定将该终端的手机显示设为 Cursor CLI，绿色条形光标及持久化选择已核对。该主机当前返回的是 26 字节空快照（153×43，epoch 132，`partial=true`、`reason=resize_boundary`），无正文；不能把候选样例的颜色对比当成该真实窗口的视觉验收，也不能仅由客户端补色恢复源端未提供的文本。
+
+候选完整签名界面包：`.omx/ui-releases/stable/releases/0.2.70/`，两端包含相同的共享 Cursor JSON。当前尚未发布：`117.50.48.22:22` 在 SSH 密钥校验前断开，Git SSH 与 Windows OpenSSH 均复现；未更改在线频道。证据及对比图：`.omx/artifacts/cursor-timesjev-20261108/{profile-comparison.png,profile-comparison.json,probe-relay.json,mode-cursor.json}`。桌面原生检查通道也不可用（native pipe 不存在），没有将本机或远端桌面效果写成已验收。
+
 ## 统一修改与调试
 
 1. 编辑上表中的单个 JSON，在 Windows 和 Android 选择同一模式验证。
