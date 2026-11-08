@@ -9,7 +9,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 MOBILE_FILES = ("index.html", "app.js", "app.css", "mobile-core.js")
-VENDOR_FILES = ("xterm.js", "xterm.css", "xterm-fit.js", "xterm-unicode11.js", "xterm-webgl.js", "terminal-client.js", "file-client.js", "file-upload.js")
+VENDOR_FILES = ("xterm.js", "xterm.css", "xterm-fit.js", "xterm-unicode11.js", "xterm-webgl.js", "xterm-links.js", "terminal-client.js", "file-client.js", "file-upload.js")
 AGENT_MODES = ("codex", "claude-code", "grok", "kimi", "pi-dev", "cursor-cli")
 MAX_BYTES = 5 * 1024 * 1024
 

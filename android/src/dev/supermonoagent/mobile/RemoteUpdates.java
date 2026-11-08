@@ -19,15 +19,24 @@ import javax.net.ssl.SSLParameters;
 public final class RemoteUpdates {
     public static final int NATIVE_API=2, MANIFEST_LIMIT=128*1024, FILE_LIMIT=4*1024*1024,
             TOTAL_LIMIT=5*1024*1024, ARCHIVE_LIMIT=8*1024*1024;
-    public static final String DEFAULT_FEED="https://117.50.48.22/updates/stable/android/manifest.json";
+    public static final String DEFAULT_FEED="https://117.50.48.22/updates/stable/manifest.json";
     public static final List<String> FILES=Collections.unmodifiableList(Arrays.asList(
         "mobile/index.html","mobile/app.js","mobile/app.css","mobile/mobile-core.js",
         "mobile/vendor/xterm.js","mobile/vendor/xterm.css","mobile/vendor/xterm-fit.js",
-        "mobile/vendor/xterm-unicode11.js","mobile/vendor/xterm-webgl.js","mobile/vendor/terminal-client.js",
+        "mobile/vendor/xterm-unicode11.js","mobile/vendor/xterm-webgl.js","mobile/vendor/xterm-links.js","mobile/vendor/terminal-client.js",
         "mobile/vendor/file-client.js","mobile/vendor/file-upload.js",
         "mobile/agent-modes/codex.json","mobile/agent-modes/claude-code.json","mobile/agent-modes/grok.json",
         "mobile/agent-modes/kimi.json","mobile/agent-modes/pi-dev.json","mobile/agent-modes/cursor-cli.json"));
+    private static final Set<String> LEGACY_FILES;
+    static {
+        Set<String> legacy=new HashSet<>(FILES);legacy.remove("mobile/vendor/xterm-links.js");
+        LEGACY_FILES=Collections.unmodifiableSet(legacy);
+    }
     private RemoteUpdates() { }
+    /** Old signed API2 snapshots remain complete 18-file revisions, never mixed with APK bytes. */
+    private static boolean supportedFiles(Set<String> paths) {
+        return paths.equals(LEGACY_FILES)||paths.size()==FILES.size()&&paths.containsAll(FILES);
+    }
     static void require(boolean condition,String reason) throws IOException {if(!condition)throw new IOException(reason);}
     @SuppressWarnings("unchecked") public static Map<String,Object> object(Object value) throws IOException {
         require(value instanceof Map,"Expected object");return (Map<String,Object>)value;
@@ -89,8 +98,8 @@ public final class RemoteUpdates {
             require(size>0&&size<=ARCHIVE_LIMIT,"Invalid archive size");long api=integer(artifact.get("native_api"));require(api>0&&api<=Integer.MAX_VALUE,"Invalid native API");nativeApi=(int)api;
             require(nativeApi==NATIVE_API,"Native shell upgrade required");
             String relative=string(artifact.get("url"));url=https(feed.resolve(relative));require(sameOrigin(feed,url),"Artifact origin refused");
-            files=object(artifact.get("files"));require(files.size()==FILES.size()&&files.keySet().containsAll(FILES),"Unexpected asset set");
-            long total=0;for(String path:FILES){Map<String,Object> item=object(files.get(path));digest(item.get("sha256"));long n=integer(item.get("size"));require(n>=0&&n<=FILE_LIMIT,"Invalid file size");total+=n;}require(total<=TOTAL_LIMIT,"Snapshot too large");envelope=raw.clone();
+            files=object(artifact.get("files"));require(supportedFiles(files.keySet()),"Unexpected asset set");
+            long total=0;for(String path:files.keySet()){Map<String,Object> item=object(files.get(path));digest(item.get("sha256"));long n=integer(item.get("size"));require(n>=0&&n<=FILE_LIMIT,"Invalid file size");total+=n;}require(total<=TOTAL_LIMIT,"Snapshot too large");envelope=raw.clone();
         }
     }
     public static Candidate verify(byte[] raw,byte[] trust,URI feed,long now,boolean fresh) throws Exception {
@@ -109,28 +118,28 @@ public final class RemoteUpdates {
         return new Candidate(revision(catalog.get("revision")),sequence,object(object(catalog.get("artifacts")).get("android")),raw,feed);
     }
     /** Inspect central metadata too: ZipInputStream alone does not expose Unix symlink bits. */
-    private static void central(byte[] bytes) throws Exception {
+    private static void central(byte[] bytes,Set<String> expected) throws Exception {
         ByteBuffer zip=ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);int end=-1;
         for(int i=bytes.length-22;i>=Math.max(0,bytes.length-65557);i--)if(zip.getInt(i)==0x06054b50&&i+22+(zip.getShort(i+20)&65535)==bytes.length){end=i;break;}
         require(end>=0,"Missing ZIP directory");int count=zip.getShort(end+10)&65535,offset=zip.getInt(end+16),length=zip.getInt(end+12);
-        require(zip.getShort(end+4)==0&&zip.getShort(end+6)==0&&(zip.getShort(end+8)&65535)==count&&count==FILES.size()&&offset>=0&&length>=0&&offset+length==end,"Invalid ZIP directory");
+        require(zip.getShort(end+4)==0&&zip.getShort(end+6)==0&&(zip.getShort(end+8)&65535)==count&&count==expected.size()&&offset>=0&&length>=0&&offset+length==end,"Invalid ZIP directory");
         Set<String> names=new HashSet<>();int pos=offset;
         for(int i=0;i<count;i++){
             require(pos+46<=end&&zip.getInt(pos)==0x02014b50,"Invalid ZIP entry");int name=zip.getShort(pos+28)&65535,extra=zip.getShort(pos+30)&65535,comment=zip.getShort(pos+32)&65535,flags=zip.getShort(pos+8)&65535;
             require(pos+46+name+extra+comment<=end&&(flags&1)==0,"Invalid ZIP metadata");long attributes=zip.getInt(pos+38)&0xffffffffL;int type=(int)(attributes>>>16)&0170000;
             require(type==0||type==0100000,"Non-regular ZIP entry");String path=new String(bytes,pos+46,name,StandardCharsets.UTF_8);
-            require(FILES.contains(path)&&names.add(path.toLowerCase(Locale.ROOT)),"Unexpected/duplicate ZIP entry");pos+=46+name+extra+comment;
+            require(expected.contains(path)&&names.add(path.toLowerCase(Locale.ROOT)),"Unexpected/duplicate ZIP entry");pos+=46+name+extra+comment;
         }require(pos==end,"Invalid ZIP directory length");
     }
     public static Map<String,byte[]> unpack(Candidate candidate,byte[] archive) throws Exception {
-        require(candidate.nativeApi==NATIVE_API,"Native shell upgrade required");require(archive.length==candidate.size&&hash(archive).equals(candidate.sha256),"Archive hash/size mismatch");central(archive);
+        require(candidate.nativeApi==NATIVE_API,"Native shell upgrade required");require(archive.length==candidate.size&&hash(archive).equals(candidate.sha256),"Archive hash/size mismatch");central(archive,candidate.files.keySet());
         Map<String,byte[]> result=new LinkedHashMap<>();int total=0;
         try(ZipInputStream zip=new ZipInputStream(new ByteArrayInputStream(archive))){ZipEntry entry;while((entry=zip.getNextEntry())!=null){
-            String path=entry.getName();require(FILES.contains(path)&&!entry.isDirectory()&&!result.containsKey(path),"Unexpected ZIP path");
+            String path=entry.getName();require(candidate.files.containsKey(path)&&!entry.isDirectory()&&!result.containsKey(path),"Unexpected ZIP path");
             ByteArrayOutputStream output=new ByteArrayOutputStream();byte[] buffer=new byte[8192];int count;
             while((count=zip.read(buffer))!=-1){require(output.size()+count<=FILE_LIMIT&&total+count<=TOTAL_LIMIT,"Expanded snapshot too large");output.write(buffer,0,count);total+=count;}
             byte[] bytes=output.toByteArray();Map<String,Object> info=object(candidate.files.get(path));require(bytes.length==integer(info.get("size"))&&hash(bytes).equals(info.get("sha256")),"Asset hash/size mismatch");result.put(path,bytes);
-        }}require(result.size()==FILES.size(),"Missing ZIP files");return result;
+        }}require(result.keySet().equals(candidate.files.keySet()),"Missing ZIP files");return result;
     }
     public static final class Boot {
         public final String ticket,revision,generation;
@@ -166,9 +175,9 @@ public final class RemoteUpdates {
             try{Files.move(temporary,destination,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);}catch(AtomicMoveNotSupportedException error){Files.move(temporary,destination,StandardCopyOption.REPLACE_EXISTING);}
         }
         private void writeSnapshot(String revision,Map<String,byte[]> files,byte[] envelope) throws Exception {
-            require(files.size()==FILES.size()&&files.keySet().containsAll(FILES),"Unexpected backup files");int total=0;for(byte[] bytes:files.values()){require(bytes!=null&&bytes.length<=FILE_LIMIT,"Oversized backup file");total+=bytes.length;}require(total<=TOTAL_LIMIT,"Oversized backup snapshot");
+            require(supportedFiles(files.keySet()),"Unexpected backup files");int total=0;for(byte[] bytes:files.values()){require(bytes!=null&&bytes.length<=FILE_LIMIT,"Oversized backup file");total+=bytes.length;}require(total<=TOTAL_LIMIT,"Oversized backup snapshot");
             require(!Files.exists(root.resolve("snapshots").resolve(revision)),"Revision already exists");Path stage=root.resolve("snapshots").resolve("stage-"+UUID.randomUUID());Files.createDirectory(stage);
-            Map<String,Object> hashes=new LinkedHashMap<>();for(String path:FILES){byte[] bytes=files.get(path);require(bytes!=null,"Incomplete backup");Path file=stage.resolve(path);Files.createDirectories(file.getParent());Files.write(file,bytes);hashes.put(path,hash(bytes));}
+            Map<String,Object> hashes=new LinkedHashMap<>();for(String path:files.keySet()){byte[] bytes=files.get(path);require(bytes!=null,"Incomplete backup");Path file=stage.resolve(path);Files.createDirectories(file.getParent());Files.write(file,bytes);hashes.put(path,hash(bytes));}
             Files.write(stage.resolve("hashes.json"),Json.encode(hashes));if(envelope!=null)Files.write(stage.resolve("envelope.json"),envelope);
             Files.move(stage,root.resolve("snapshots").resolve(revision),StandardCopyOption.ATOMIC_MOVE);
         }
@@ -183,10 +192,10 @@ public final class RemoteUpdates {
         public synchronized Map<String,byte[]> snapshot(String revision) throws Exception {
             if(revision==null)return null;require(revision.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,79}")&&!revision.contains(".."),"Invalid local revision");
             Path directory=root.resolve("snapshots").resolve(revision);require(!Files.isSymbolicLink(directory)&&!Files.isSymbolicLink(directory.getParent()),"Unsafe snapshot directory");Map<String,Object> hashes=object(Json.parse(read(Files.newInputStream(directory.resolve("hashes.json")),MANIFEST_LIMIT)));
-            require(hashes.size()==FILES.size()&&hashes.keySet().containsAll(FILES),"Incomplete local snapshot");Map<String,byte[]> result=new LinkedHashMap<>();int total=0;
+            require(supportedFiles(hashes.keySet()),"Incomplete local snapshot");Map<String,byte[]> result=new LinkedHashMap<>();int total=0;
             Candidate candidate=Files.exists(directory.resolve("envelope.json"))?verify(read(Files.newInputStream(directory.resolve("envelope.json")),MANIFEST_LIMIT),trust,feed,0,false):null;
-            if(candidate!=null)require(candidate.revision.equals(revision)&&candidate.nativeApi==NATIVE_API,"Cached snapshot identity/API mismatch");
-            for(String path:FILES){Path file=directory.resolve(path);require(!Files.isSymbolicLink(file)&&file.toRealPath().startsWith(directory.toRealPath()),"Unsafe local snapshot");byte[] bytes=read(Files.newInputStream(file),FILE_LIMIT);total+=bytes.length;require(total<=TOTAL_LIMIT&&hash(bytes).equals(digest(hashes.get(path))),"Corrupt local snapshot");if(candidate!=null){Map<String,Object> info=object(candidate.files.get(path));require(hash(bytes).equals(info.get("sha256"))&&bytes.length==integer(info.get("size")),"Corrupt signed snapshot");}result.put(path,bytes);}return result;
+            if(candidate!=null)require(candidate.revision.equals(revision)&&candidate.nativeApi==NATIVE_API&&candidate.files.keySet().equals(hashes.keySet()),"Cached snapshot identity/API mismatch");
+            for(String path:hashes.keySet()){Path file=directory.resolve(path);require(!Files.isSymbolicLink(file)&&file.toRealPath().startsWith(directory.toRealPath()),"Unsafe local snapshot");byte[] bytes=read(Files.newInputStream(file),FILE_LIMIT);total+=bytes.length;require(total<=TOTAL_LIMIT&&hash(bytes).equals(digest(hashes.get(path))),"Corrupt local snapshot");if(candidate!=null){Map<String,Object> info=object(candidate.files.get(path));require(hash(bytes).equals(info.get("sha256"))&&bytes.length==integer(info.get("size")),"Corrupt signed snapshot");}result.put(path,bytes);}return result;
         }
         public synchronized Boot beginBoot() throws Exception {synchronized(lock){reload();
             if(!Boolean.TRUE.equals(state.get("pending")))return new Boot("",active(),"");String ticket=UUID.randomUUID().toString();state.put("ticket",ticket);state.put("boot_deadline",clock.getAsLong()+20000);save();return new Boot(ticket,active(),string(state.get("install_generation")));

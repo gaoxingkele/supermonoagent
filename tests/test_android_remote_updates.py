@@ -3,6 +3,8 @@ import base64
 import copy
 import hashlib
 import http.server
+import importlib.util
+import inspect
 import io
 import json
 from pathlib import Path
@@ -10,6 +12,7 @@ import shutil
 import ssl
 import subprocess
 import threading
+from urllib.parse import urljoin
 import zipfile
 
 import pytest
@@ -31,6 +34,7 @@ public class RemoteCheck {
  interface Throwing{void run()throws Exception;}
  static Map<String,byte[]> baseline(){Map<String,byte[]> files=new LinkedHashMap<>();for(String name:RemoteUpdates.FILES)files.put(name,("effective USB baseline "+name).getBytes(java.nio.charset.StandardCharsets.UTF_8));return files;}
  public static void main(String[] a)throws Exception{
+  if(a[0].equals("default-feed")){URI feed=URI.create(RemoteUpdates.DEFAULT_FEED);System.out.println(feed);System.out.println(feed.resolve(a[1]));return;}
   if(a[0].equals("download")){
    java.net.CookieManager cookies=new java.net.CookieManager();cookies.getCookieStore().add(URI.create(a[1]),new java.net.HttpCookie("account","MUST-NOT-SEND"));java.net.CookieHandler.setDefault(cookies);
    java.net.Authenticator.setDefault(new java.net.Authenticator(){protected java.net.PasswordAuthentication getPasswordAuthentication(){return new java.net.PasswordAuthentication("account","MUST-NOT-SEND".toCharArray());}});
@@ -41,7 +45,7 @@ public class RemoteCheck {
    catch(java.io.IOException error){check(error.getMessage().contains("Native shell upgrade required"),"Missing native upgrade message");System.out.println("native-shell-upgrade-required");}return;
   }
   if(a[0].equals("document")){
-   check(RemoteUpdates.NATIVE_API==2&&RemoteUpdates.FILES.size()==18,"API2 asset baseline missing");
+   check(RemoteUpdates.NATIVE_API==2&&RemoteUpdates.FILES.size()==19,"API2 asset baseline missing");
    String profileOrigin="https://terminal.example.test",profileRevision="test-2";
    for(String mode:Arrays.asList("codex","claude-code","grok","kimi","pi-dev","cursor-cli")){
     String path="mobile/agent-modes/"+mode+".json";
@@ -68,6 +72,19 @@ public class RemoteCheck {
    check(!new String(safe,"UTF-8").contains("MUST-NOT")&&!new String(safe,"UTF-8").contains("accounts"),"Credential exported");System.out.println("trusted-document-and-state-ok");return;
   }
   byte[] trust=bytes(a[1]);URI feed=URI.create(a[2]);long now=Long.parseLong(a[3]);
+  if(a[0].equals("catalog-upgrade")){
+   Path root=Paths.get(a[4]);byte[] old=bytes(a[5]),oldZip=bytes(a[6]),modern=bytes(a[7]),modernZip=bytes(a[8]);
+   RemoteUpdates.Store store=new RemoteUpdates.Store(root,trust,feed);Map<String,byte[]> legacy=baseline();legacy.remove("mobile/vendor/xterm-links.js");
+   store.install(old,oldZip,legacy,now);RemoteUpdates.Boot first=store.beginBoot();check(store.acknowledge(first.ticket,first.revision,first.generation),"Legacy startup failed");
+   Map<String,Object> pointer=RemoteUpdates.object(RemoteUpdates.Json.parse(Files.readAllBytes(root.resolve("state.json"))));
+   Map<String,byte[]> backup=store.snapshot((String)pointer.get("previous"));check(backup.keySet().equals(legacy.keySet()),"Legacy effective backup changed asset set");
+   for(String path:legacy.keySet())check(Arrays.equals(legacy.get(path),backup.get(path)),"Legacy backup bytes mixed");
+   store=new RemoteUpdates.Store(root,trust,feed);check(store.snapshot(first.revision).size()==18,"Stored legacy snapshot lost");
+   store.install(modern,modernZip,legacy,now);check(store.snapshot(store.active()).size()==19,"Modern snapshot incomplete");
+   store.rollback();check(store.active().equals(first.revision)&&store.highest()==11,"Legacy rollback or high water lost");
+   Map<String,byte[]> restored=store.snapshot(store.active());check(restored.size()==18&&!restored.containsKey("mobile/vendor/xterm-links.js"),"Rollback mixed asset generations");
+   System.out.println("legacy-modern-exact-catalog-backup-rollback-ok");return;
+  }
   if(a[0].equals("scenario")){
    Path root=Paths.get(a[4]);byte[] one=bytes(a[5]),zip1=bytes(a[6]),two=bytes(a[7]),zip2=bytes(a[8]),three=bytes(a[9]),zip3=bytes(a[10]),conflict=bytes(a[11]);
    java.util.concurrent.atomic.AtomicLong clock=new java.util.concurrent.atomic.AtomicLong(1000000L);RemoteUpdates.Store store=new RemoteUpdates.Store(root,trust,feed,clock::get);Map<String,byte[]> baseline=baseline();
@@ -83,7 +100,7 @@ public class RemoteCheck {
    }finally{pool.shutdown();}
    RemoteUpdates.Boot boot2=store.beginBoot();check(!store.acknowledge(boot1.ticket,boot1.revision,boot1.generation),"Late previous ready accepted");check(!store.acknowledge(boot2.ticket,boot2.revision,"old-generation"),"Wrong install generation accepted");clock.addAndGet(20001L);check(!store.acknowledge(boot2.ticket,boot2.revision,boot2.generation),"Late ready committed after persistent deadline");
    check(store.active().equals(boot1.revision)&&store.highest()==2,"Rollback downgraded highest or lost previous");reject(()->store.install(two,zip2,baseline,now));
-   reject(()->RemoteUpdates.verify(one,trust,feed,now+10000000L,true));check(store.snapshot(boot1.revision).size()==RemoteUpdates.FILES.size(),"Known good naturally expired snapshot unavailable");
+   reject(()->RemoteUpdates.verify(one,trust,feed,now+10000000L,true));check(store.snapshot(boot1.revision).size()==RemoteUpdates.verify(one,trust,feed,0,false).files.size(),"Known good naturally expired snapshot unavailable");
    store.install(three,zip3,baseline,now);store.beginBoot();RemoteUpdates.Store restarted=new RemoteUpdates.Store(root,trust,feed);
    check(restarted.active().equals(boot1.revision)&&restarted.highest()==3,"Unfinished startup was not recovered");
    Files.createDirectories(root.resolve("snapshots/stage-interrupted"));new RemoteUpdates.Store(root,trust,feed).snapshot(restarted.active());
@@ -136,6 +153,23 @@ def test_bridge_mainframe_generation_ticket_and_credential_free_state(jvm):
     jvm[0]('document')
 
 
+def test_native_default_feed_matches_publisher_and_resolves_release_artifacts(jvm):
+    spec=importlib.util.spec_from_file_location('native_update_publisher',ROOT/'scripts/ui_update_release.py')
+    publisher=importlib.util.module_from_spec(spec);spec.loader.exec_module(publisher)
+    published_feed=inspect.signature(publisher.package).parameters['feed'].default
+    artifact='releases/fixture-release/android.zip'
+    native_feed,native_artifact=jvm[0]('default-feed',artifact).stdout.splitlines()
+    assert native_feed==published_feed
+    assert native_artifact==urljoin(published_feed,artifact)
+    assert '/android/releases/' not in native_artifact
+
+
+def test_actual_packaged_mobile_html_rewrites_all_current_resources(jvm):
+    result = jvm[0]('html', ROOT/'android/assets/mobile/index.html', ROOT/'android/assets/update-bridge.js')
+    assert '/mobile/vendor/xterm-links.js?ui_revision=fixture-iframe' in result.stdout
+    assert '/mobile/app.js?ui_revision=fixture-iframe' in result.stdout
+
+
 def signed(payload,private):
     raw=json.dumps(payload,separators=(',',':'),sort_keys=True).encode()
     signature=subprocess.run([OPENSSL,'dgst','-sha256','-sign',str(private)],input=raw,capture_output=True,check=True).stdout
@@ -152,9 +186,9 @@ def signing(tmp_path_factory,vectors):
     return directory,private,trust,payload
 
 
-def release(directory,private,original,sequence,revision=None,zip_mutator=None):
+def release(directory,private,original,sequence,revision=None,zip_mutator=None,asset_names=None):
     payload=copy.deepcopy(original);payload.update(sequence=sequence,revision=revision or 'fixture-'+str(sequence))
-    files={name:('actual revision '+str(sequence)+' '+name).encode() for name in original['artifacts']['android']['files']}
+    files={name:('actual revision '+str(sequence)+' '+name).encode() for name in (asset_names if asset_names is not None else original['artifacts']['android']['files'])}
     output=io.BytesIO()
     with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
         for name,value in files.items():archive.writestr(name,value)
@@ -166,6 +200,37 @@ def release(directory,private,original,sequence,revision=None,zip_mutator=None):
 def test_effective_backup_observed_sequence_failed_boot_and_restart(jvm,signing,vectors,tmp_path):
     _,private,trust,payload=signing;one=release(tmp_path,private,payload,1);two=release(tmp_path,private,payload,2);three=release(tmp_path,private,payload,3);conflict=release(tmp_path,private,payload,1,'conflicting-one')
     jvm[0]('scenario',trust,FEED,vectors['now'],tmp_path/'store',*one,*two,*three,conflict[0])
+
+
+def test_legacy_signed_snapshot_upgrade_and_rollback_keep_exact_catalog(jvm,signing,vectors,tmp_path):
+    _,private,trust,payload=signing
+    legacy=set(payload['artifacts']['android']['files'])-{'mobile/vendor/xterm-links.js'}
+    modern=legacy|{'mobile/vendor/xterm-links.js'}
+    assert len(legacy)==18 and len(modern)==19
+    old=release(tmp_path,private,payload,10,asset_names=sorted(legacy))
+    new=release(tmp_path,private,payload,11,asset_names=sorted(modern))
+    jvm[0]('catalog-upgrade',trust,FEED,vectors['now'],tmp_path/'store',*old,*new)
+
+
+@pytest.mark.parametrize('catalog',['modern','missing-profile','extra-file','substituted-file','missing-link-archive'])
+def test_modern_catalog_accepts_only_exact_signed_assets(jvm,signing,vectors,tmp_path,catalog):
+    _,private,trust,payload=signing
+    names=set(payload['artifacts']['android']['files'])|{'mobile/vendor/xterm-links.js'}
+    if catalog=='missing-profile':names.remove('mobile/agent-modes/codex.json')
+    elif catalog=='extra-file':names.add('mobile/vendor/unlisted.js')
+    elif catalog=='substituted-file':names.remove('mobile/vendor/xterm-links.js');names.add('mobile/vendor/unlisted.js')
+    envelope,archive=release(tmp_path,private,payload,12,asset_names=sorted(names))
+    if catalog=='missing-link-archive':
+        with zipfile.ZipFile(archive) as original:
+            output=io.BytesIO()
+            with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as result:
+                for name in original.namelist():
+                    if name!='mobile/vendor/xterm-links.js':result.writestr(name,original.read(name))
+        data=output.getvalue();archive.write_bytes(data)
+        changed=json.loads(base64.b64decode(json.loads(envelope.read_bytes())['payload']))
+        changed['artifacts']['android'].update(size=len(data),sha256=hashlib.sha256(data).hexdigest())
+        envelope.write_bytes(signed(changed,private))
+    jvm[0]('unpack',trust,FEED,vectors['now'],envelope,archive,'accept' if catalog=='modern' else 'reject')
 
 
 def test_signed_symlink_zip_is_refused(jvm,signing,vectors,tmp_path):
@@ -363,7 +428,11 @@ def test_native_healthy_navigation_reuses_webview_and_separates_crash_recovery()
     assert 'retireFailedRenderer(failed,generation)' in source
     assert 'rendererRecovery.rendererGone(web,generation)' in source
     assert 'getWebViewRenderProcess()' in source and 'process.terminate()' in source
-    assert 'addJavascriptInterface(' not in source
+    assert source.count('addJavascriptInterface(')==1
+    external=source[source.index('terminal.addJavascriptInterface('):source.index('terminal.setWebChromeClient(')]
+    assert '@JavascriptInterface public void openExternal(String url)' in external
+    assert 'value.startsWith("http://")' in external and 'value.startsWith("https://")' in external
+    assert 'Intent.ACTION_VIEW' in external and '},"smaShell")' in external
     assert 'ui-bundled-only' in source and 'First save the old developer UI drafts from EVERY window' in source
     assert 'getExternalFilesDir' in source and 'active.txt' not in source,'Native recovery must not edit the USB active pointer'
 

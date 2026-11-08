@@ -1,5 +1,6 @@
 """Validate complete USB UI snapshots using the actual Java loader, without Android stubs."""
 import importlib.util
+from html.parser import HTMLParser
 import pathlib
 import shutil
 import subprocess
@@ -74,8 +75,8 @@ public class HotCheck {
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
 
     def test_complete_package_loads_and_keeps_immutable_snapshot(self):
-        self.assertEqual(len(list(self.directory.rglob("*.js"))), 9)
-        self.assertEqual(len((self.directory / "manifest.properties").read_text().splitlines()), 19)
+        self.assertEqual(len(list(self.directory.rglob("*.js"))), 10)
+        self.assertEqual(len((self.directory / "manifest.properties").read_text().splitlines()), 20)
         self.assertEqual(len(list((self.directory / "mobile/agent-modes").glob("*.json"))), 6)
         for name in PACKAGER.AGENT_MODES:
             packaged = self.directory / "mobile/agent-modes" / (name + ".json")
@@ -85,14 +86,45 @@ public class HotCheck {
         # A subsequent instance detects the changed bytes and safely uses bundled assets.
         self.check()
 
+    def test_document_dependencies_are_in_the_verified_snapshot(self):
+        class Dependencies(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.paths = []
+
+            def handle_starttag(self, tag, attributes):
+                attributes = dict(attributes)
+                if tag == "script" and "src" in attributes:
+                    self.paths.append(attributes["src"])
+                elif tag == "link" and attributes.get("rel") == "stylesheet":
+                    self.paths.append(attributes["href"])
+
+        document = Dependencies()
+        document.feed((self.directory / "mobile/index.html").read_text("utf-8"))
+        manifest = (self.directory / "manifest.properties").read_text("ascii")
+        for dependency in document.paths:
+            with self.subTest(dependency=dependency):
+                path = "mobile/" + dependency
+                self.assertIn("file." + path + "=", manifest)
+                self.assertTrue((self.directory / path).is_file())
+
     def test_legacy_twelve_file_usb_override_falls_back_without_mixing_apk_profiles(self):
         manifest=self.directory/"manifest.properties"
-        legacy="\n".join(line for line in manifest.read_text().splitlines() if not line.startswith("file.mobile/agent-modes/"))+"\n"
+        legacy="\n".join(line for line in manifest.read_text().splitlines() if not line.startswith("file.mobile/agent-modes/") and not line.startswith("file.mobile/vendor/xterm-links.js="))+"\n"
         self.assertEqual(len(legacy.splitlines()),13)
         manifest.write_text(legacy,encoding="ascii")
         self.check()
         self.assertEqual(self.pointer.read_text(),"test_ui_1\n")
         self.assertEqual(manifest.read_text(),legacy)
+
+    def test_snapshot_missing_link_provider_falls_back_without_changing_pointer(self):
+        manifest = self.directory / "manifest.properties"
+        partial = "\n".join(line for line in manifest.read_text().splitlines()
+                            if not line.startswith("file.mobile/vendor/xterm-links.js=")) + "\n"
+        manifest.write_text(partial, encoding="ascii")
+        self.check()
+        self.assertEqual(self.pointer.read_text(), "test_ui_1\n")
+        self.assertEqual(manifest.read_text(), partial)
 
     def test_missing_partial_and_tampered_updates_fall_back(self):
         self.pointer.unlink()

@@ -1,0 +1,98 @@
+﻿[
+    {
+        "path":  "CHANGELOG.txt",
+        "sha256":  "1b38d3258251a05b6df1ae9a22f9aae1dd53a7a3745a63e8d2ae5b26b48d7287"
+    },
+    {
+        "path":  "connection-defaults.json",
+        "sha256":  "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+        "path":  "mobile/agent-modes/claude-code.json",
+        "sha256":  "02fabccf65cbdf1da5150fa4433d5df67b2da4e27889dcbe10beea7da517719f"
+    },
+    {
+        "path":  "mobile/agent-modes/codex.json",
+        "sha256":  "55fe9dbbd9b267ed4a757d54619ffbbf6b7cf6994b19a67d8b4b06229a13709a"
+    },
+    {
+        "path":  "mobile/agent-modes/cursor-cli.json",
+        "sha256":  "fd21d4c51877d30e893fbe4193ebb87002d61bd97b4b96e747c9b18a8393544e"
+    },
+    {
+        "path":  "mobile/agent-modes/grok.json",
+        "sha256":  "b5552bebb940c99cac616b524e8e6e3e6ae5dd21589f455436a730037942970b"
+    },
+    {
+        "path":  "mobile/agent-modes/kimi.json",
+        "sha256":  "907b8602a9fdbd3f2791bc26418de02eb512fb905a4128d24cac7f0dfdf67f08"
+    },
+    {
+        "path":  "mobile/agent-modes/pi-dev.json",
+        "sha256":  "9d462149cda77e709d2bb5481b570084ad77c6feb4df9ebff14c7c5f0faf22fe"
+    },
+    {
+        "path":  "mobile/app.css",
+        "sha256":  "3f05192a0030b0c1686db88c89f9a0e46159458fd5f7a336c2b89e01329ebd2c"
+    },
+    {
+        "path":  "mobile/app.js",
+        "sha256":  "c473fac4343cc3159ed0d77b3b9e7db042300731d656008ee8104eccc23cb5ff"
+    },
+    {
+        "path":  "mobile/index.html",
+        "sha256":  "9df0a95a6f1a67954ac679bc0d2821d649cf70f794980c0d29ce08fc8f75594f"
+    },
+    {
+        "path":  "mobile/mobile-core.js",
+        "sha256":  "313eddcfe88e7ee6fddb5d9e4303818b5bfa1e8ada182b595bf0f6b39303349b"
+    },
+    {
+        "path":  "mobile/vendor/file-client.js",
+        "sha256":  "397192ef297931fb78de106e7727ed3759f0fe7621f5cf10d0cea43e06a69a40"
+    },
+    {
+        "path":  "mobile/vendor/file-upload.js",
+        "sha256":  "1e17c9497b3d09839d24490027b175dc8d8b5ea9c6376d87b3591a4b3452757b"
+    },
+    {
+        "path":  "mobile/vendor/terminal-client.js",
+        "sha256":  "230135228feccead4acc384e1f447c3895b89805c96721a41aafa74389b5eac5"
+    },
+    {
+        "path":  "mobile/vendor/xterm.css",
+        "sha256":  "ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6"
+    },
+    {
+        "path":  "mobile/vendor/xterm.js",
+        "sha256":  "959435438fe351992e805fe12ba6b6d4f4feb22f53b0b091ac42a2e72263566e"
+    },
+    {
+        "path":  "mobile/vendor/xterm-fit.js",
+        "sha256":  "bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089"
+    },
+    {
+        "path":  "mobile/vendor/xterm-links.js",
+        "sha256":  "807773aa4d597782796dbb81a2dcd3115717f758e4396199728861c5373a790f"
+    },
+    {
+        "path":  "mobile/vendor/xterm-unicode11.js",
+        "sha256":  "b0c3be540a9984713aea996966c24ed1a639d11f60d44986b22661e3a8a148d0"
+    },
+    {
+        "path":  "mobile/vendor/xterm-webgl.js",
+        "sha256":  "097966742f20263c29d848a113e7ca71a50f56ccc045f54cdfed673fdae7bdd8"
+    },
+    {
+        "path":  "update-api.json",
+        "sha256":  "10e77a1749a3f966f25c92da66727ce781d1af4bb8e608d14eeb4e0841214b2c"
+    },
+    {
+        "path":  "update-bridge.js",
+        "sha256":  "d0442922548de0b0db30d602ffdb436396097e4c419594cc06bd20642c47f6f3"
+    },
+    {
+        "path":  "update-trust.json",
+        "sha256":  "7eb045b47b475b453ebd942157c771d7f6eee387d6f72e70859823d72efd601e"
+    }
+]

@@ -51,8 +51,11 @@ class AndroidEndpointTest(unittest.TestCase):
                          "onRenderProcessGone", "Uri.encode(pageConnection.toString())", "UpdateDocument.asset(base,request.getUrl().toString(),revision)",
                          "request.isForMainFrame()", "UpdateDocument.action(base,web.getUrl()", "generation==documentGeneration"):
             self.assertIn(expected, activity)
-        for unsafe in ("addJavascriptInterface(", ".proceed()", 'putString("token"', "setAllowUniversalAccessFromFileURLs(true)"):
+        for unsafe in (".proceed()", 'putString("token"', "setAllowUniversalAccessFromFileURLs(true)"):
             self.assertNotIn(unsafe, activity)
+        self.assertEqual(activity.count("addJavascriptInterface("), 1)
+        self.assertIn('@JavascriptInterface public void openExternal(String url)', activity)
+        self.assertIn('if(!value.startsWith("http://")&&!value.startsWith("https://"))return;', activity)
         script = (ROOT / "scripts/build-android.ps1").read_text(encoding="utf-8")
         self.assertIn("'-A', $stagedAssets", script)
         self.assertIn("packaged-assets.json", script)
