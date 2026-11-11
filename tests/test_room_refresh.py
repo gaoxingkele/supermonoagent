@@ -22,6 +22,8 @@ class RoomRefreshTest(unittest.IsolatedAsyncioTestCase):
             for window in list(daemon.hub.windows):
                 daemon.hub.close_window(window)
         await asyncio.sleep(.02)
+        for daemon in self.daemons:
+            await daemon.close_sidecars()
         self.temporary.cleanup()
 
     def daemon(self):

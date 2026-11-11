@@ -344,7 +344,9 @@ def test_actual_mobile_reload_preserves_tuple_drafts_modes_and_session_credentia
                             assert not session.pty.written,'Unsent drafts must never become terminal input during update'
                             await page.evaluate('MobileTerminal.pause()')
                         finally:await browser.close()
-            finally:daemon.hub.close_window(window.id)
+            finally:
+                daemon.hub.close_window(window.id)
+                await daemon.close_sidecars()
     asyncio.run(check())
 
 

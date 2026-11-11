@@ -162,6 +162,7 @@ async def check(playwright):
             for daemon in daemons:
                 for window_id in list(daemon.hub.windows):
                     daemon.hub.close_window(window_id)
+                await daemon.close_sidecars()
 
 
 async def wait_for(predicate):

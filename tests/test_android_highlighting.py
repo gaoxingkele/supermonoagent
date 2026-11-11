@@ -148,6 +148,7 @@ async def check_highlights(playwright, renderer):
                         await browser.close()
         finally:
             daemon.hub.close_window(window.id)
+            await daemon.close_sidecars()
 
 
 async def write(page, text):

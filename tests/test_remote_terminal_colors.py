@@ -185,6 +185,7 @@ async def _exercise(playwright, renderer):
                 uplink.cancel()
                 await asyncio.gather(uplink, return_exceptions=True)
                 daemon.hub.close_window(window.id)
+                await daemon.close_sidecars()
 
 
 def _assert_cells(report):

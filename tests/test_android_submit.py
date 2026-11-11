@@ -225,3 +225,4 @@ async def check_composer(playwright, action):
                 # while it can still schedule close_session on this event loop.
                 await asyncio.to_thread(reader.join)
                 await asyncio.sleep(0)
+            await daemon.close_sidecars()

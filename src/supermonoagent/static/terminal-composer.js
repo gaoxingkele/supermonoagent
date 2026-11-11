@@ -249,6 +249,19 @@
     if(destroyed)return;destroyed=true;for(const item of transfers)item.controller.abort();clearInterval(timer);window.removeEventListener('beforeunload',destroy);
     dialog.remove();openButton.remove();style.remove();drafts.length=0;current=null;delete window.SuperMonoTerminalComposer;
   }
-  window.SuperMonoTerminalComposer={open,close:dismiss,destroy,pasteClipboard,addFiles,get busy(){return transfers.size>0;}};
+  // Quote is a draft mutation only. The existing explicit insert action owns PTY paste.
+  function appendQuote(text,source,expected){
+    if(typeof text!=='string'||!text||!source||!expected||destroyed)return false;
+    let target;try{target=capture();}catch{return false;}
+    if(!active(target)||target.pane!==expected.pane||target.generation!==expected.generation||source.targetKey!==target.key)return false;
+    const formatter=window.TerminalClient?.formatQuote;if(typeof formatter!=='function')return false;
+    const quote=formatter(text,source);if(typeof quote!=='string'||!quote)return false;
+    remember();let draft;try{draft=draftFor(target);}catch{return false;}
+    draft.text+=(draft.text&&!draft.text.endsWith('\n')?'\n':'')+quote;draft.revision++;
+    draft.message='引用已追加到草稿；尚未插入终端。';
+    if(current?.draft===draft)textarea.value=draft.text;
+    open();return true;
+  }
+  window.SuperMonoTerminalComposer={open,close:dismiss,destroy,pasteClipboard,addFiles,appendQuote,get busy(){return transfers.size>0;}};
   window.addEventListener('beforeunload',destroy,{once:true});render();
 })();

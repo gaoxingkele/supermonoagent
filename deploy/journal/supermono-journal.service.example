@@ -1,0 +1,26 @@
+[Unit]
+Description=Private Supermono journal archive (independent of terminal relay)
+After=network.target
+
+[Service]
+Type=simple
+User=sma-journal
+Group=sma-journal
+WorkingDirectory=/opt/supermono-journal
+ExecStart=/opt/supermono-journal/venv/bin/python -m supermonoagent.conversation_service --root /var/lib/supermono-journal --auth-file /etc/supermono-journal/owners.json --port 8794 --origin https://REPLACE_WITH_EXISTING_RELAY_AUTHORITY
+Restart=on-failure
+RestartSec=3
+UMask=0077
+StateDirectory=supermono-journal
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/supermono-journal
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

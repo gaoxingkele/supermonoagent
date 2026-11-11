@@ -1,12 +1,14 @@
 # Wiki Index
 
-> 9 pages | Last updated: 2026-11-08
+> 10 pages | Last updated: 2026-11-11
 
 ## reference
 
 - [Windows 0.2.52 发布与交接](windows-release-0.2.52.md) — 同版本源码／安装包、验证证据、运维边界和暂停后的恢复条件
 
 ## decision
+
+- [后台会话记录](conversation-journal.md) — 原始与对话投影、私有存储、收尾与同步证据，以及尚未通过的部署边界
 
 - [文件粘贴与 mylib 助理](clipboard-and-mylib-assistant.md) — 后台任务隔离、原生桥接、证据账本及真实剪贴板验收边界
 

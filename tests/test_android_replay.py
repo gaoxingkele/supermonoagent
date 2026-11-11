@@ -123,6 +123,7 @@ async def check_replay(playwright):
         finally:
             daemon.hub.detach(desktop.key)
             daemon.hub.close_window(window.id)
+            await daemon.close_sidecars()
 
 
 async def assert_replay(page, session_id, cols, rows, label):

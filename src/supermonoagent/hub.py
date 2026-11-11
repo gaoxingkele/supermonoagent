@@ -45,6 +45,9 @@ class Session:
     rows: int = 28
     io_lock: threading.Lock = field(default_factory=threading.Lock)
     task_detector: TaskStateDetector = field(default_factory=TaskStateDetector)
+    process_generation: str = field(default_factory=lambda: secrets.token_hex(16))
+    journal_id: str | None = None
+    journal_error: str | None = None
 
 
 @dataclass
@@ -78,6 +81,7 @@ class Client:
     history_context: bool = False
     history_resume: bool = False
     history_chunks: bool = False
+    conversation_journal: bool = False
     subscriptions: set[str] = field(default_factory=set)
     failure: str = ""
     feed_offsets: dict[str, int] = field(default_factory=dict)
@@ -153,6 +157,8 @@ class Hub:
         self._lock = threading.Lock()
         self._seq = 0
         self.default_owner = ""
+        self.journals = None
+        self.journal_factory = None
         self.machine = ""
         self.project = "默认"
         self._ensure_default()
@@ -164,6 +170,10 @@ class Hub:
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self.loop = loop
+        if self.journals is None and self.journal_factory is not None:
+            self.journal_factory()
+        if self.journals is not None:
+            self.journals.start_background(loop)
 
     def attach(self, queue: asyncio.Queue, key: str | None = None, token: str = "") -> Client:
         with self._lock:
@@ -200,7 +210,7 @@ class Hub:
         owned = {group.id for group in groups}
         windows = [window for window in self.windows.values() if owner is None or window.group_id in owned]
         return {
-            "capabilities": CAPABILITIES,
+            "capabilities": {**CAPABILITIES, **({'conversation_journal': 1} if self.journals is not None else {})},
             "windows": [
                 {
                     "id": window.id,
@@ -210,6 +220,8 @@ class Hub:
                     "focused": window.focused,
                     "sessions": [
                         {"id": item.id, "shell": item.shell, "cwd": item.cwd,
+                         **({'journal_id': item.journal_id, 'process_generation': item.process_generation} if item.journal_id else {}),
+                         **({'journal_error': item.journal_error} if item.journal_error else {}),
                          **({"output_age_ms": item.pump.output_age_ms()} if history_context else {}),
                          **({"agent": item.task_detector.app} if item.task_detector.app else {})}
                         for item in window.sessions.values()
@@ -453,6 +465,15 @@ class Hub:
             pty=pty,
         )
         session.pump.mark_grid(session.cols, session.rows)
+        if self.journals is not None:
+            try:
+                group = self.groups[window.group_id]
+                session.journal_id = self.journals.open_session(session,
+                    owner_scope=self.journals.owner_scope(group.owner), room=group.channel,
+                    title=window.title)
+            except Exception:
+                # Optional storage must never prevent an authorized CLI launch.
+                session.journal_error = 'storage_unavailable'
         with self._lock:
             window.sessions[session.id] = session
             window.focused = session.id
@@ -795,20 +816,24 @@ class Hub:
     def _hello(self, client: Client) -> bytes:
         return pack_json(
             OP_HELLO_OK,
-            {**(self.summary(client.token, history_context=True) if client.history_context else self.summary(client.token)), "selected": client.window_id or "", "session": client.session_id or "",
+            {**self._client_summary(client), "selected": client.window_id or "", "session": client.session_id or "",
              **({"controls": self.controls(client)} if client.multiplex else {})},
         )
 
     def _read(self, session: Session) -> None:
-        while not session.stop.is_set():
+        outcome = 'exited'
+        while True:
             try:
                 chunk = session.pty.read(4096)
             except PtyClosed:
                 break
             except Exception:
+                outcome = 'read_error'
                 break
             if not chunk:
                 break
+            if self.journals is not None and session.journal_id:
+                self.journals.record_output(session, chunk)
             # Observe fresh bytes before overflow/history coalescing, even when
             # no terminal viewer has subscribed to this session.
             self.loop.call_soon_threadsafe(self._task_output, session.id, chunk)
@@ -818,6 +843,8 @@ class Hub:
                 self.loop,
                 lambda data, overflow, sid=session.id: self._flushed(sid, data, overflow),
             )
+        if self.journals is not None and session.journal_id:
+            self.journals.end_session(session, outcome=outcome)
         self.loop.call_soon_threadsafe(self.close_session, session.id)
 
     def subscribe_task_events(self, client: Client, after: str = "", replay: bool = True) -> list[bytes]:
@@ -994,9 +1021,15 @@ class Hub:
             else:
                 self._send(client, self._feed_frame(client, op, session_id, chunk))
 
+    def _client_summary(self, client: Client) -> dict:
+        summary = self.summary(client.token, history_context=client.history_context)
+        if not client.conversation_journal or client.delegated:
+            summary['capabilities'].pop('conversation_journal', None)
+        return summary
+
     def _catalog(self) -> None:
         for client in list(self.clients.values()):
-            summary = self.summary(client.token, history_context=True) if client.history_context else self.summary(client.token)
+            summary = self._client_summary(client)
             if client.multiplex:
                 summary["controls"] = self.controls(client)
             self._send(client, pack_json(OP_SESSIONS, summary))

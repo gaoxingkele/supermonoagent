@@ -87,6 +87,155 @@
     const host=context.host;if(!host.connected||!host.supported)return false;
     return socketSend(host,C.pack(op,value instanceof Uint8Array?value:encoder.encode(JSON.stringify(value))));
   }
+  // Journal reads have a separate negotiated RPC; they never enter the PTY parser.
+  const journalPending=new Map();let journalSequence=0;
+  function journalTarget(pane){
+    if(!livePane(pane))throw Error('journal_target_changed');
+    const host=pane.host;
+    return {pane,host,ws:host.ws,generation:host.generation,token:host.config.token,relay:host.config.relay,
+      room:host.config.code,auth:host.config.authMode,account:accountFor(host.config.relay)?.session};
+  }
+  function journalCurrent(target){
+    const {pane,host}=target;
+    return livePane(pane)&&host.ws===target.ws&&host.generation===target.generation
+      &&host.config.token===target.token&&host.config.relay===target.relay&&host.config.code===target.room
+      &&host.config.authMode===target.auth&&accountFor(host.config.relay)?.session===target.account;
+  }
+  function journalArchiveCurrent(target){
+    const {pane,host}=target;
+    return panes.get(pane.sid)===pane&&hosts.get(host.id)===host&&host.config.token===target.token
+      &&host.config.relay===target.relay&&host.config.code===target.room&&host.config.authMode===target.auth
+      &&accountFor(host.config.relay)?.session===target.account;
+  }
+  function rejectJournalHost(host){
+    for(const [id,pending] of journalPending)if(pending.target.host===host){clearTimeout(pending.timer);journalPending.delete(id);pending.reject(Error('journal_target_changed'));}
+    for(const pane of panes.values())if(pane.host===host){
+      let archived=false;try{archived=journalArchiveCurrent(pane.journalDialogTarget)&&!!centralJournalURL(pane.journalDialogTarget);}catch{}
+      if(!archived){pane.journalDialog?.dispose();pane.journalDialog=null;}
+      restoreJournalTerminal(pane,false);
+    }
+  }
+  function receiveJournal(host,value){
+    const pending=journalPending.get(value?.request_id);if(!pending||pending.target.host!==host)return;
+    clearTimeout(pending.timer);journalPending.delete(value.request_id);
+    if(!journalCurrent(pending.target))pending.reject(Error('journal_target_changed'));
+    else if(value.ok===true)pending.resolve(value.result);else pending.reject(Error('journal_request_failed'));
+  }
+  function centralJournalURL(target){
+    // Central reads are opt-in and pinned to the already configured relay authority.
+    const explicit=params.get('journal_url')||target.host.config.journalURL;
+    if(!explicit||!target.relay||!target.room||!target.token)throw Error('journal_unavailable');
+    const relay=new URL(C.socketURL(target.relay,location.origin)),url=new URL(explicit);
+    if(url.host!==relay.host||url.protocol!==relay.protocol||url.pathname!=='/journals/ws'||url.search||url.hash||url.username||url.password)throw Error('journal_unavailable');
+    if(url.protocol!=='wss:'&&!['127.0.0.1','localhost','[::1]'].includes(url.hostname))throw Error('journal_unavailable');
+    return url.href;
+  }
+  function centralJournalRequest(target,action,values){
+    if(!['status','list','read_page','read_content'].includes(action))return Promise.reject(Error('journal_unavailable'));
+    let url;try{url=centralJournalURL(target);}catch(error){return Promise.reject(error);}
+    return new Promise((resolve,reject)=>{
+      const ws=new WebSocket(url),id='desktop-central-'+(++journalSequence);let settled=false,sent=false;
+      const finish=(error,result)=>{if(settled)return;settled=true;clearTimeout(timer);ws.close();error?reject(error):resolve(result);};
+      const timer=setTimeout(()=>finish(Error('journal_timeout')),10000);
+      ws.onopen=()=>{if(!journalArchiveCurrent(target)){finish(Error('journal_target_changed'));return;}ws.send(JSON.stringify({op:'hello',protocol:'sma-journal-1',role:'viewer',token:target.token,room:target.room}));};
+      ws.onmessage=event=>{try{
+        if(!journalArchiveCurrent(target)||typeof event.data!=='string'||encoder.encode(event.data).length>196608)throw Error();
+        const value=JSON.parse(event.data);
+        if(value.op==='hello'&&value.ok===true&&!sent){sent=true;ws.send(JSON.stringify({op:'request',request_id:id,action,params:values}));}
+        else if(value.op==='response'&&value.request_id===id)finish(value.ok===true?null:Error('journal_request_failed'),value.result);
+        else if(value.ok===false||value.error)finish(Error('journal_unavailable'));
+      }catch{finish(Error('journal_unavailable'));}};
+      ws.onerror=()=>finish(Error('journal_unavailable'));ws.onclose=()=>finish(Error('journal_unavailable'));
+    });
+  }
+  function journalRequest(target,action,values={}){
+    if(!journalCurrent(target))return journalArchiveCurrent(target)?centralJournalRequest(target,action,values):Promise.reject(Error('journal_target_changed'));
+    const host=target.host;
+    if(!host.connected||!host.supported||![1,true].includes(host.capabilities.conversation_journal))return centralJournalRequest(target,action,values);
+    return new Promise((resolve,reject)=>{
+      const id='desktop-'+(++journalSequence),timer=setTimeout(()=>{journalPending.delete(id);reject(Error('journal_timeout'));},10000);
+      journalPending.set(id,{target,resolve,reject,timer});
+      if(!send(target.pane,24,{request_id:id,action,params:values})){clearTimeout(timer);journalPending.delete(id);reject(Error('journal_unavailable'));}
+    });
+  }
+  function quoteJournal(target,text,source){
+    if(!journalCurrent(target)||panes.get(active)!==target.pane)return false;
+    return window.SuperMonoTerminalComposer?.appendQuote(text,source,{pane:target.pane,generation:target.generation})===true;
+  }
+  function journalOptions(target,inline=false){
+    return {root:inline?target.pane.journalLayer:undefined,inline,targetKey:target.pane.sid,
+      request:(action,values)=>journalRequest(target,action,values),isTargetCurrent:()=>journalCurrent(target)&&panes.get(active)===target.pane,
+      onCopy:async text=>{const native=window.pywebview?.api;if(typeof native?.clipboard_write_text==='function'){await native.clipboard_write_text(text);return;}if(!navigator.clipboard?.writeText)throw Error('clipboard_unavailable');await navigator.clipboard.writeText(text);},
+      onQuote:(text,source)=>quoteJournal(target,text,source),onOriginalTerminal:()=>{target.pane.journalDialog?.close();restoreJournalTerminal(target.pane);}};
+  }
+  function restoreJournalTerminal(pane,remember=true){
+    pane.journalInline?.dispose();pane.journalInline=null;pane.journalLayer.hidden=true;pane.el.classList.remove('journal-reading');
+    pane.journalReading=false;if(remember)pane.journalPreference=false;
+    if(pane.journalToggle){pane.journalToggle.textContent='代码：显示';pane.journalToggle.setAttribute('aria-pressed','true');}
+    if(pane.journalOriginal)pane.journalOriginal.hidden=true;
+  }
+  async function refreshPaneJournal(pane){
+    if(!pane.journalReading||!pane.journalInline||pane.journalHealthPending)return;
+    pane.journalHealthPending=true;const viewer=pane.journalInline;let target;
+    const current=()=>target&&journalCurrent(target)&&pane.journalReading&&pane.journalInline===viewer;
+    try{
+      target=journalTarget(pane);const manifest=await journalRequest(target,'status',{session_id:pane.raw});
+      if(!current())return;
+      if(manifest?.journal_id!==pane.journalManifest?.journal_id||manifest.source?.healthy!==true||manifest.source?.bound!==true
+        ||manifest.source?.supported!==true||manifest.local_error||manifest.capture_state!=='capturing'||manifest.storage?.available!==true){
+        restoreJournalTerminal(pane,false);notice('记录采集不可用，已恢复原始终端。');return;
+      }
+      if(Number.isSafeInteger(manifest.last_seq)&&manifest.last_seq>pane.journalManifest.last_seq){
+        if(await viewer.refresh()!==true||!current())return;
+      }
+      if(current())pane.journalManifest=manifest;
+    }catch{if(current()){restoreJournalTerminal(pane,false);notice('记录连接不可用，已恢复原始终端。');}}
+    finally{pane.journalHealthPending=false;}
+  }
+  async function showPaneJournal(pane){
+    if(pane.journalReading){restoreJournalTerminal(pane);return;}
+    let target;try{
+      target=journalTarget(pane);const manifest=await journalRequest(target,'status',{session_id:pane.raw});
+      if(!journalCurrent(target))return;
+      if(!manifest?.journal_id||manifest.source?.bound!==true||manifest.source?.supported!==true||manifest.source?.healthy!==true
+        ||manifest.capture_state!=='capturing'||manifest.local_error||manifest.storage?.available!==true){notice('代码折叠不可用：'+(manifest?.source?.reason||'对话来源未绑定、未支持或采集不健康')+'。原始终端保持可用。');return;}
+      pane.journalManifest=manifest;pane.journalPreference=true;pane.journalLayer.hidden=false;
+      pane.journalInline?.dispose();pane.journalInline=C.createConversationViewer(journalOptions(target,true));
+      await pane.journalInline.open({projection:'history',journalId:manifest.journal_id});
+      if(!journalCurrent(target)){restoreJournalTerminal(pane,false);return;}
+      pane.journalInline.setCodeVisible(false);pane.journalReading=true;pane.el.classList.add('journal-reading');
+      pane.journalToggle.textContent='代码：折叠';pane.journalToggle.setAttribute('aria-pressed','false');pane.journalOriginal.hidden=false;
+      pane.journalOriginal.focus();
+    }catch{if(!target||journalCurrent(target)){restoreJournalTerminal(pane,false);notice('代码折叠不可用：当前主机未支持记录或记录服务不可用。');}}
+  }
+  function openPaneJournal(pane,projection){
+    if(!pane){notice('请先选择终端窗口。');return;}
+    try{const target=journalTarget(pane);
+      if(!pane.journalDialog||!pane.journalDialogTarget||!journalCurrent(pane.journalDialogTarget)){pane.journalDialog?.dispose();pane.journalDialogTarget=target;pane.journalDialog=C.createConversationViewer(journalOptions(target));}
+      // The picker keeps archived generations selectable; no title/cwd matching.
+      pane.journalDialog.open({projection});
+    }catch{notice('记录不可用；请检查当前目标连接。');}
+  }
+  async function bindJournalSource(pane){
+    let target,dialog;
+    try{
+      target=journalTarget(pane);const manifest=await journalRequest(target,'status',{session_id:pane.raw});if(!journalCurrent(target))return;
+      dialog=node('dialog','journal-source-dialog');dialog.setAttribute('aria-label','绑定对话源');
+      const heading=node('h2','','绑定对话源'),hint=node('p','','请选择确切会话 ID；不会按目录、标题或最近时间自动匹配。'),choices=node('div','journal-source-choices'),state=node('p','');state.setAttribute('role','status');
+      const provider=node('select','');provider.setAttribute('aria-label','对话提供方');for(const [value,label] of [['codex','Codex'],['claude','Claude Code']]){const option=node('option','',label);option.value=value;provider.append(option);}
+      const load=async()=>{choices.replaceChildren();state.textContent='正在读取可选对话源…';const selected=provider.value;
+        try{const result=await journalRequest(target,'list_sources',{session_id:pane.raw,provider:selected});if(!dialog.open||!journalCurrent(target)||selected!==provider.value)return;
+          if(!Array.isArray(result?.sources)||result.sources.length>100)throw Error();state.textContent=result.sources.length?'仅绑定你明确选择的根会话；原生键盘输入覆盖取决于提供方证据。':'没有可绑定来源。';
+          for(const source of result.sources){if(typeof source.source_ref!=='string')continue;const pick=button(String(source.provider_session_id||'未知会话')+' · '+String(source.provider_version||'版本未知')+(source.supported===true?'':' · 支持待验证'),'绑定此确切对话源',async()=>{
+            if(!journalCurrent(target)||panes.get(active)!==pane){state.textContent='目标已改变，请重新打开绑定。';return;}pick.disabled=true;
+            try{await journalRequest(target,'bind_source',{session_id:pane.raw,source_ref:source.source_ref,terminal_generation:manifest.process_generation});if(journalCurrent(target)){state.textContent='绑定已保存；只有健康且已验证的来源支持折叠。';restoreJournalTerminal(pane);}}
+            catch{state.textContent='绑定失败；来源选择可能已过期，请重新读取。';pick.disabled=false;}
+          });choices.append(pick);}
+        }catch{if(dialog.open)state.textContent='来源选择不可用；请升级主机或检查提供方支持。';}};
+      provider.onchange=load;dialog.append(heading,hint,provider,choices,state,button('关闭','关闭来源选择',()=>dialog.close()));
+      dialog.addEventListener('close',()=>dialog.remove(),{once:true});document.body.append(dialog);dialog.showModal();await load();
+    }catch{dialog?.remove();notice('绑定不可用：当前主机未支持记录或无法读取终端状态。');}
+  }
   function connectionName(host){
     if(host.config.code)return '中继';
     const target=new URL(host.config.relay||location.origin,location.origin);
@@ -110,10 +259,11 @@
   }
   function handshake(host){
     if(host.helloSent||host.ws?.readyState!==WebSocket.OPEN)return;
-    host.helloSent=true;socketSend(host,C.pack(1,encoder.encode(JSON.stringify({...(tokenlessLocal(host.config)||host.config.authMode==='account'?{}:{token:host.config.token}),multiplex:true,reliable:true,history_context:1,history_resume:1,history_chunks:1,
+    host.helloSent=true;socketSend(host,C.pack(1,encoder.encode(JSON.stringify({...(tokenlessLocal(host.config)||host.config.authMode==='account'?{}:{token:host.config.token}),multiplex:true,reliable:true,history_context:1,history_resume:1,history_chunks:1,conversation_journal:1,
       channel:host.id==='local'?params.get('channel')||undefined:undefined}))));
   }
   function stopHost(host){
+    rejectJournalHost(host);
     host.daemonInfo=null;
     invalidateDaemonMonitorHost(host);
     if(host.id==='local'){runtimeDefaultToken='';if(prefilledTokenTarget){$('relay-profile-token').value='';prefilledTokenTarget='';}}
@@ -155,6 +305,7 @@
         const {op,payload}=C.unpack(new Uint8Array(event.data));
         if(op===2||op===7)sync(host,JSON.parse(decoder.decode(payload)),op===2);
         else if(op===20)receiveDaemonLogs(host,JSON.parse(decoder.decode(payload)));
+        else if(op===24&&[1,true].includes(host.capabilities.conversation_journal)&&payload.length<=196608)receiveJournal(host,JSON.parse(decoder.decode(payload)));
         else if(op===3||op===8||op===23){
           if((op===8||op===23)&&payload.length===0)return;
           if(op===23&&host.capabilities.history_context!==1)throw new Error('Unnegotiated history context');
@@ -183,6 +334,7 @@
     host.ws.onclose=event=>{
       if(!validOwner(context))return;
       host.daemonInfo=null;invalidateDaemonMonitorHost(host);
+      rejectJournalHost(host);
       host.connected=false;host.supported=false;clearInterval(host.pingTimer);
       for(const pane of panes.values())if(pane.host===host){pane.ready=false;pane.term.options.disableStdin=true;}
       host.phase=event.code===4001?'auth-failed':'reconnecting';host.meter.reset(performance.now());host.rates={tx:0,rx:0};
@@ -330,6 +482,9 @@
     pane.highlighter=C.createHighlighter(term,{enabled:highlightEnabled});
     pane.questions=window.TerminalQuestions?.create(pane,{enabled:highlightEnabled,isCurrent:livePane});
     panes.set(sid,pane);setRenderer(pane,false);updateAgentMode(pane);watchAgentContent(pane);
+    pane.journalLayer=node('div','pane-journal-layer');pane.journalLayer.hidden=true;screen.append(pane.journalLayer);
+    pane.journalToggle=button('代码：显示','显示或折叠此终端的代码记录',()=>showPaneJournal(pane));pane.journalToggle.setAttribute('aria-pressed','true');
+    pane.journalOriginal=button('原始终端','返回原始终端处理输入与权限确认',()=>{restoreJournalTerminal(pane);term.focus();});pane.journalOriginal.hidden=true;
     pane.followOutput=true;pane.followFrame=0;pane.followGeometry=viewportGeometry(pane);pane.userScrollUntil=0;
     const scrollIntent=event=>{
       const buffer=term.buffer.active;if(event.type==='wheel'&&event.deltaY>=0&&buffer.viewportY===buffer.baseY)return;
@@ -375,6 +530,7 @@
     pane.bindHeader=()=>{
       const context=owner(pane.host),guard=action=>(...args)=>{if(validOwner(context)&&livePane(pane))action(...args);};
       header.replaceChildren(title,own);
+      header.append(pane.journalToggle,pane.journalOriginal,button('绑定源','明确选择此终端的根对话源',guard(()=>bindJournalSource(pane))));
       header.oncontextmenu=guard(event=>tabMenu(event,data.win,context));
       header.append(button('接管','接管此终端尺寸',guard(()=>takeControl(sid))),button('刷新','强制后台终端全量重绘',guard(()=>redrawPane(pane))),button('改名','重命名窗口',guard(()=>rename(data.win.id,context))),button('结束','结束后台会话',guard(()=>terminate(sid))),button('×','关闭视图（保留后台进程）',guard(()=>removeView(sid))));
     };
@@ -622,6 +778,7 @@
   function replaceLeaf(tree,find,replacement){if(typeof tree==='string')return tree===find?replacement:tree;if(!tree)return replacement;return {...tree,a:replaceLeaf(tree.a,find,replacement),b:replaceLeaf(tree.b,find,replacement)};}
   function prune(tree,sid){if(typeof tree==='string')return tree===sid?null:tree;if(!tree)return null;const a=prune(tree.a,sid),b=prune(tree.b,sid);return a&&b?{...tree,a,b}:a||b;}
   function removeView(sid, redraw=true){
+    const journalPane=panes.get(sid);journalPane?.journalDialog?.dispose();journalPane?.journalInline?.dispose();
     openTabs=openTabs.filter(id=>id!==sid);layout=prune(layout,sid);
     if(active===sid){const first=tree=>typeof tree==='string'?tree:tree?first(tree.a):'';active=first(layout)||openTabs[openTabs.length-1]||'';}
     if(!layout&&active)layout=active;
@@ -759,6 +916,7 @@
     if(host?.connected)status((info?.session.cwd||'工作区已连接')+(host.meter.rtt===null?'':' · '+Math.round(host.meter.rtt)+' ms'));
     for(const pane of panes.values()){const lease=pane.host.controls[pane.raw];pane.own.textContent=lease?(lease.owner?'尺寸主控':'共享观看'):'';}
     $('take-control').disabled=!pane||!pane.host.connected;
+    for(const id of ['journal-history','journal-conversation'])if($(id))$(id).disabled=!pane;
     $('agent-mode').value=pane?.agentMode||'auto';$('agent-mode').disabled=!pane;
     for(const id of ['new-session','empty-new'])$(id).disabled=!host?.connected;
   }
@@ -1408,7 +1566,7 @@
     renderDiscovery();
   }
   function connectDirectory(directory){
-    stopDirectory(directory);const generation=directory.generation;directory.phase='connecting';
+    stopDirectory(directory);const generation=directory.generation;directory.revision=0;directory.phase='connecting';
     const live=()=>directories.get(directory.url)===directory&&directory.generation===generation;
     const socket=new WebSocket(directory.url);directory.ws=socket;
     socket.onopen=()=>{if(live())socket.send(JSON.stringify({op:'watch',rooms:directory.rooms,tokens:directory.tokens}));};
@@ -1510,6 +1668,9 @@
     socket.onmessage=event=>{try{const data=JSON.parse(event.data),host=data.op==='directory'&&data.hosts?.find(host=>host.code===code&&host.online);finish(host?'已验证在线电脑：'+[String(host.machine||'').slice(0,40),String(host.project||'').slice(0,40)].filter(Boolean).join(' / '):'无法验证此电脑的在线身份。');}catch{finish('中继不支持已知电脑目录。');}};
     socket.onerror=()=>finish('无法连接电脑目录。');socket.onclose=()=>finish('无法验证此电脑的在线身份。');
   };
+  for(const [id,projection] of [['journal-history','history'],['journal-conversation','conversation']])if($(id))$(id).onclick=()=>openPaneJournal(panes.get(active),projection);
+  const journalHealthTimer=setInterval(()=>{for(const pane of panes.values())void refreshPaneJournal(pane);},3000);
+  addEventListener('beforeunload',()=>clearInterval(journalHealthTimer),{once:true});
   const meterTimer=setInterval(()=>{for(const host of hosts.values())host.rates=host.meter.sample(performance.now());updateConnection();renderHosts();},1000);
   const activityTimer=setInterval(updateSessionDots,300);
   const repaintTimer=setInterval(()=>{if(!document.hidden)repaintPane(panes.get(active));},15000);

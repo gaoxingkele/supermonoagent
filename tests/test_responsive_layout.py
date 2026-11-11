@@ -106,3 +106,4 @@ async def _check_layout(playwright, route):
         finally:
             for window_id in list(daemon.hub.windows):
                 daemon.hub.close_window(window_id)
+            await daemon.close_sidecars()

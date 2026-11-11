@@ -92,8 +92,8 @@ class PublisherTest(unittest.TestCase):
                 folder=self.package(Path(tmp)/'out',revision='publisher-qa',openssl=self.tool)
             value=release.verify_local(folder,self.trust,self.tool)
             self.assertEqual(release.NATIVE_API,2)
-            self.assertEqual(len(release.DESKTOP),17)
-            self.assertEqual(len(release.ANDROID),18)
+            self.assertEqual(len(release.DESKTOP),18)
+            self.assertEqual(len(release.ANDROID),19)
             self.assertTrue(all(item['native_api']==2 for item in value['artifacts'].values()))
             self.assertLessEqual(value['sequence'],release.SAFE_INTEGER)
             for platform,allowed in [('desktop',release.DESKTOP),('android',release.ANDROID)]:

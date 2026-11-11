@@ -50,34 +50,41 @@ async def isolated_host(real_shell=False):
         "supermonoagent.daemon.STATE", Path(directory)
     ), patch.dict(os.environ, {"SUPERMONO_STATE_DIR": directory}):
         daemon = Daemon("integration-owner")
-        daemon.hub.persist = False
-        if not real_shell:
-            daemon.hub.pty_factory = lambda *_: ControlledPty()
-        daemon.hub.attach_loop(asyncio.get_running_loop())
         jobs = []
-        async with AsyncExitStack() as stack:
-            direct = await stack.enter_async_context(serve(daemon.handle_socket, "127.0.0.1", 0))
-            relay = Relay(development=True)
-            relay_server = await stack.enter_async_context(serve(relay.handler, "127.0.0.1", 0))
-            direct_url = f"ws://127.0.0.1:{direct.sockets[0].getsockname()[1]}/ws"
-            relay_url = f"ws://127.0.0.1:{relay_server.sockets[0].getsockname()[1]}/ws"
-            job = asyncio.create_task(relay_uplink(daemon, relay_url, "local-test", "test"))
-            jobs.append(job)
-            try:
-                async with asyncio.timeout(5):
-                    while relay_url not in daemon.relay_live:
-                        await asyncio.sleep(0.01)
-                yield daemon, direct_url, relay_url
-            finally:
-                for ws in list(daemon._relay_sockets.values()):
-                    await ws.close(code=1000)
-                for window_id in list(daemon.hub.windows):
-                    daemon.hub.close_window(window_id)
-                for task in jobs:
-                    task.cancel()
-                await asyncio.gather(*jobs, return_exceptions=True)
-                await asyncio.sleep(0.03)
-        await daemon.close_sidecars()
+        try:
+            daemon.hub.persist = False
+            if not real_shell:
+                daemon.hub.pty_factory = lambda *_: ControlledPty()
+            daemon.hub.attach_loop(asyncio.get_running_loop())
+            async with AsyncExitStack() as stack:
+                direct = await stack.enter_async_context(serve(daemon.handle_socket, "127.0.0.1", 0))
+                relay = Relay(development=True)
+                relay_server = await stack.enter_async_context(serve(relay.handler, "127.0.0.1", 0))
+                direct_url = f"ws://127.0.0.1:{direct.sockets[0].getsockname()[1]}/ws"
+                relay_url = f"ws://127.0.0.1:{relay_server.sockets[0].getsockname()[1]}/ws"
+                job = asyncio.create_task(relay_uplink(daemon, relay_url, "local-test", "test"))
+                jobs.append(job)
+                try:
+                    async with asyncio.timeout(5):
+                        while relay_url not in daemon.relay_live:
+                            await asyncio.sleep(0.01)
+                    yield daemon, direct_url, relay_url
+                finally:
+                    for ws in list(daemon._relay_sockets.values()):
+                        await ws.close(code=1000)
+                    for window_id in list(daemon.hub.windows):
+                        daemon.hub.close_window(window_id)
+                    for task in jobs:
+                        task.cancel()
+                    await asyncio.gather(*jobs, return_exceptions=True)
+                    await asyncio.sleep(0.03)
+        finally:
+            for task in jobs:
+                task.cancel()
+            await asyncio.gather(*jobs, return_exceptions=True)
+            for window_id in list(daemon.hub.windows):
+                daemon.hub.close_window(window_id)
+            await daemon.close_sidecars()
 
 
 async def receive_op(ws, wanted, timeout=5):

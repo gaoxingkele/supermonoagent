@@ -69,7 +69,7 @@ async def _check_browser(playwright, edge, legacy):
                     assert await page.locator("#tree .workspace-host-name").inner_text()
                     assert await page.locator('a[href="/legacy"]').count() == 0
                     await page.wait_for_function("smaWorkspace.terminal.cols === 77 && smaWorkspace.terminal.rows === 44")
-                    await page.locator(".pane-header").click()
+                    await page.locator(".pane-title").click()
                     await page.set_viewport_size({"width": 1440, "height": 900})
                     await page.wait_for_function("innerWidth === 1440")
                     assert session.resize_owner == native_owner

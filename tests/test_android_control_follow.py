@@ -168,3 +168,4 @@ async def exercise(playwright, renderer):
                         await browser.close()
         finally:
             daemon.hub.close_window(window.id)
+            await daemon.close_sidecars()

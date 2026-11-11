@@ -63,6 +63,46 @@ test('Grok Claude Code and Cursor CLI distinguish tools commands links and warni
   }finally{term.dispose();}
 });
 
+test('Claude Code colors anchored Read file summaries while keeping counts yellow and prose plain',async()=>{
+  const p=profile('claude-code'),term=new Terminal({cols:160,rows:16,allowProposedApi:true});
+  const summaries=['  Read 1 file','  Read 6 files','● Read 3 files','  ⏺ Read 12 files'];
+  const prose=['Read 1984 novel','We Read 3 files yesterday','Read 1 filename','→ Read 2 files',
+    'ordinary shell references stay plain'];
+  try{
+    for(const summary of summaries)await write(term,summary+' remaining details stay plain\r\n');
+    for(const line of prose)await write(term,line+'\r\n');
+    await write(term,'\x1b[38;2;240;180;210m  Read 2 files\x1b[0m\r\n');
+    for(const [row,summary] of summaries.entries()){
+      const spans=C.highlightSpans(term.buffer.active.getLine(row),term.cols,p),number=/\d+/.exec(summary);
+      for(const label of ['Read',summary.endsWith('files')?'files':'file']){
+        const start=summary.indexOf(label);
+        for(let x=start;x<start+label.length;x++)assert.ok(spans.some(s=>s.x<=x&&s.x+s.width>x&&s.foregroundColor==='#c678dd'),summary+' missing purple '+label);
+      }
+      for(let x=number.index;x<number.index+number[0].length;x++)assert.ok(spans.some(s=>s.x<=x&&s.x+s.width>x&&s.foregroundColor==='#e5c07b'),summary+' changed numeric color');
+      assert.ok(spans.every(s=>s.x+s.width<=summary.length),summary+' colored trailing prose');
+    }
+    for(let row=summaries.length;row<summaries.length+prose.length;row++)assert.ok(C.highlightSpans(term.buffer.active.getLine(row),term.cols,p).every(s=>s.foregroundColor!=='#c678dd'),'colored ordinary/unsupported Read row '+row);
+    assert.deepEqual(C.highlightSpans(term.buffer.active.getLine(summaries.length+prose.length),term.cols,p),[],'changed native RGB summary');
+  }finally{term.dispose();}
+});
+
+test('Claude Code colors only the star-prefixed Churned status and preserves native styles',async()=>{
+  const p=profile('claude-code'),term=new Terminal({cols:160,rows:8,allowProposedApi:true});
+  const statuses=['✻ Churned','  ✻ Churned'];
+  try{
+    for(const status of statuses)await write(term,status+' remaining details stay plain\r\n');
+    await write(term,'The worker churned through ordinary prose\r\nChurned is a word in this sentence\r\n'+
+      '\x1b[2m✻ Churned native faint status\x1b[0m\r\n'+
+      '\x1b[38;2;240;180;210m✻ Churned native RGB status\x1b[0m\r\n');
+    for(const [row,status] of statuses.entries()){
+      const spans=C.highlightSpans(term.buffer.active.getLine(row),term.cols,p),start=status.indexOf('Churned');
+      for(let x=start;x<start+'Churned'.length;x++)assert.ok(spans.some(s=>s.x<=x&&s.x+s.width>x&&s.foregroundColor==='#82cfff'),status+' missing blue status');
+      assert.ok(spans.every(s=>s.x+s.width<=status.length),status+' colored trailing prose');
+    }
+    for(let row=statuses.length;row<statuses.length+4;row++)assert.deepEqual(C.highlightSpans(term.buffer.active.getLine(row),term.cols,p),[],'changed prose/native status row '+row);
+  }finally{term.dispose();}
+});
+
 test('Cursor CLI content inference and status tokens require distinctive TUI evidence',async()=>{
   const p=profile('cursor-cli'),term=new Terminal({cols:120,rows:4,allowProposedApi:true});
   const expect=(row,token,color)=>{

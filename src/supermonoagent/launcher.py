@@ -19,6 +19,9 @@ MODES = {
     "logs": "supermonoagent.daemon_logs",
     "console-snapshot": "supermonoagent.console_snapshot",
     "file-companion": "supermonoagent.file_companion",
+    "journal-companion": "supermonoagent.conversation_companion",
+    "journal-service": "supermonoagent.conversation_service",
+    "journal-hook": "supermonoagent.conversation_hooks",
 }
 
 

@@ -7,7 +7,7 @@ from supermonoagent import web
 
 def test_features_travel_in_existing_signed_workspace_resource():
     bundle = bundled_ui_files()
-    assert set(bundle) == set(UI_FILES) and len(bundle) == 17
+    assert set(bundle) == set(UI_FILES) and len(bundle) == 18
     code = bundle['workspace.js'].decode('utf-8')
     assert code == javascript() == web.static_text('workspace.js')
     for marker in ('queue_sidecar_request',):

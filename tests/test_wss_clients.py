@@ -167,7 +167,10 @@ async def _browser_check(native_tls, encrypted, playwright, edge):
                             await mobile.goto(origin + "/mobile/index.html#" + quote(json.dumps(config)))
                             await mobile.wait_for_function("MobileTerminal.ready")
                             assert await desktop.locator('#tabs [role="tab"]').all_text_contents() == ["WSS fixture"]
-                            assert sockets and all(item == url for item in sockets)
+                            # Journal reads use their own exact route on the same
+                            # configured relay; no new authority or query auth.
+                            journal_url = url.rsplit('/ws', 1)[0] + '/journals/ws'
+                            assert url in sockets and all(item in {url, journal_url} for item in sockets)
                             assert not errors, errors
                             assert all(daemon.token not in item for item in requests + sockets)
                             assert session_safe(daemon)
@@ -184,6 +187,7 @@ async def _browser_check(native_tls, encrypted, playwright, edge):
             if job:
                 job.cancel(); await asyncio.gather(job, return_exceptions=True)
             for identifier in list(daemon.hub.windows): daemon.hub.close_window(identifier)
+            await daemon.close_sidecars()
 
 
 def session_safe(daemon):

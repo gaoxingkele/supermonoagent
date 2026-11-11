@@ -134,7 +134,7 @@ async def _check_browser(playwright, edge):
                             await wait_ui(page,"(()=>{const p=smaWorkspace.panes.get(smaWorkspace.activeSession);return !p.redrawTimer&&!p.resizeRequest&&!p.redrawAfterReplay;})()")
                             before = len(resizes)
                             pane = page.locator(".pane").filter(has=page.locator(".pane-title", has_text="Existing Codex"))
-                            await pane.locator(".pane-header button").nth(1).click()
+                            await pane.get_by_role("button", name="强制后台终端全量重绘").click()
                             await wait_for_resize_count(before + 2)
                             await wait_ui(page,"!smaWorkspace.panes.get(smaWorkspace.activeSession)?.resizeRequest")
                             assert len(resizes[before:]) <= 3

@@ -30,6 +30,17 @@ class LauncherTest(unittest.TestCase):
             launcher.main(["unknown"])
         self.assertEqual(context.exception.code, 2)
 
+    def test_journal_helpers_dispatch_without_starting_workspace(self):
+        for mode, target in [('journal-companion', 'conversation_companion'),
+                             ('journal-service', 'conversation_service'),
+                             ('journal-hook', 'conversation_hooks')]:
+            with self.subTest(mode=mode):
+                module = SimpleNamespace(main=Mock())
+                with patch.object(launcher.importlib, 'import_module', return_value=module) as load:
+                    launcher.main([mode, '--help'])
+                load.assert_called_once_with('supermonoagent.' + target)
+                module.main.assert_called_once_with()
+
     def test_microsoft_diagnostics_never_start_daemon(self):
         module = SimpleNamespace(main=Mock())
         with patch.object(launcher.importlib, "import_module", return_value=module) as load:

@@ -189,8 +189,195 @@
   }
   function sendHost(c,op,value){if(!c.connected||paused||c.socket?.readyState!==1)return false;c.socket.send(C.pack(op,value instanceof Uint8Array?value:encoder.encode(JSON.stringify(value))));return true;}
   function send(op,value){return sendHost(selected(),op,value);}
-  function stopSocket(c=selected()){
+  // JOURNAL_INTEGRATION_START: transport and draft guards are independent of xterm.
+  let journalRequestSequence=0,journalContextVersion=0,journalStatusPending=false,journalRefreshTimer=null;
+  let journalViewer=null,journalInlineViewer=null,journalSourceTarget=null,journalInlineSeq=-1,journalFoldRequested=false;
+  const journalCodePreferences=new Map(),journalReadActions=new Set(['status','list','read_page','read_content']);
+  function journalError(code){const error=new Error('记录请求未完成');error.code=code;return error;}
+  function journalTarget(){
+    const c=selected(),session=c.inventory.find(s=>s.id===active);
+    return {host:c,endpoint:safeEndpoint(c.host),room:c.host.code||'',token:hostTokens.get(c.host.id)||'',generation:c.generation,session:session?.id||'',window:session?.window||'',journalId:session?.journal_id||c.journalManifests?.get(active)?.journal_id||''};
+  }
+  function journalTargetCurrent(t,archiveRead=false){
+    if(!t||paused||selected()!==t.host||connections.get(t.host.host.id)!==t.host||!archiveRead&&t.host.generation!==t.generation||safeEndpoint(t.host.host)!==t.endpoint||(t.host.host.code||'')!==t.room||(hostTokens.get(t.host.host.id)||'')!==t.token)return false;
+    if(!t.session)return !active;
+    const session=t.host.inventory.find(s=>s.id===t.session&&s.window===t.window);
+    return active===t.session&&!!session&&!(t.journalId&&session.journal_id&&t.journalId!==session.journal_id);
+  }
+  function journalContextKey(t){return JSON.stringify([t.endpoint,t.room,t.session,t.window,t.journalId,t.generation,journalContextVersion]);}
+  function journalCodeKey(t,manifest){return JSON.stringify([t.endpoint,t.room,t.window,manifest.journal_id]);}
+  function journalHostRequest(t,action,params){
+    if(!journalTargetCurrent(t))return Promise.reject(journalError('stale_target'));
+    if(t.host.capabilities?.conversation_journal!==1&&t.host.capabilities?.conversation_journal!==true)return Promise.reject(journalError('unsupported'));
+    return new Promise((resolve,reject)=>{
+      const c=t.host,request_id='mobile-journal-'+(++journalRequestSequence);
+      const pending=c.journalPending||(c.journalPending=new Map());
+      const finish=(error,result)=>{const entry=pending.get(request_id);if(!entry)return;pending.delete(request_id);clearTimeout(entry.timer);if(error)reject(error);else if(!journalTargetCurrent(t))reject(journalError('stale_target'));else resolve(result);};
+      const timer=setTimeout(()=>finish(journalError('timeout')),8000);pending.set(request_id,{timer,finish});
+      try{if(!sendHost(c,24,{request_id,action,params}))finish(journalError('disconnected'));}catch{finish(journalError('disconnected'));}
+    });
+  }
+  function journalHostResponse(c,value){
+    if(!value||typeof value.request_id!=='string')return;
+    c.journalPending?.get(value.request_id)?.finish(value.ok===true?null:journalError('request_refused'),value.result);
+  }
+  function journalArchiveURL(t){
+    if(!t.room||!t.token)throw journalError('unsupported');
+    const url=new URL(endpoint(t.host.host));
+    if(url.protocol!=='wss:'&&!(url.protocol==='ws:'&&['127.0.0.1','localhost','[::1]'].includes(url.hostname)))throw journalError('unsupported');
+    url.pathname='/journals/ws';url.search='';url.hash='';return url.toString();
+  }
+  function closeJournalArchive(c){
+    const archive=c.journalArchive;if(!archive)return;c.journalArchive=null;
+    archive.dead=true;clearTimeout(archive.timer);archive.rejectReady(journalError('disconnected'));
+    for(const entry of archive.pending.values()){clearTimeout(entry.timer);entry.reject(journalError('disconnected'));}archive.pending.clear();
+    archive.socket.onclose=null;archive.socket.close();
+  }
+  function preserveJournalArchive(c){
+    if(c!==selected()||paused||c.connected||!c.journalArchive)return false;
+    const t=journalTarget(),archive=c.journalArchive;
+    try{return archive.token===t.token&&archive.room===t.room&&archive.url===journalArchiveURL(t);}catch{return false;}
+  }
+  async function journalArchiveRequest(t,action,params){
+    if(!journalReadActions.has(action)||!journalTargetCurrent(t,true))throw journalError('stale_target');
+    const c=t.host,url=journalArchiveURL(t);
+    let archive=c.journalArchive;
+    if(archive&&(archive.url!==url||archive.token!==t.token||archive.room!==t.room)){closeJournalArchive(c);archive=null;}
+    if(!archive){
+      const socket=new WebSocket(url);archive={socket,url,token:t.token,room:t.room,generation:t.generation,pending:new Map(),dead:false};c.journalArchive=archive;
+      archive.ready=new Promise((resolve,reject)=>{archive.resolveReady=resolve;archive.rejectReady=reject;});
+      archive.timer=setTimeout(()=>closeJournalArchive(c),8000);
+      const current=()=>c.journalArchive===archive&&!archive.dead&&journalTargetCurrent(t,true);
+      socket.onopen=()=>{if(!current()){closeJournalArchive(c);return;}socket.send(JSON.stringify({op:'hello',protocol:'sma-journal-1',role:'viewer',token:t.token,room:t.room}));};
+      socket.onmessage=event=>{
+        if(!current())return;
+        try{
+          if(typeof event.data!=='string'||encoder.encode(event.data).length>196608)throw journalError('invalid_response');
+          const value=JSON.parse(event.data);
+          if(value.op==='hello'){if(value.ok!==true||value.protocol!=='sma-journal-1')throw journalError('request_refused');clearTimeout(archive.timer);archive.resolveReady();}
+          else if(value.op==='response'){
+            const pending=archive.pending.get(value.request_id);if(!pending)return;
+            archive.pending.delete(value.request_id);clearTimeout(pending.timer);
+            if(!journalTargetCurrent(t,true))pending.reject(journalError('stale_target'));
+            else if(value.ok===true)pending.resolve(value.result);else pending.reject(journalError('request_refused'));
+          }
+        }catch{closeJournalArchive(c);}
+      };
+      socket.onclose=()=>{if(c.journalArchive===archive)closeJournalArchive(c);};socket.onerror=()=>{};
+    }
+    await archive.ready;
+    if(!journalTargetCurrent(t,true)||archive.dead||archive.socket.readyState!==1)throw journalError('stale_target');
+    return new Promise((resolve,reject)=>{
+      const request_id='mobile-archive-'+(++journalRequestSequence),timer=setTimeout(()=>{archive.pending.delete(request_id);reject(journalError('timeout'));},8000);
+      archive.pending.set(request_id,{resolve,reject,timer});
+      try{archive.socket.send(JSON.stringify({op:'request',request_id,action,params}));}catch{clearTimeout(timer);archive.pending.delete(request_id);reject(journalError('disconnected'));}
+    });
+  }
+  async function journalRequest(t,action,params={}){
+    if(!journalTargetCurrent(t,t.archive===true))throw journalError('stale_target');
+    if(t.archive===true)return journalArchiveRequest(t,action,params);
+    if(t.host.connected&&(t.host.capabilities?.conversation_journal===1||t.host.capabilities?.conversation_journal===true))return journalHostRequest(t,action,params);
+    if(!journalReadActions.has(action))throw journalError('unsupported');
+    if(action==='status'&&params.session_id){if(!t.journalId)throw journalError('unsupported');params={journal_id:t.journalId};}
+    return journalArchiveRequest(t,action,params);
+  }
+  function journalQuote(t,text,source){
+    if(!journalTargetCurrent(t)||!t.session||composing||composerSubmit.pending||uploadJob||typeof text!=='string'||!text)return false;
+    const draft=$('draft').value,quote=C.formatQuote(text,source),combined=draft+(draft?'\n\n':'')+quote;
+    if(combined.length>65536){notice('引用超过草稿长度限制；未截断或发送，请减少选择。');return false;}
+    syncDraftFields(combined);drafts.set(sessionKey(),combined);updateComposer();return true;
+  }
+  function journalViewerOptions(t,inline=false){return {root:inline?$('journal-reading'):document.body,inline,targetKey:journalContextKey(t),request:(action,params)=>journalRequest(t,action,params),isTargetCurrent:()=>journalTargetCurrent(t),onQuote:(text,source)=>journalQuote(t,text,source),onOriginalTerminal:()=>{journalViewer?.close();showJournalRaw(true);}};}
+  function showJournalRaw(remember=false){
+    $('journal-reading').hidden=true;journalInlineViewer?.close();journalInlineSeq=-1;
+    $('journal-code').textContent='代码：显示';$('journal-code').setAttribute('aria-pressed','true');
+    if(remember){const t=journalTarget(),manifest=t.host.journalManifests?.get(t.session);if(manifest)journalCodePreferences.set(journalCodeKey(t,manifest),true);}
+  }
+  function resetJournalContext(){
+    journalContextVersion++;journalStatusPending=false;journalFoldRequested=false;clearTimeout(journalRefreshTimer);journalRefreshTimer=null;
+    closeJournalArchive(selected());
+    journalViewer?.close();journalInlineViewer?.close();$('journal-source-dialog').close();journalSourceTarget=null;showJournalRaw();
+    if(journalViewer)journalViewer.setContext({targetKey:'inactive-'+journalContextVersion,isTargetCurrent:()=>false});
+    if(journalInlineViewer)journalInlineViewer.setContext({targetKey:'inactive-'+journalContextVersion,isTargetCurrent:()=>false});
+  }
+  function journalCanFold(manifest){return !!manifest?.source?.bound&&manifest.source.supported===true&&manifest.source.healthy===true&&manifest.capture_state==='capturing'&&!manifest.local_error&&manifest.storage?.available===true;}
+  function journalUnavailable(manifest){
+    if(!manifest?.source?.bound)return '尚未绑定准确对话源；请在设置中选择会话 ID。';
+    if(manifest.source.supported!==true)return '此提供方版本尚未证明最终答复可用；已保留原始终端。';
+    return '对话采集未就绪或保存异常；已保留原始终端。';
+  }
+  async function refreshJournalStatus(fold=false){
+    if(fold)journalFoldRequested=true;
+    if(journalStatusPending||!active||paused)return;
+    const t=journalTarget(),version=journalContextVersion;journalStatusPending=true;
+    try{
+      const manifest=await journalRequest(t,'status',{session_id:t.session});
+      if(version!==journalContextVersion||!journalTargetCurrent(t)||!manifest?.journal_id)return;
+      (t.host.journalManifests||(t.host.journalManifests=new Map())).set(t.session,manifest);t.journalId=manifest.journal_id;
+      fold=journalFoldRequested;journalFoldRequested=false;
+      if(fold)journalCodePreferences.set(journalCodeKey(t,manifest),false);
+      const reading=journalCodePreferences.get(journalCodeKey(t,manifest))===false;
+      if(!reading||!journalCanFold(manifest)){showJournalRaw();if(fold)notice(journalUnavailable(manifest));return;}
+      const options=journalViewerOptions(t,true),request=options.request;let readFailed=false;
+      options.request=async(action,params)=>{try{return await request(action,params);}catch(error){readFailed=true;throw error;}};
+      if(!journalInlineViewer)journalInlineViewer=C.createConversationViewer(options);
+      if($('journal-reading').hidden){
+        journalInlineViewer.setContext(options);await journalInlineViewer.open({projection:'history',journalId:manifest.journal_id});
+        if(!journalTargetCurrent(t)||version!==journalContextVersion||journalCodePreferences.get(journalCodeKey(t,manifest))!==false)return;
+        if(readFailed){showJournalRaw();return;}journalInlineViewer.setCodeVisible(false);journalInlineSeq=manifest.last_seq;
+      }else if(journalInlineSeq!==manifest.last_seq){
+        const viewer=journalInlineViewer,refreshed=await viewer.refresh();
+        if(!journalTargetCurrent(t)||version!==journalContextVersion||viewer!==journalInlineViewer||journalCodePreferences.get(journalCodeKey(t,manifest))!==false||!refreshed)return;
+        journalInlineSeq=manifest.last_seq;
+      }
+      $('journal-reading').hidden=false;$('journal-code').textContent='代码：折叠';$('journal-code').setAttribute('aria-pressed','false');
+    }catch{if(version===journalContextVersion){showJournalRaw();if(fold)notice('此连接尚不支持可用的对话采集；原始终端仍可使用。');}}
+    finally{if(version===journalContextVersion){journalStatusPending=false;clearTimeout(journalRefreshTimer);journalRefreshTimer=setTimeout(()=>refreshJournalStatus(),2500);}}
+  }
+  async function openJournal(projection,archives=false){
+    const t=journalTarget();if(!t.token){notice('请先配置此电脑的访问令牌。');return;}
+    t.archive=!t.host.connected||!(t.host.capabilities?.conversation_journal===1||t.host.capabilities?.conversation_journal===true);
+    const options=journalViewerOptions(t);
+    if(!journalViewer)journalViewer=C.createConversationViewer(options);else journalViewer.setContext(options);
+    await journalViewer.open({projection,journalId:archives?undefined:t.journalId||undefined});
+  }
+  async function loadJournalSources(){
+    const t=journalSourceTarget;if(!journalTargetCurrent(t)||!t.session)return;
+    const status=$('journal-source-status'),provider=$('journal-provider').value;
+    if(!['codex','claude'].includes(provider))return;
+    $('journal-sources').replaceChildren();status.textContent='正在查找准确会话 ID…';
+    try{
+      const manifest=await journalHostRequest(t,'status',{session_id:t.session});
+      if(!journalTargetCurrent(t)||journalSourceTarget!==t)return;
+      const result=await journalHostRequest(t,'list_sources',{session_id:t.session,provider});
+      if(!journalTargetCurrent(t)||journalSourceTarget!==t||$('journal-provider').value!==provider)return;
+      status.textContent=result.sources?.length?'核对会话 ID 后选择绑定；不会启动或恢复 CLI。':'没有可绑定来源；请确认提供方版本支持。';
+      for(const source of (result.sources||[]).slice(0,100)){
+        if(typeof source.source_ref!=='string')continue;
+        const button=document.createElement('button');button.type='button';button.textContent=[source.provider,source.provider_session_id,source.provider_version,source.supported===true?'支持':'覆盖受限'].filter(Boolean).join(' · ');
+        button.onclick=async()=>{
+          if(!journalTargetCurrent(t)||journalSourceTarget!==t||$('journal-provider').value!==provider)return;
+          try{
+            await journalHostRequest(t,'bind_source',{session_id:t.session,source_ref:source.source_ref,terminal_generation:manifest.process_generation});
+            if(!journalTargetCurrent(t)||journalSourceTarget!==t)return;
+            status.textContent='来源已绑定；仅经验证的最终答复进入对话记录。';await refreshJournalStatus();
+          }catch{if(journalSourceTarget===t)status.textContent='绑定未完成；目标、权限或终端代际可能已变化。';}
+        };$('journal-sources').append(button);
+      }
+    }catch{if(journalSourceTarget===t)status.textContent='此主机不支持来源选择，或连接/权限不可用。';}
+  }
+  $('journal-history').onclick=()=>openJournal('history');$('journal-conversation').onclick=()=>openJournal('conversation');
+  $('journal-code').onclick=()=>{$('journal-reading').hidden?refreshJournalStatus(true):showJournalRaw(true);};
+  const journalSourceButton=document.createElement('button');journalSourceButton.id='journal-source';journalSourceButton.type='button';journalSourceButton.textContent='绑定对话源';
+  journalSourceButton.onclick=()=>{$('settings-dialog').close();journalSourceTarget=journalTarget();$('journal-sources').replaceChildren();$('journal-source-status').textContent='请选择提供方，再查找准确会话 ID。';$('journal-source-dialog').showModal();};$('settings-dialog').append(journalSourceButton);
+  const journalArchivesButton=document.createElement('button');journalArchivesButton.id='journal-archives';journalArchivesButton.type='button';journalArchivesButton.textContent='所有终端记录（含归档）';journalArchivesButton.onclick=()=>{$('settings-dialog').close();openJournal('history',true);};$('settings-dialog').append(journalArchivesButton);
+  $('journal-source-close').onclick=()=>{$('journal-source-dialog').close();journalSourceTarget=null;};
+  $('journal-source-dialog').addEventListener('cancel',()=>{journalSourceTarget=null;});$('journal-source-load').onclick=loadJournalSources;
+  $('journal-provider').onchange=()=>{$('journal-sources').replaceChildren();$('journal-source-status').textContent='提供方已变化，请重新查找。';};
+  // JOURNAL_INTEGRATION_END
+  function stopSocket(c=selected(),preserveArchive=preserveJournalArchive(c)){
     if(pendingRefresh?.host===c)cancelRefresh();
+    for(const entry of c.journalPending?.values()||[])entry.finish(journalError('disconnected'));if(!preserveArchive){closeJournalArchive(c);if(c===selected())resetJournalContext();}
     c.generation++;c.historyContexts.clear();clearTimeout(c.retryTimer);clearInterval(c.pingTimer);c.retryTimer=c.pingTimer=null;
     if(c.socket){c.socket.onclose=null;c.socket.close();c.socket=null;}c.connected=false;c.subscription='';
     if(c===selected()){composerSubmit.cancel();connected=false;ready=false;pendingKeys=[];composing=false;setCtrl(false);clearTimeout(controlAction?.timer);controlAction=null;updateControlButton();if(term)term.options.disableStdin=true;if($('composer').open)updateAttachments();}
@@ -214,9 +401,9 @@
     updateCheckPending=true;Promise.resolve(window.NativeUpdates.check()).catch(()=>{}).finally(()=>{updateCheckPending=false;});
   }
   function connect(c=selected()){
-    if(paused)return;stopSocket(c);const gen=c.generation;c.lastPing=0;hostState(c,'正在连接');
+    if(paused)return;const preserveArchive=preserveJournalArchive(c);stopSocket(c,preserveArchive);const gen=c.generation;c.lastPing=0;hostState(c,'正在连接');
     if(!roomAllowed(c.host)){hostState(c,'此房间未勾选，请返回连接设置重新选择');return;}
-    if(c===selected()&&active){const sid=active;drafts.set(sessionKey(),$('draft').value);disposeTerminal();active='';activate(sid);}
+    if(c===selected()&&active&&!preserveArchive){const sid=active;drafts.set(sessionKey(),$('draft').value);disposeTerminal();active='';activate(sid);}
     let url;try{url=endpoint(c.host);}catch(e){hostState(c,e.message);return;}
     const ws=c.socket=new WebSocket(url);ws.binaryType='arraybuffer';metrics.connections++;
     const current=()=>gen===c.generation;
@@ -228,6 +415,7 @@
         if(typeof event.data==='string'){const m=JSON.parse(event.data);if(m.op==='ready')hello();else if(m.op==='ui_update')receiveUpdateHint(m);else if(m.error)hostState(c,String(m.error));return;}
         const {op,payload}=C.unpack(event.data);metrics.frames++;metrics.bytes+=payload.length;
         if(op===2||op===7)sync(JSON.parse(decoder.decode(payload)),c);
+        else if(op===24){try{if(payload.length>196608)throw journalError('invalid_response');journalHostResponse(c,JSON.parse(decoder.decode(payload)));}catch{for(const entry of c.journalPending?.values()||[])entry.finish(journalError('invalid_response'));}}
         else if(op===3||op===8||op===23){
           if(!payload.length)return;const feed=op===23?M.historyPayload(payload):C.sessionPayload(payload);
           if(op===8&&(c.historyContexts.has(feed.session)||restoringTerms.has(term)&&c.capabilities?.history_resume===1&&c===selected()&&feed.session===active))return;
@@ -369,7 +557,7 @@
     if(!inventory.some(s=>s.id===active)){if(inventory.length)activate(inventory[0].id);else{disposeTerminal();active='';}}
     if(controls[active]){const size=controls[active],context=c.historyContexts.get(active),stale=context&&Number.isSafeInteger(size.history_epoch)&&size.history_epoch<context.epoch;control=!stale&&!!size.owner;if(stale)controls[active]={...size,owner:false,busy:true};if(controlAction&&control===(controlAction.mode==='take')){clearTimeout(controlAction.timer);controlAction=null;}updateControlButton();if(!stale&&term&&(term.cols!==size.cols||term.rows!==size.rows))writer?.push(new Uint8Array(),false,scheduleFit,size);scheduleFit();}
     if(controls[active]&&waitingFeeds.length){const feeds=waitingFeeds;waitingFeeds=[];waitingBytes=0;for(const feed of feeds)consumeFeed(feed.sid,feed.bytes,feed.replay);}
-    subscribeSessions(c);refreshAgentMode();
+    subscribeSessions(c);refreshAgentMode();refreshJournalStatus();
   }
   function updateSessionDots(){
     const labels={refreshing:'正在刷新',waiting:'等待输入（暂未收到新输出）',disconnected:'已断开'};
@@ -624,6 +812,7 @@
     current.write(bytes,()=>{if(bytes.length||reset)writeStamps.set(current,(writeStamps.get(current)||0)+1);parsedTerminalProgress(current,progress);terminalWrites.set(current,Math.max(0,(terminalWrites.get(current)||1)-1));done();agentDetector?.request();if(term===current){updateTerminalStatus();if(!reset&&bytes.length)composerSubmit.output();}if(!terminalWrites.get(current)){const subscribe=settledSubscriptions.get(current);settledSubscriptions.delete(current);subscribe?.();}});
   },schedule:cb=>requestAnimationFrame(cb),cancel:id=>cancelAnimationFrame(id),onOverflow:()=>{notice('输出积压超过上限，已暂停并请求重新连接');M.closeForRecovery(selected().socket,'手机输出积压');}});}
   function disposeTerminal(){
+    resetJournalContext();
     cancelTerminalPress();cancelTouchMomentum();
     leaveScreenHistory();
     cancelAttachmentUpload();
@@ -681,7 +870,7 @@
     term.textarea.addEventListener('compositionstart',()=>{if(term===current)composing=true;});
     term.textarea.addEventListener('compositionend',()=>{if(term===current){composing=false;setTimeout(flushKeys,0);}});
     term.onScroll(scheduleHistoryStatus);}setMode(false);scheduleFit();renderList();
-    if(connected)subscribeSessions(selected(),active);
+    if(connected)subscribeSessions(selected(),active);refreshJournalStatus();
     // Deliberately do not focus: switching sessions must not pop the keyboard.
   }
   function input(text){if(!text||!ready||paused||!connected||selected().socket?.readyState!==1)return false;if(historyRenderer){leaveScreenHistory();term.scrollToBottom();localBottom();}uncertainModelCommands.delete(sessionKey());selected().socket.send(C.targetFrame(17,active,text));return true;}
@@ -1151,7 +1340,7 @@
   function captureUIState(){
     if(composing||composerSubmit.pending||uploadJob||[...attachmentDrafts.values()].some(draft=>draft.items.some(item=>!item.receipt)))return null;
     if(active)drafts.set(sessionKey(),$('draft').value);saveSessionCredentials();
-    return {version:1,hostId,activeSid:active,drafts:[...drafts],modes:[...modes],uncertainDrafts:[...uncertainDrafts]};
+    return {version:1,hostId,activeSid:active,drafts:[...drafts],modes:[...modes],uncertainDrafts:[...uncertainDrafts],journalCodePreferences:[...journalCodePreferences]};
   }
   function prepareUIReload(){const state=captureUIState();if(!state)return null;pause();$('draft').disabled=true;return state;}
   function cancelUIReload(){$('draft').disabled=false;resume();}
@@ -1176,6 +1365,7 @@
     for(const [key,text] of value.drafts||[])drafts.set(key,text);
     for(const [key,mode] of value.modes||[])modes.set(key,mode);
     for(const [key,text] of value.uncertainDrafts||[])uncertainDrafts.set(key,text);
+    for(const row of value.journalCodePreferences||[]){try{const parts=JSON.parse(row[0]);if(row.length===2&&typeof row[1]==='boolean'&&Array.isArray(parts)&&parts.length===4&&parts.every(part=>typeof part==='string'))journalCodePreferences.set(row[0],row[1]);}catch{}}
     if(active)syncDraftFields(drafts.get(sessionKey())||'');
     restoreSelected();
   }

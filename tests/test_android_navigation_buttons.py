@@ -55,11 +55,21 @@ async def check_buttons(playwright):
                     assert await page.locator('#terminal-actions button').all_text_contents() == ['上翻','下翻','顶部','底部','回车','刷新']
                     session.pty.inbox.put(('\r\n'.join(f'HISTORY-{i:03}' for i in range(120))+'\r\n').encode())
                     await page.wait_for_function('MobileTerminal.terminal.buffer.active.baseY>80')
-                    read = "({y:MobileTerminal.terminal.buffer.active.viewportY,base:MobileTerminal.terminal.buffer.active.baseY,rows:MobileTerminal.terminal.rows})"
+                    await page.evaluate('()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+                    # Paging follows the locally visible rows; the remote grid
+                    # remains fixed when the footer occupies more phone space.
+                    read = """(() => {const t=MobileTerminal.terminal,s=document.getElementById('screen'),cell=t._core._renderService.dimensions.css.cell;
+                        return {y:t.buffer.active.viewportY,base:t.buffer.active.baseY,rows:t.rows,top:s.scrollTop,line:cell.height*(Number(s.dataset.scale)||1),
+                            visibleRows:Math.max(1,Math.min(t.rows,Math.floor(s.clientHeight/(cell.height*(Number(s.dataset.scale)||1)))))};})()"""
                     start = await page.evaluate(read)
                     await page.locator('#page-up').click()
                     up = await page.evaluate(read)
-                    assert up['y'] == start['y']-(start['rows']-1)
+                    # A clipped remote grid consumes the local pixel overflow
+                    # first, then scrolls complete xterm history rows.
+                    page_pixels = (start['visibleRows'] - 1) * start['line']
+                    history_rows = int(max(0, page_pixels - start['top']) / start['line'])
+                    assert up['y'] == start['y'] - history_rows
+                    assert up['top'] == 0
                     await page.locator('#page-down').click()
                     assert (await page.evaluate(read))['y'] == start['base']
                     await page.locator('#history-top').click()

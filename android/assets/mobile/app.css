@@ -126,3 +126,19 @@ dialog input,dialog select{min-width:0;max-width:100%}
 @media(max-height:480px){#debug-grid[data-density="25"] .debug-tile{padding:2px;gap:1px}#debug-grid[data-density="25"] .debug-tile-name,#debug-grid[data-density="25"] .debug-tile-state,#debug-grid[data-density="25"] .debug-tile-prompt{font-size:9px;line-height:1.05}#debug-grid[data-density="25"] .debug-marquee{line-height:1.1}}
 @media(max-width:380px){#debug-grid[data-density="16"] .debug-tile-host{display:none}}
 @media(prefers-reduced-motion:reduce){.debug-tile .session-dot,.debug-marquee.is-scrolling .debug-marquee-track{animation:none}.debug-marquee{overflow:auto}.debug-marquee.is-scrolling .debug-marquee-track>span+span{display:none}}
+
+/* Reading is an overlay: the original xterm retains its grid and keeps parsing. */
+#terminal-stage{position:relative;display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;overflow:hidden}
+#journal-reading{position:absolute;inset:0;z-index:2;min-width:0;min-height:0;overflow:hidden;background:var(--bg)}
+#journal-reading>.conversation-viewer{height:100%;border-radius:0!important}
+#journal-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;padding:4px 5px max(4px,env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--panel);flex:none}
+#journal-actions button{min-width:0;padding:4px;font-size:12px;min-height:36px}
+#journal-code[aria-pressed=false]{border-color:#83b8ff;color:#b5d7ff}
+.conversation-viewer{max-width:calc(100vw - 12px);max-height:calc(100dvh - 16px)!important;overflow:hidden;overflow-wrap:anywhere}
+.conversation-viewer button{min-width:0;min-height:34px;padding:4px 8px;font-size:12px}
+.conversation-viewer pre{max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.conversation-viewer article{min-width:0}
+#journal-sources{display:grid;gap:8px;margin-top:10px}
+#journal-sources button{text-align:left;overflow-wrap:anywhere}
+#journal-source-status{margin-top:10px}
+@media(max-height:430px){#journal-actions{padding-top:2px;padding-bottom:2px}#journal-actions button{min-height:30px}.conversation-viewer{font-size:12px!important;padding:8px!important;gap:5px!important}.conversation-viewer button{min-height:30px}}

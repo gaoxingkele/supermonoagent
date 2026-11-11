@@ -37,7 +37,7 @@
       "color": "#e06c75"
     },
     {
-      "pattern": "\\b(?:Claude|Thinking|Working|Plan|Planning|Explored|Updated|Tool|Task|Todo|TodoList)\\b",
+      "pattern": "\\b(?:Claude|Thinking|Working|Plan|Planning|Explored|Updated|Tool|Task|Todo|TodoList)\\b|^[ \\t]*✻[ \\t]+Churned\\b",
       "flags": "giu",
       "color": "#82cfff"
     },
@@ -70,6 +70,11 @@
       "pattern": "\\b\\d+(?:\\.\\d+)?(?:\\s?(?:KiB|MiB|ms|tokens|\\u5b57\\u8282))?",
       "flags": "gu",
       "color": "#e5c07b"
+    },
+    {
+      "pattern": "^[ \\t]*(?:[●⏺][ \\t]+)?Read[ \\t]+\\d+[ \\t]+files?\\b",
+      "flags": "gu",
+      "color": "#c678dd"
     },
     {
       "pattern": "\\b(?:Success|SUCCESS|Passed|PASSED)\\b|(?:\\u6210\\u529f|\\u5df2\\u5b8c\\u6210)",

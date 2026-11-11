@@ -33,6 +33,7 @@ PAGE = r'''<!doctype html>
 <script src="/xterm.js"></script><script src="/xterm-fit.js"></script><script src="/xterm-unicode11.js"></script><script src="/xterm-webgl.js"></script><script src="/xterm-links.js"></script><script src="/terminal-client.js"></script><script src="/tab-themes.js"></script><script src="/workspace.js"></script></body></html>'''
 
 PAGE = PAGE.replace('__SUPERMONO_DEFAULT_RELAY__', escape(default_relay(), quote=True))
+PAGE = PAGE.replace('<span class="footer-spacer"></span>', '<button id="journal-history" type="button">历史记录</button><button id="journal-conversation" type="button">对话记录</button><span class="footer-spacer"></span>')
 
 
 def javascript(static_root=None):

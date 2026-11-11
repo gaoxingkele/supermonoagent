@@ -220,6 +220,7 @@ window.closeEvents=[];const NativeSocket=WebSocket;window.WebSocket=class extend
             await asyncio.gather(*jobs,return_exceptions=True)
             for daemon in daemons:
                 for window in list(daemon.hub.windows):daemon.hub.close_window(window)
+                await daemon.close_sidecars()
 
 
 async def choose_mode(page,id,effective=None):
@@ -279,3 +280,4 @@ async def check_mobile_cursor_detection(playwright):
                         await browser.close()
         finally:
             daemon.hub.close_window(window.id)
+            await daemon.close_sidecars()

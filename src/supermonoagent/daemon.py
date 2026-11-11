@@ -35,6 +35,7 @@ from .protocol import (
     OP_FILE_TRANSFER,
     OP_ASSISTANT_CONTEXT,
     OP_HISTORY_CONTEXT,
+    OP_JOURNAL,
     OP_FOCUS,
     OP_GROUP,
     OP_HELLO,
@@ -251,11 +252,15 @@ class Daemon:
         self._file_receiver_lock = asyncio.Lock()
         self._file_cleanup_tasks = set()
         self._sidecar_workers = {}
+        self._sidecar_calls = set()
         self._sidecar_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='sma-files')
         self.accounts = Accounts(STATE / "accounts.json")
         self.hub = Hub()
         self.hub.task_events = TaskEventStore(STATE / "task-events.json")
         self.hub.default_owner = token
+        self.journals = None
+        self._journal_started = False
+        self.hub.journal_factory = self._start_journals
         self.hub.load_desktop()
         ident = load_identity()
         self.hub.set_identity(ident["machine"], ident["project"])
@@ -268,6 +273,21 @@ class Daemon:
         self.relay_bindings = RelayBindings(STATE / "relay-bindings.json")
         self._relay_generations: dict[str, object] = {}
         self._delegations: dict[int, RelayDelegation] = {}
+
+    def _start_journals(self):
+        """Allocate recorder resources only when the terminal loop starts."""
+        if not self._journal_started:
+            self._journal_started = True
+            try:
+                from .conversation_manager import ConversationManager
+                self.journals = ConversationManager(self.log_state_dir / 'journals',
+                    default_token=self.token, accounts=self.accounts)
+            except Exception:
+                # Optional storage cannot prevent terminal startup. No private
+                # paths, provider payloads or exception text enter diagnostics.
+                LOGGER.warning('journal_unavailable reason=initialization_failed')
+            self.hub.journals = self.journals
+        return self.journals
 
     def client_authorized(self, client) -> bool:
         if self.hub.clients.get(client.key) is not client or client.failure:
@@ -327,7 +347,16 @@ class Daemon:
                 cleanup.add_done_callback(finished)
 
     async def _sidecar_io(self, function, *args):
-        return await asyncio.get_running_loop().run_in_executor(self._sidecar_executor, function, *args)
+        pending = asyncio.get_running_loop().run_in_executor(self._sidecar_executor, function, *args)
+        self._sidecar_calls.add(pending)
+        def finished(call):
+            self._sidecar_calls.discard(call)
+            if not call.cancelled():
+                call.exception()  # Retrieve failures even if the viewer left.
+        pending.add_done_callback(finished)
+        # Cancelling a disconnected viewer cannot cancel a running disk call.
+        # Retain it until completion so shutdown can close storage afterwards.
+        return await asyncio.shield(pending)
 
     async def close_sidecars(self):
         """Called after sockets close; leave no optional-feature worker tasks."""
@@ -338,6 +367,17 @@ class Daemon:
             await asyncio.gather(*jobs, return_exceptions=True)
         if self._file_cleanup_tasks:
             await asyncio.gather(*list(self._file_cleanup_tasks), return_exceptions=True)
+        if self._sidecar_calls:
+            await asyncio.gather(*list(self._sidecar_calls), return_exceptions=True)
+        if self.journals is not None:
+            manager, self.journals = self.journals, None
+            self.hub.journals = None
+            # Queue behind outstanding disk calls; close only releases recorder
+            # resources and suspends capture, it never seals a live PTY.
+            if callable(getattr(manager, 'aclose', None)):
+                await manager.aclose()
+            else:
+                await self._sidecar_io(manager.close)
         self._sidecar_executor.shutdown(wait=False, cancel_futures=True)
 
     def _stop_sidecar_worker(self, client):
@@ -376,6 +416,15 @@ class Daemon:
         try:
             current[0].put_nowait((op, payload))
         except asyncio.QueueFull:
+            if op == OP_JOURNAL:
+                from .conversation_contract import JournalError, decode_json
+                try:
+                    request = decode_json(payload).get('request_id')
+                    if isinstance(request, str) and 0 < len(request) <= 64:
+                        self.hub._send(client, self._journal_frame(request, error='busy'))
+                except JournalError:
+                    pass
+                return
             try:
                 request = unpack_json(payload).get('request', '')
                 if not isinstance(request, str) or len(request) > 64:
@@ -384,6 +433,91 @@ class Daemon:
                     'error_code': 'busy', 'error': '后台文件与助理任务繁忙，请稍后重试。'}))
             except ProtocolError:
                 pass
+
+    @staticmethod
+    def _journal_frame(request_id, *, result=None, error=None):
+        from .conversation_contract import MAX_ENVELOPE, canonical_json
+        body = {'request_id': request_id, 'ok': error is None}
+        body.update({'error': error} if error is not None else {'result': result})
+        encoded = canonical_json(body)
+        if len(encoded) > MAX_ENVELOPE:
+            encoded = canonical_json({'request_id': request_id, 'ok': False, 'error': 'frame_too_large'})
+        return pack(OP_JOURNAL, encoded)
+
+    async def _journal_request(self, client, payload):
+        from .conversation_contract import JournalError, canonical_json, checked_label, decode_json
+        request_id = ''
+        try:
+            body = decode_json(payload)
+            correlation = checked_label(body.get('request_id'), 64)
+            canonical_json(correlation)
+            request_id = correlation
+            action, params = body.get('action'), body.get('params', {})
+            fields = {'status': {'journal_id', 'session_id'}, 'list': {'cursor', 'limit'},
+                      'read_page': {'journal_id', 'cursor', 'limit', 'projection'},
+                      'read_content': {'journal_id', 'content_id', 'offset', 'limit'},
+                      'list_sources': {'session_id', 'provider'},
+                      'bind_source': {'session_id', 'source_ref', 'terminal_generation'}}
+            if (set(body) - {'request_id', 'action', 'params'} or not isinstance(action, str)
+                    or action not in fields or not isinstance(params, dict) or set(params) - fields[action]):
+                raise JournalError()
+            if not getattr(client, 'conversation_journal', False):
+                raise JournalError('not_negotiated')
+            if client.delegated:
+                raise JournalError('permission_denied')
+            manager = self.journals
+            if manager is None:
+                raise JournalError('unavailable')
+            token, channel = client.token, client.channel
+            owner = manager.owner_scope(token, default_token=self.token, accounts=self.accounts)
+            rooms = {channel} if channel else None
+            source_action = action in {'list_sources', 'bind_source'}
+            if source_action and token != self.token:
+                raise JournalError('permission_denied')
+            sid = params.get('session_id')
+            target = self.hub.sessions.get(sid) if isinstance(sid, str) else None
+            # Source selection always belongs to an exact live PTY generation.
+            # Read-only archived targets are authorized by the store, independent
+            # of whether the old Session remains in the live Hub catalog.
+            if source_action and (target is None or not self.hub.owns(token, target.window_id)
+                                  or not self.hub._channel_ok(client, target)):
+                raise JournalError('not_found')
+            generation = getattr(target, 'process_generation', None)
+            pty = target.pty if target is not None else None
+            if action == 'bind_source' and params.get('terminal_generation') != generation:
+                raise JournalError('terminal_generation_mismatch')
+
+            def current():
+                if (not self.client_authorized(client) or client.delegated or client.token != token
+                        or client.channel != channel or not getattr(client, 'conversation_journal', False)
+                        or self.journals is not manager
+                        or manager.owner_scope(client.token, default_token=self.token, accounts=self.accounts) != owner):
+                    return False
+                return (not source_action or self.hub.sessions.get(sid) is target
+                        and target.pty is pty and getattr(target, 'process_generation', None) == generation
+                        and self.hub.owns(token, target.window_id) and self.hub._channel_ok(client, target))
+
+            if not current():
+                raise JournalError('permission_denied')
+            def execute():
+                if not current():
+                    raise JournalError('permission_denied')
+                return manager.request(owner, action, params, rooms=rooms, allow_bind=token == self.token)
+            result = await self._sidecar_io(execute)
+            if not self.client_authorized(client):
+                return [], 4001
+            if not current():
+                raise JournalError('permission_denied')
+            return [self._journal_frame(request_id, result=result)], None
+        except JournalError as error:
+            if not self.client_authorized(client):
+                return [], 4001
+            return [self._journal_frame(request_id, error=error.code)], None
+        except Exception:
+            if not self.client_authorized(client):
+                return [], 4001
+            # No raw exception text or caller-controlled path enters the wire.
+            return [self._journal_frame(request_id, error='unavailable')], None
 
     def _file_session_allowed(self, key, sid):
         current = self.hub.clients.get(key)
@@ -470,7 +604,7 @@ class Daemon:
                     op, payload = unpack(message)
                 except ProtocolError:
                     continue
-                if op in (OP_FILE_TRANSFER, OP_ASSISTANT_CONTEXT):
+                if op in (OP_FILE_TRANSFER, OP_ASSISTANT_CONTEXT, OP_JOURNAL):
                     self.queue_sidecar_request(client, op, payload, lambda code: ws.close(code=code))
                     continue
                 try:
@@ -562,6 +696,8 @@ class Daemon:
         if not self.client_authorized(client):
             self._revoke_clients()
             return [], 4001
+        if op == OP_JOURNAL:
+            return await self._journal_request(client, payload)
         if op == OP_ASSISTANT_CONTEXT:
             body = unpack_json(payload)
             request, sid = body.get('request', ''), body.get('session', '')
@@ -635,6 +771,8 @@ class Daemon:
                     return [], 4001
             if not self.client_authorized(client):
                 return [], 4001
+            client.conversation_journal = (type(body.get('conversation_journal')) is int
+                                           and body['conversation_journal'] == 1 and not client.delegated)
             client.multiplex = body.get("multiplex") is True
             client.reliable = body.get("reliable") is True
             client.history_context = client.multiplex and type(body.get('history_context')) is int and body['history_context'] == 1
@@ -910,6 +1048,9 @@ class Daemon:
 
     def _state(self, client, error: str | None = None, resize_ack: dict | None = None) -> bytes:
         visible = self.hub.summary(client.token, history_context=True) if client.history_context else self.hub.summary(client.token)
+        if not getattr(client, 'conversation_journal', False) or client.delegated or self.journals is None:
+            visible = {**visible, 'capabilities': {key: value for key, value in visible['capabilities'].items()
+                                                  if key != 'conversation_journal'}}
         service = self.service_status()
         service['owner_authenticated'] = client.token == self.token and not client.delegated
         if client.token == self.token and not client.delegated:
@@ -1131,7 +1272,7 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
                                 op, payload = unpack(message[4:])
                             except ProtocolError:
                                 continue
-                            if op in (OP_FILE_TRANSFER, OP_ASSISTANT_CONTEXT):
+                            if op in (OP_FILE_TRANSFER, OP_ASSISTANT_CONTEXT, OP_JOURNAL):
                                 async def close_sidecar(close_code, phone_id=phone_id, attached=client):
                                     if phones.get(phone_id, (None,))[0] is attached:
                                         await disconnect(phone_id, 'Invalid credentials', close_code)

@@ -1,0 +1,17 @@
+# ADD this exact location inside the EXISTING relay HTTPS server block.
+# Keep all existing terminal/file/download routes and existing TLS configuration.
+# Review localhost port ownership first; nginx -t before graceful reload.
+location = /journals/ws {
+    proxy_pass http://127.0.0.1:8794;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header Origin $http_origin;
+    proxy_read_timeout 90s;
+    proxy_send_timeout 90s;
+    proxy_buffering off;
+    # Auth is in the WebSocket hello, never in query strings or HTTP headers.
+    # Avoid logging request query strings even for rejected unauthenticated probes.
+    access_log off;
+}

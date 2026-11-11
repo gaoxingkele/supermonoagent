@@ -116,6 +116,7 @@ async def measure(count):
                 for host, _session in hosts:
                     for window_id in list(host.hub.windows):
                         host.hub.close_window(window_id)
+                    await host.close_sidecars()
 
 
 async def main(args):

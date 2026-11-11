@@ -31,54 +31,62 @@ async def fixture(playwright):
         'supermonoagent.daemon.STATE', Path(tmp)
     ), patch.dict(os.environ, {'SUPERMONO_STATE_DIR': tmp}):
         daemons, ops, windows, sessions = [], [[], []], [], []
-        for index in range(2):
-            daemon = Daemon('profile-owner-'+str(index))
-            daemon.hub.persist = False
-            daemon.hub.pty_factory = lambda *_: ControlledPty()
-            daemon.hub.attach_loop(asyncio.get_running_loop())
-            daemon.hub.set_identity('Profile computer '+str(index), 'Profile project')
-            owned_windows = [daemon.hub.open_window('Room '+str(index)+' window '+str(n), owner=daemon.token) for n in range(2)]
-            owned_sessions = [daemon.hub.open_cli(win.id, 'cmd') for win in owned_windows]
-            original = daemon._op
-            async def observe(client, op, payload, original=original, index=index):
-                if op in {5, 6, 9, 16}:
-                    ops[index].append((op, unpack_json(payload), client.key))
-                return await original(client, op, payload)
-            daemon._op = observe
-            daemons.append(daemon); windows.append(owned_windows); sessions.append(owned_sessions)
-        relay = Relay(development=True)
-        wrong_endpoint_messages = []
-        async def wrong_endpoint(ws):
-            try:
-                async for message in ws:
-                    wrong_endpoint_messages.append(message)
-            finally:
-                await ws.close()
         jobs = []
-        async with AsyncExitStack() as stack:
-            server = await stack.enter_async_context(serve(relay.handler, '127.0.0.1', 0))
-            page_server = await stack.enter_async_context(serve(daemons[0].handle_socket, '127.0.0.1', 0, process_request=daemons[0].serve_http))
-            trap = await stack.enter_async_context(serve(wrong_endpoint, '127.0.0.1', 0))
-            endpoint = 'ws://127.0.0.1:'+str(server.sockets[0].getsockname()[1])+'/ws'
-            trap_endpoint = 'ws://127.0.0.1:'+str(trap.sockets[0].getsockname()[1])+'/ws'
-            url = 'http://127.0.0.1:'+str(page_server.sockets[0].getsockname()[1])+'/workspace?direct=1&renderer=dom#token='+daemons[0].token
-            for index, daemon in enumerate(daemons):
-                jobs.append(asyncio.create_task(relay_uplink(daemon, endpoint, 'profile-room-'+str(index), 'profile-'+str(index))))
-            await eventually(lambda: all(relay.rooms.get('profile-room-'+str(i)) and relay.rooms['profile-room-'+str(i)].host for i in range(2)))
-            async with playwright.async_playwright() as runtime:
-                browser = await runtime.chromium.launch(executable_path=str(EDGE), headless=True)
+        try:
+            for index in range(2):
+                daemon = Daemon('profile-owner-'+str(index))
+                daemons.append(daemon)
+                daemon.hub.persist = False
+                daemon.hub.pty_factory = lambda *_: ControlledPty()
+                daemon.hub.attach_loop(asyncio.get_running_loop())
+                daemon.hub.set_identity('Profile computer '+str(index), 'Profile project')
+                owned_windows = [daemon.hub.open_window('Room '+str(index)+' window '+str(n), owner=daemon.token) for n in range(2)]
+                owned_sessions = [daemon.hub.open_cli(win.id, 'cmd') for win in owned_windows]
+                original = daemon._op
+                async def observe(client, op, payload, original=original, index=index):
+                    if op in {5, 6, 9, 16}:
+                        ops[index].append((op, unpack_json(payload), client.key))
+                    return await original(client, op, payload)
+                daemon._op = observe
+                windows.append(owned_windows); sessions.append(owned_sessions)
+            relay = Relay(development=True)
+            wrong_endpoint_messages = []
+            async def wrong_endpoint(ws):
                 try:
-                    yield browser, url, endpoint, trap_endpoint, wrong_endpoint_messages, daemons, ops, windows, sessions
+                    async for message in ws:
+                        wrong_endpoint_messages.append(message)
                 finally:
-                    await browser.close()
-                    for job in jobs:
-                        job.cancel()
-                    await asyncio.gather(*jobs, return_exceptions=True)
-                    for daemon in daemons:
-                        for wid in list(daemon.hub.windows):
-                            daemon.hub.close_window(wid)
-        for daemon in daemons:
-            await daemon.close_sidecars()
+                    await ws.close()
+            async with AsyncExitStack() as stack:
+                server = await stack.enter_async_context(serve(relay.handler, '127.0.0.1', 0))
+                page_server = await stack.enter_async_context(serve(daemons[0].handle_socket, '127.0.0.1', 0, process_request=daemons[0].serve_http))
+                trap = await stack.enter_async_context(serve(wrong_endpoint, '127.0.0.1', 0))
+                endpoint = 'ws://127.0.0.1:'+str(server.sockets[0].getsockname()[1])+'/ws'
+                trap_endpoint = 'ws://127.0.0.1:'+str(trap.sockets[0].getsockname()[1])+'/ws'
+                url = 'http://127.0.0.1:'+str(page_server.sockets[0].getsockname()[1])+'/workspace?direct=1&renderer=dom#token='+daemons[0].token
+                for index, daemon in enumerate(daemons):
+                    jobs.append(asyncio.create_task(relay_uplink(daemon, endpoint, 'profile-room-'+str(index), 'profile-'+str(index))))
+                await eventually(lambda: all(relay.rooms.get('profile-room-'+str(i)) and relay.rooms['profile-room-'+str(i)].host for i in range(2)))
+                async with playwright.async_playwright() as runtime:
+                    browser = await runtime.chromium.launch(executable_path=str(EDGE), headless=True)
+                    try:
+                        yield browser, url, endpoint, trap_endpoint, wrong_endpoint_messages, daemons, ops, windows, sessions
+                    finally:
+                        await browser.close()
+                        for job in jobs:
+                            job.cancel()
+                        await asyncio.gather(*jobs, return_exceptions=True)
+                        for daemon in daemons:
+                            for wid in list(daemon.hub.windows):
+                                daemon.hub.close_window(wid)
+        finally:
+            for job in jobs:
+                job.cancel()
+            await asyncio.gather(*jobs, return_exceptions=True)
+            for daemon in daemons:
+                for wid in list(daemon.hub.windows):
+                    daemon.hub.close_window(wid)
+                await daemon.close_sidecars()
 
 
 async def open_profiles(page):

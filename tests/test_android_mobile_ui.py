@@ -261,6 +261,7 @@ async def check_mobile(playwright,intercepted):
                         await browser.close()
         finally:
             for wid in list(daemon.hub.windows):daemon.hub.close_window(wid)
+            await daemon.close_sidecars()
 
 
 async def wait_bytes(pty,expected):
