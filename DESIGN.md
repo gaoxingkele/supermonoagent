@@ -1,8 +1,40 @@
 # Terminal workspace design
 
+## Desktop directory/status correction — 2026-11-16
+
+Live desktop0.2.77 still mounted optional projectsettings before the composer, reproducing leftoffset. Keep directorysettings in top titlebar, and move the separate legacycwd/status node into the tabtoolbar above terminal as well. Bottomfooter contains input/actions only; no directory/status element can consume its leftspace after late nativefeature initialization. Catalogcwd is labeled启动目录, not claimed as live shellcwd; fullstatus text remains in title andlive region. Projectlabels distinguish unset/missing/unavailable fromready savedpaths, retain explicitselection andneverautobind the userhome. Testlateboot, longpaths, two-window switching andboth renderers, withzeroPTYwrites. Currentdesktopactivation mustpreserve itsRAMdrafts; Android0.2.78 installation remains unchanged.
+
+## Raw default and toolbar placement — 2026-11-13
+
+Latest user direction supersedes the earlier default: native CLI windows start in Raw/native input; deliberate field focus or editing selects local draft, preserving per-window choice. Managed observation stays readonly. Bottom input begins at the content area's left edge and receives72% of the desktop footer before overflow controls, with no added height. Existing project/exchange directory settings move to the top toolbar, using the same target-bound dialog and full-path titles; no footer path widget or wrapping. Desktop and mobile keep explicit draft/editor access and do not send input or claim resize ownership merely because defaults/layout change.
+
+## Compact bottom bar — 2026-11-13
+
+User correction: bottom input and buttons share one row height. Desktop mounts the same editor inside the existing footer, with32px input/buttons inside a44px bar; legacy excess controls scroll horizontally within the footer. Android groups quick input, expanded-editor entry, send/raw/tools and journal actions in one40px control row; auxiliary keys expand explicitly and respect saved preferences. Fixed-height drafts scroll internally; the existing larger editor retains multiline and attachment workflows. Target details remain accessible; sending/error status is retained without a permanent explanatory row. This overrides the earlier multirow dock presentation only, not submission, permission, identity or history semantics.
+
+## Active design contract — 2026-11-12
+
+Source of truth: user-approved common Codex-style terminal direction; detailed interfaces and acceptance are in `.omx/plans/codex-unified-terminal-contract.json` and `test-spec-codex-unified-terminal.md`. This specifies development, not deployment. Earlier workspace contracts below remain except where updated here.
+
+Brand and visual language: quiet neutral Codex palette, one semantic code grammar, shared category colors, block cursor and monospace stack. CLI identity and provider-specific tool token recognition remain accurate. Preserve user font size, meaningful native ANSI colors and active input/ghost styling; never change source bytes.
+
+Product goals and personas: users moving between coding CLIs on desktop and Android should type locally without WAN echo delay, recognize the same code/status categories and read history without jumps. Remote model/network latency is a separate measurement, not a promise of this design.
+
+Information architecture and components: retain host/session/sidebar/split navigation. Reuse ONE desktop composer as a dock plus its expanded editor and Android quick-draft/expanded editor. Share pure send/presentation/history policy rather than independent per-agent implementations. Existing attachments, quotes and managed controller remain authoritative.
+
+Interaction and focus: default focus goes to the local draft, with explicit Raw input escape. Keep Insert without Enter distinct from Send. Dock Enter sends, ShiftEnter adds a newline; preserve expanded-editor and IME semantics. Dock/style/focus changes send no PTY input or resize takeover. Managed submit keeps durable receipt/nonce behavior; native echo is only input receipt, not task success.
+
+History: local scroll pauses follow, explicit bottom resumes, and output does not move paused readers. Wheel/touch cannot impersonate CLI history keys. Verified actual Codex internal paging remains a separately gated explicit button action.
+
+Accessibility and responsive behavior: visible focus, descriptive labels, default safe permissions, legible contrast and touch controls near44px. Validate desktop1100x760, phone390x844/844x390, tablet768x1200/1200x768, DOM/WebGL. Dock stays bounded and expands into the existing scrollable editor. Existing lease/ACK-controlled canonical grid remains.
+
+States and content voice: Chinese loading/ready/sending/uncertain/offline outcomes are distinct. Failures preserve drafts and do not resubmit automatically. Keep target identification and per-session state; permission and upload rules do not weaken.
+
+Implementation constraints and verification: no new dependency or asset names, no CLI identity/protocol substitution or existing-session restart. Retain native/managed regressions, exact input/source bytes and bounded render work. Synthetic500ms transport/layout fixtures support development; EWAN“专利量化” remains the live acceptance target when desktop interaction is available.
+
 The additive `/workspace` client frames shared daemon-owned terminals. `/legacy` remains the browser baseline. The desktop workspace and dedicated Android document share the terminal protocol and session identities. Unified relay account controls described below are currently implemented in the Windows/browser workspace.
 
-Visual reference: `study/orca/docs/STYLEGUIDE.md` and `study/orca/src/renderer/src/assets/main.css`. Quiet neutral surfaces, thin borders, restrained selection, compact chrome. No terminal output recoloring. System Segoe UI avoids introducing a font dependency; Cascadia/Consolas serve terminal text.
+Visual reference: existing Codex presentation, with chrome informed by `study/orca/docs/STYLEGUIDE.md` and `study/orca/src/renderer/src/assets/main.css`. Quiet neutral surfaces, thin borders, restrained selection, compact chrome. Shared semantic decorations may add the Codex palette without modifying PTY data. System Segoe UI avoids introducing a font dependency; Cascadia/Consolas serve terminal text.
 
 Layout: project/host/session sidebar, compact tabs, a binary resizable split tree, one active pane, and a status footer. On phones, only the active terminal renders; switching open tabs preserves terminal parser state. Closing a view releases its parser, observer and GPU resources; reopening requests bounded history. A drawer exposes projects. Esc, Tab, Ctrl and arrow keys are reachable above the footer.
 

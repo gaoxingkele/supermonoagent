@@ -70,14 +70,50 @@
   const sessionInfo = sid => { for(const win of catalog){const session=(win.sessions||[]).find(s=>s.id===sid);if(session)return {win,session};}return null; };
   const visibleIDs = () => { if(!layout)return [];if(mobile()||maximized)return active?[active]:[];const ids=[];const walk=n=>{if(typeof n==='string')ids.push(n);else if(n){walk(n.a);walk(n.b);}};walk(layout);return [...new Set(ids)]; };
   const notice = message => { $('notice').textContent=message;$('notice').hidden=!message; };
+  const urlMenu={menu:null,pending:new Map(),seq:0};let urlMenuAnchor=null;
+  document.addEventListener('pointerdown',event=>{
+    if(event.target instanceof Element&&!event.target.closest('.url-menu'))closeUrlMenu();
+    const paneEl=event.target instanceof Element?event.target.closest('.pane'):null;
+    if(paneEl)urlMenuAnchor={x:event.clientX,y:event.clientY,paneEl};
+  },true);
+  document.addEventListener('keydown',event=>{if(event.key==='Escape')closeUrlMenu();},true);
+  function closeUrlMenu(){if(!urlMenu.menu)return;urlMenu.menu.remove();urlMenu.menu=null;}
   function openExternalUrl(url){
     if(typeof url!=='string'||!url)return;
     if(/^www\./i.test(url))url='https://'+url;
-    const api=window.pywebview?.api;
-    if(api&&typeof api.open_external==='function'){api.open_external(url);return;}
-    try{window.open(url,'_blank','noopener');}catch{}
+    let parsed;try{parsed=new URL(url);}catch{return;}
+    if(parsed.protocol!=='http:'&&parsed.protocol!=='https:')return;
+    showUrlMenu(url);
   }
-  function status(text) { $('status').textContent=text; }
+  function showUrlMenu(url){
+    closeUrlMenu();
+    const menu=node('div','url-menu');menu.setAttribute('role','menu');
+    const paneEl=urlMenuAnchor?.paneEl,pane=paneEl?[...panes.values()].find(p=>p.el===paneEl):null;
+    const openOnHost=()=>{
+      closeUrlMenu();
+      const api=window.pywebview?.api;
+      if(api&&typeof api.open_external==='function'){api.open_external(url);return;}
+      const host=pane?.host||[...hosts.values()].find(h=>h.connected&&h.capabilities.url_open===true);
+      if(!host||host.capabilities.url_open!==true){notice('此连接的后台不支持在电脑上打开链接。');return;}
+      const request='url-'+(++urlMenu.seq);urlMenu.pending.set(request,performance.now());
+      if(!send(owner(host),25,{request,url})){urlMenu.pending.delete(request);notice('链接请求未能发送。');}
+    };
+    const openOnDevice=()=>{
+      closeUrlMenu();
+      const api=window.pywebview?.api;
+      if(api&&typeof api.open_external==='function'){api.open_external(url);return;}
+      try{window.open(url,'_blank','noopener');}catch{}
+    };
+    menu.append(
+      button('在电脑上打开','在运行此终端的电脑上用浏览器打开',openOnHost),
+      button('在本设备打开','在当前正在看的设备浏览器中打开',openOnDevice)
+    );
+    document.body.append(menu);urlMenu.menu=menu;
+    const x=Math.max(8,Math.min(urlMenuAnchor?.x??innerWidth/2,innerWidth-menu.offsetWidth-8));
+    const y=Math.max(8,Math.min(urlMenuAnchor?.y??innerHeight/2,innerHeight-menu.offsetHeight-8));
+    menu.style.left=x+'px';menu.style.top=y+'px';
+  }
+  function status(text) { $('status').textContent=text;$('status').title=text; }
   function socketSend(host,message){
     if(!host?.ws||host.ws.readyState!==WebSocket.OPEN)return false;
     host.ws.send(message);metrics.transmittedBytes+=host.meter.sent(message);return true;
@@ -118,7 +154,7 @@
   function receiveJournal(host,value){
     const pending=journalPending.get(value?.request_id);if(!pending||pending.target.host!==host)return;
     clearTimeout(pending.timer);journalPending.delete(value.request_id);
-    if(!journalCurrent(pending.target))pending.reject(Error('journal_target_changed'));
+    if(!(pending.isCurrent?pending.isCurrent():journalCurrent(pending.target)))pending.reject(Error('journal_target_changed'));
     else if(value.ok===true)pending.resolve(value.result);else pending.reject(Error('journal_request_failed'));
   }
   function centralJournalURL(target){
@@ -199,6 +235,7 @@
       if(!journalCurrent(target))return;
       if(!manifest?.journal_id||manifest.source?.bound!==true||manifest.source?.supported!==true||manifest.source?.healthy!==true
         ||manifest.capture_state!=='capturing'||manifest.local_error||manifest.storage?.available!==true){notice('代码折叠不可用：'+(manifest?.source?.reason||'对话来源未绑定、未支持或采集不健康')+'。原始终端保持可用。');return;}
+      if(pane.historyMode)exitPaneHistory(pane);
       pane.journalManifest=manifest;pane.journalPreference=true;pane.journalLayer.hidden=false;
       pane.journalInline?.dispose();pane.journalInline=C.createConversationViewer(journalOptions(target,true));
       await pane.journalInline.open({projection:'history',journalId:manifest.journal_id});
@@ -236,6 +273,152 @@
       dialog.addEventListener('close',()=>dialog.remove(),{once:true});document.body.append(dialog);dialog.showModal();await load();
     }catch{dialog?.remove();notice('绑定不可用：当前主机未支持记录或无法读取终端状态。');}
   }
+  // Managed mode controls always address the live source daemon, never archives.
+  const managedPending=new Map(),managedCreates=new Map();
+  const managedFields=['window_id','session_id','process_generation','journal_id'];
+  const sameManaged=(a,b)=>!!a&&!!b&&managedFields.every(name=>a[name]===b[name]);
+  function isManagedPane(pane){return sessionInfo(pane?.sid)?.session.interaction_mode==='managed';}
+  function managedTuple(pane){const info=sessionInfo(pane?.sid);return info&&{window_id:info.win.raw,session_id:pane.raw,process_generation:info.session.process_generation,journal_id:info.session.journal_id};}
+  function setPaneInput(pane){const managed=isManagedPane(pane);pane.term.options.disableStdin=managed||!pane.ready;if(pane.term.textarea){if(managed)pane.term.textarea.readOnly=true;else if(pane.managedReadonly)pane.term.textarea.readOnly=false;}pane.managedReadonly=managed;}
+  function managedAuth(host){return JSON.stringify([host.id,host.config.relay,host.config.code,host.config.authMode,host.config.token,accountFor(host.config.relay)?.session||'']);}
+  async function managedIdentity(host){const hash=await crypto.subtle.digest('SHA-256',encoder.encode(managedAuth(host)));return Array.from(new Uint8Array(hash),byte=>byte.toString(16).padStart(2,'0')).join('');}
+  function managedRecordKey(targetKey,target){return JSON.stringify([targetKey,...managedFields.map(name=>target[name])]);}
+  function saveManagedPending(targetKey,target,pending){
+    const id=managedRecordKey(targetKey,target);if(pending)managedPending.set(id,pending);else managedPending.delete(id);
+    try{sessionStorage.setItem('sma.workspace.managed.pending',JSON.stringify([...managedPending]));}catch{notice('待确认提交仍保留在此窗口；本地存储不可用，请保持窗口开启并检查状态。');}
+  }
+  function managedRequest(pane,target,action,values){
+    if(!livePane(pane)||!sameManaged(managedTuple(pane),target)||!isManagedPane(pane))return Promise.reject(Error('managed_target_changed'));
+    return managedSourceRequest(pane,action,values);
+  }
+  function managedSourceRequest(pane,action,values){
+    if(!['create_managed','submit_managed','managed_status','interrupt_managed','respond_managed_permission','close_managed'].includes(action))return Promise.reject(Error('managed_unavailable'));
+    let context;try{context=journalTarget(pane);}catch{return Promise.reject(Error('managed_target_changed'));}
+    if(!journalCurrent(context))return Promise.reject(Error('managed_target_changed'));
+    if(!pane.host.connected||!pane.host.supported||pane.host.capabilities.managed_conversation!==1)return Promise.reject(Error('managed_unavailable'));
+    return new Promise((resolve,reject)=>{
+      const id='desktop-managed-'+(++journalSequence),timer=setTimeout(()=>{journalPending.delete(id);reject(Error('managed_timeout'));},10000);
+      journalPending.set(id,{target:context,resolve,reject,timer});
+      if(!send(pane,24,{request_id:id,action,params:values})){clearTimeout(timer);journalPending.delete(id);reject(Error('managed_unavailable'));}
+    });
+  }
+  async function closeManagedWindow(context,window){
+    const host=context.host,auth=managedAuth(host),sessions=(window.sessions||[]).filter(session=>session.interaction_mode==='managed');
+    if(!validOwner(context)||host.capabilities.managed_conversation!==1||!host.connected)throw Error('managed_unavailable');
+    for(const session of sessions){
+      const target={window_id:window.id,session_id:session.id,process_generation:session.process_generation,journal_id:session.journal_id};
+      const pane=panes.get(key(host,session.id));
+      if(pane?.managedController&&sameManaged(managedTuple(pane),target)){
+        const snapshot=await pane.managedController.closeSession();if(!['closing','ended'].includes(snapshot.state))throw Error('managed_close_unknown');
+      }else{
+        const current=()=>validOwner(context)&&host.connected&&host.capabilities.managed_conversation===1&&managedAuth(host)===auth;
+        const matches=()=>host.catalog.some(win=>win.id===target.window_id&&(win.sessions||[]).some(item=>item.id===target.session_id&&item.process_generation===target.process_generation&&item.journal_id===target.journal_id&&item.interaction_mode==='managed'));
+        if(!current()||!matches())throw Error('managed_target_changed');
+        const storageKey='sma.workspace.managed.close.'+await managedIdentity(host)+'.'+JSON.stringify(target);
+        if(!current()||!matches())throw Error('managed_target_changed');
+        const nonce=read(sessionStorage,storageKey)||crypto.randomUUID();sessionStorage.setItem(storageKey,nonce);
+        const result=await new Promise((resolve,reject)=>{const id='desktop-close-'+(++journalSequence),timer=setTimeout(()=>{journalPending.delete(id);reject(Error('managed_timeout'));},10000);
+          journalPending.set(id,{target:{host},isCurrent:current,resolve,reject,timer});
+          if(!send(context,24,{request_id:id,action:'close_managed',params:{...target,nonce}})){clearTimeout(timer);journalPending.delete(id);reject(Error('managed_unavailable'));}
+        });
+        if(!current()||!sameManaged(result,target)||!['closing','ended'].includes(result.state))throw Error('managed_close_unknown');
+        sessionStorage.removeItem(storageKey);
+      }
+    }
+  }
+  function managedCapture(pane){
+    const controller=pane?.managedController;
+    if(!controller||!livePane(pane)||!pane.host.connected||pane.host.capabilities.managed_conversation!==1||!isManagedPane(pane)||pane.managedAuth!==managedAuth(pane.host))return null;
+    const snapshot=controller.snapshot(),target=managedTuple(pane);if(!sameManaged(snapshot.target,target))return null;return {pane,target,targetKey:snapshot.targetKey,auth:pane.managedAuth};
+  }
+  function managedCaptureCurrent(value){const capture=managedCapture(value?.pane);return !!capture&&capture.targetKey===value.targetKey&&capture.auth===value.auth&&sameManaged(capture.target,value.target);}
+  function pauseManagedPane(pane){
+    if(pane.managedController){const snap=pane.managedController.snapshot();saveManagedPending(snap.targetKey,snap.target,pane.managedController.exportPending());pane.managedController.dispose();pane.managedController=null;}
+    pane.managedEpoch=(pane.managedEpoch||0)+1;pane.managedStarting=false;
+    if(pane.managedStatus)pane.managedStatus.textContent='对话记录模式 · 连接已暂停；未确认提交保留，重连后检查状态。';
+  }
+  function managedOutcomeText(snapshot){
+    if(snapshot.pending||snapshot.error||snapshot.active_submission)return '';
+    const outcome=snapshot.last_outcome;
+    if(!outcome)return '';
+    const messages={failed:'执行失败，请检查所选工具的接入配置与连接；原输入已保留。',blocked:'执行被阻止，原输入已保留。',ambiguous:'执行结果待核对，原输入已保留。',interrupted:'已中断，原输入已保留。'};
+    const message=messages[outcome.outcome]||(outcome.outcome==='completed'&&outcome.has_final===false?'运行结束，未发现可确认结论；原输入已保留。':'');
+    return message?'前次结果：'+message:'';
+  }
+  function renderManaged(pane,snapshot){
+    if(!pane.managedPanel||!isManagedPane(pane))return;
+    pane.managedPanel.hidden=false;pane.el.classList.add('managed-pane');
+    if(snapshot.provider_root_id&&!pane.managedOpened){pane.managedOpened=true;void showPaneJournal(pane);}
+    const info=sessionInfo(pane.sid),labels={starting:'正在启动',ready:'就绪',idle:'就绪',running:'运行中',waiting_permission:'等待权限决定',interrupting:'正在中断',closing:'正在结束',ended:'已结束',error:'发生错误',unknown:'正在检查状态'};
+    pane.managedStatus.textContent='对话记录模式 · '+(snapshot.provider||info.session.provider||'CLI')+' · '+(labels[snapshot.state]||snapshot.state)+' · 记录的启动目录：'+(info.session.cwd||'未知');
+    pane.managedPolicy.textContent='提供方根会话：'+(snapshot.provider_root_id||'尚未确认')+' · 权限策略：'+(snapshot.policy===null?'等待提供方确认':JSON.stringify(snapshot.policy));
+    pane.managedNote.textContent=snapshot.pending?'提交回执待确认；草稿和原提交标识已保留，请检查状态。':snapshot.error?'当前操作未确认：'+snapshot.error:'';
+    const previous=managedOutcomeText(snapshot);if(pane.managedOutcome.textContent!==previous)pane.managedOutcome.textContent=previous;pane.managedOutcome.hidden=!previous;
+    pane.managedInterrupt.disabled=!snapshot.active_submission||!!snapshot.operation||!pane.host.connected;
+    pane.managedRetry.hidden=snapshot.pending?.phase!=='absent';pane.managedRetry.disabled=!!snapshot.operation;
+    pane.managedControlRetry.hidden=snapshot.operation?.phase!=='unknown';
+    pane.managedControlRetry.disabled=!pane.host.connected;
+    const signature=JSON.stringify([snapshot.permissions,snapshot.operation,snapshot.active_submission]);
+    if(pane.managedPermissionSignature!==signature){pane.managedPermissionSignature=signature;pane.managedPermissions.replaceChildren();
+      for(const permission of snapshot.permissions){const card=node('section','managed-permission'),heading=node('strong','',permission.tool_name||'CLI 权限请求'),details=node('pre','',permission.details),scope=node('p','',permission.submission_id+' · '+(permission.provider_turn_id||'等待提供方轮次关联'));
+        card.append(heading,scope,details);const choices=permission.requires_user_interaction?['deny']:permission.choices;
+        for(const decision of ['deny','allow_once'].filter(value=>choices.includes(value))){const action=button(decision==='deny'?'拒绝':'仅允许这一次',decision==='deny'?'拒绝此 CLI 权限请求':'仅允许此 CLI 权限请求一次',()=>{
+          const current=managedCapture(pane),latest=pane.managedController?.snapshot();
+          if(!current||latest.operation||latest.active_submission?.submission_id!==permission.submission_id||!latest.permissions.some(item=>item.permission_request_id===permission.permission_request_id))return;
+          pane.managedController.respondPermission(permission.permission_request_id,decision);
+        });action.disabled=!!snapshot.operation||!pane.host.connected;card.append(action);
+          if(decision==='deny'&&active===pane.sid&&!document.querySelector('dialog[open]'))queueMicrotask(()=>{if(card.isConnected&&active===pane.sid)action.focus();});
+        }pane.managedPermissions.append(card);
+      }
+    }
+  }
+  async function ensureManaged(pane){
+    if(!isManagedPane(pane)){if(pane.managedController)pauseManagedPane(pane);return;}
+    if(pane.managedController&&(!sameManaged(pane.managedController.snapshot().target,managedTuple(pane))||pane.managedAuth!==managedAuth(pane.host)))pauseManagedPane(pane);
+    setPaneInput(pane);if(pane.managedController||pane.managedStarting||!pane.host.connected||pane.host.capabilities.managed_conversation!==1)return;
+    pane.managedStarting=true;const epoch=pane.managedEpoch=(pane.managedEpoch||0)+1,auth=managedAuth(pane.host),target=managedTuple(pane);
+    try{const targetKey=await managedIdentity(pane.host);
+      if(!livePane(pane)||!pane.host.connected||pane.managedEpoch!==epoch||auth!==managedAuth(pane.host)||!sameManaged(managedTuple(pane),target))return;
+      pane.managedAuth=auth;
+      const current=()=>livePane(pane)&&pane.host.connected&&pane.managedEpoch===epoch&&auth===managedAuth(pane.host)&&sameManaged(managedTuple(pane),target);
+      pane.managedController=C.createManagedController({target,targetKey,isCurrent:current,request:(action,values)=>managedRequest(pane,target,action,values),
+        onState:snapshot=>{if(pane.managedEpoch!==epoch)return;saveManagedPending(targetKey,target,snapshot.pending);renderManaged(pane,snapshot);},
+        onAccepted:(receipt,record)=>{if(current())window.SuperMonoTerminalComposer?.acceptManaged?.(receipt,record);}});
+      const pending=managedPending.get(managedRecordKey(targetKey,target));if(pending)pane.managedController.restorePending(pending);
+      await pane.managedController.reconcile();
+    }catch{if(pane.managedEpoch===epoch)pane.managedNote.textContent='对话记录控制不可用，请检查状态或升级客户端。';}
+    finally{if(pane.managedEpoch===epoch)pane.managedStarting=false;}
+  }
+  function applyManagedCreations(host){
+    for(const [nonce,record] of managedCreates){if(record.host!==host||record.auth!==managedAuth(host)||!record.result)continue;const value=record.result;
+      const existing=host.catalog.find(win=>win.id===value.window_id);
+      if(existing?.sessions?.some(item=>item.id===value.session_id&&item.process_generation===value.process_generation)){managedCreates.delete(nonce);continue;}
+      if(!existing)host.catalog.push({id:value.window_id,title:(value.provider==='claude'?'Claude':'Codex')+' · 对话记录',group:record.group,sessions:[{id:value.session_id,shell:value.provider,interaction_mode:'managed',provider:value.provider,process_generation:value.process_generation,journal_id:value.journal_id,managed_state:value.state,cwd:value.cwd}]});
+    }
+  }
+  async function createManagedDialog(pane){
+    const info=sessionInfo(pane?.sid);if(!livePane(pane)||!info||isManagedPane(pane)||pane.host.capabilities.managed_conversation!==1){notice('请在支持此功能的原 CLI 窗口中选择新建对话记录模式。');return;}
+    const context=journalTarget(pane),generation=info.session.process_generation,dialog=node('dialog','managed-create-dialog'),status=node('p','');status.setAttribute('role','status');
+    let storageKey;try{storageKey='sma.workspace.managed.create.'+await managedIdentity(pane.host)+'.'+pane.raw+'.'+generation;if(!journalCurrent(context))return;
+      const saved=JSON.parse(sessionStorage.getItem(storageKey)||'null');pane.managedCreation=saved&&saved.session_id===pane.raw&&saved.process_generation===generation&&['codex','claude'].includes(saved.provider)&&typeof saved.nonce==='string'?{...saved,host:pane.host,auth:managedAuth(pane.host)}:null;
+    }catch{notice('无法保存创建标识；请检查本地存储后再新建记录窗口。');return;}
+    dialog.append(node('h2','','新建对话记录模式'),node('p','','创建独立窗口；保留当前 CLI。记录的启动目录：'+(info.session.cwd||'未知')));
+    const actions=node('div','managed-create-actions');
+    const create=async provider=>{
+      if(!journalCurrent(context)||sessionInfo(pane.sid)?.session.process_generation!==generation)return;
+      const record=pane.managedCreation||{host:pane.host,auth:managedAuth(pane.host),session_id:pane.raw,process_generation:generation,provider,nonce:crypto.randomUUID(),group:pane.host.catalog.find(win=>win.id===info.win.raw)?.group||'default'};
+      try{sessionStorage.setItem(storageKey,JSON.stringify({session_id:record.session_id,process_generation:record.process_generation,provider:record.provider,nonce:record.nonce,group:record.group}));}catch{status.textContent='无法保存创建标识；尚未创建窗口，请检查本地存储。';return;}
+      pane.managedCreation=record;managedCreates.set(record.nonce,record);actions.querySelectorAll('button').forEach(item=>{item.disabled=true;});status.textContent='正在创建独立记录窗口…';
+      try{const result=await managedSourceRequest(pane,'create_managed',{session_id:record.session_id,process_generation:record.process_generation,provider:record.provider,nonce:record.nonce});
+        if(!journalCurrent(context))return;
+        if(!managedFields.every(name=>typeof result?.[name]==='string'&&result[name])||result.interaction_mode!=='managed'||!['claude','codex'].includes(result.provider))throw Error();
+        record.result=result;applyManagedCreations(pane.host);aggregateCatalog();pane.managedCreation=null;sessionStorage.removeItem(storageKey);dialog.close();openView(key(pane.host,result.session_id),false);void ensureManaged(panes.get(key(pane.host,result.session_id)));
+      }catch{status.textContent='创建结果未确认。再次检查将使用同一创建标识，不会另开窗口。';actions.replaceChildren(button('检查原创建结果','检查原创建结果',()=>create(record.provider)));}
+    };
+    if(pane.managedCreation){status.textContent='此前创建结果待确认；检查时保留原提供方与创建标识。';actions.append(button('检查原创建结果','检查原创建结果',()=>create(pane.managedCreation.provider)));}
+    else for(const provider of ['codex','claude'])actions.append(button(provider==='codex'?'Codex':'Claude Code','新建 '+provider+' 对话记录模式',()=>create(provider)));
+    dialog.append(actions,status,button('关闭','关闭新建对话记录模式',()=>dialog.close()));dialog.addEventListener('close',()=>dialog.remove(),{once:true});document.body.append(dialog);dialog.showModal();
+  }
   function connectionName(host){
     if(host.config.code)return '中继';
     const target=new URL(host.config.relay||location.origin,location.origin);
@@ -259,10 +442,11 @@
   }
   function handshake(host){
     if(host.helloSent||host.ws?.readyState!==WebSocket.OPEN)return;
-    host.helloSent=true;socketSend(host,C.pack(1,encoder.encode(JSON.stringify({...(tokenlessLocal(host.config)||host.config.authMode==='account'?{}:{token:host.config.token}),multiplex:true,reliable:true,history_context:1,history_resume:1,history_chunks:1,conversation_journal:1,
+    host.helloSent=true;socketSend(host,C.pack(1,encoder.encode(JSON.stringify({...(tokenlessLocal(host.config)||host.config.authMode==='account'?{}:{token:host.config.token}),multiplex:true,reliable:true,history_context:1,history_resume:1,history_chunks:1,conversation_journal:1,managed_conversation:1,
       channel:host.id==='local'?params.get('channel')||undefined:undefined}))));
   }
   function stopHost(host){
+    for(const pane of panes.values())if(pane.host===host)pauseManagedPane(pane);
     rejectJournalHost(host);
     host.daemonInfo=null;
     invalidateDaemonMonitorHost(host);
@@ -305,7 +489,8 @@
         const {op,payload}=C.unpack(new Uint8Array(event.data));
         if(op===2||op===7)sync(host,JSON.parse(decoder.decode(payload)),op===2);
         else if(op===20)receiveDaemonLogs(host,JSON.parse(decoder.decode(payload)));
-        else if(op===24&&[1,true].includes(host.capabilities.conversation_journal)&&payload.length<=196608)receiveJournal(host,JSON.parse(decoder.decode(payload)));
+        else if(op===24&&([1,true].includes(host.capabilities.conversation_journal)||host.capabilities.managed_conversation===1)&&payload.length<=196608)receiveJournal(host,JSON.parse(decoder.decode(payload)));
+        else if(op===25){const reply=JSON.parse(decoder.decode(payload));if(typeof reply.request==='string'&&urlMenu.pending.delete(reply.request)&&reply.ok!==true)notice(reply.error||'电脑上的默认浏览器未能打开。');}
         else if(op===3||op===8||op===23){
           if((op===8||op===23)&&payload.length===0)return;
           if(op===23&&host.capabilities.history_context!==1)throw new Error('Unnegotiated history context');
@@ -334,6 +519,7 @@
     host.ws.onclose=event=>{
       if(!validOwner(context))return;
       host.daemonInfo=null;invalidateDaemonMonitorHost(host);
+      for(const pane of panes.values())if(pane.host===host)pauseManagedPane(pane);
       rejectJournalHost(host);
       host.connected=false;host.supported=false;clearInterval(host.pingTimer);
       for(const pane of panes.values())if(pane.host===host){pane.ready=false;pane.term.options.disableStdin=true;}
@@ -363,7 +549,7 @@
     if(info.service&&typeof info.service==='object')updateDaemonInfo(host,info.service);
     for(const field of ['machine','project'])if(typeof info[field]==='string')host.identity[field]=info[field].slice(0,40);
     if(info.controls){host.controls=info.controls;for(const pane of panes.values())if(pane.host===host){acceptResize(pane,info,greeting);if(pane.resumeControl&&host.controls[pane.raw]){pane.resumeControl=false;pane.redrawAfterReplay=true;pane.wantControl=host.controls[pane.raw].owner===true||host.controls[pane.raw].busy===false;}}}
-    if(info.windows){host.catalog=info.windows;const sessions=new Set(host.catalog.flatMap(win=>(win.sessions||[]).map(session=>{session.learnedAgent=host.agents.get(session.id)||'';return session.id;})));for(const cache of [host.activity,host.agents])for(const id of cache.keys())if(!sessions.has(id))cache.delete(id);}if(info.groups)host.groups=info.groups;
+    if(info.windows){host.catalog=info.windows;applyManagedCreations(host);const sessions=new Set(host.catalog.flatMap(win=>(win.sessions||[]).map(session=>{session.learnedAgent=host.agents.get(session.id)||'';return session.id;})));for(const cache of [host.activity,host.agents])for(const id of cache.keys())if(!sessions.has(id))cache.delete(id);}if(info.groups)host.groups=info.groups;
     if(host.autoDirectory&&isLocalRelayCopy(host)){
       const directory=directories.get(host.autoDirectory);if(directory){directory.selfRooms??=new Set();directory.selfRooms.add(host.config.code);}
       detachHost(host);renderTree();renderTabs();renderLayout();return;
@@ -380,7 +566,7 @@
       }
     }
     if(host.nextSplit==='new'){const created=host.catalog.flatMap(win=>win.sessions||[]).find(session=>!host.sessionsBeforeOpen.has(session.id));if(created){host.nextSplit='';openView(key(host,created.id));}}
-    for(const pane of panes.values())if(pane.host===host){pane.ready=host.connected&&!pane.writing&&!pane.frames.length&&!pane.replayPending&&!pane.chunkedReplay;pane.term.options.disableStdin=!pane.ready;const data=sessionInfo(pane.sid);if(data){pane.title.textContent=data.win.title+'（'+agentType(data.session,data.win.title)+'）';TabThemes.apply(pane.title.parentElement,data.win.tab_theme);updateAgentMode(pane);}drainPane(pane);}
+    for(const pane of panes.values())if(pane.host===host){pane.ready=host.connected&&!pane.writing&&!pane.frames.length&&!pane.replayPending&&!pane.chunkedReplay;setPaneInput(pane);const data=sessionInfo(pane.sid);if(data){pane.title.textContent=data.win.title+'（'+agentType(data.session,data.win.title)+'）';TabThemes.apply(pane.title.parentElement,data.win.tab_theme);updateAgentMode(pane);}drainPane(pane);void ensureManaged(pane);}
     renderTree();renderTabs();renderHosts();renderDaemonMonitor();if(layoutChanged)renderLayout();subscribe();updateConnection();updateFooter();if(greeting||host.id==='local')refreshDirectories();
     scheduleVisibleFit();
   }
@@ -431,11 +617,13 @@
       pane.writing=false;if(replay){pane.replayPending=Math.max(0,pane.replayPending-1);pane.historyInitialized=true;if(!pane.replayPending)pane.recoveryPending=false;}
       if(replay&&pane.chunkedReplay&&frame.context?.kind==='resume'&&!tracked.bytes.length&&frame.context.end_position>=pane.host.controls[pane.raw]?.history_end)pane.chunkedReplay=false;
       pane.ready=pane.host.connected&&!pane.writing&&!pane.frames.length&&!pane.replayPending&&!pane.chunkedReplay;
-      pane.term.options.disableStdin=!pane.ready;
+      setPaneInput(pane);
+      window.SuperMonoTerminalComposer?.output(pane,{replaying:replay});
+      pane.followOutput=C.localHistoryPolicy('output',{following:pane.followOutput}).follow;
+      if(!replay&&frame.bytes.length&&!pane.followOutput){pane.unreadOutput=true;pane.history.textContent='有新输出 · 到末尾后恢复跟随';pane.history.hidden=false;}
       if(frame.context?.v===2&&tracked.position!==null)pane.historyCursor={position:tracked.position,epoch:frame.context.epoch,stream_id:frame.context.stream_id};
-      if(readingDistance!==null&&pane.term.buffer.active.type==='normal'){
-        pane.followingProgrammatically=true;pane.term.scrollToLine(Math.max(0,pane.term.buffer.active.baseY-readingDistance));pane.followingProgrammatically=false;
-      }
+      // xterm preserves a paused viewport (including its own scrollback trim).
+      // Reanchoring by distance from the growing bottom would move the reader.
       metrics.renderMilliseconds+=performance.now()-before;metrics.parsedBytes+=frame.bytes.length;
       capturePaneHistory(pane);
       if(pane.followFrame)keepFollowing(pane);
@@ -468,7 +656,9 @@
     });
     // Preserve readable history when a full-screen tool clears saved lines.
     term.parser.registerCsiHandler({final:'J'},params=>params[0]===3);
-    const pane={sid,host:data.win.host,raw:data.session.raw,generation:data.win.host.generation,el,screen,term,fit,history,historyView,title,own,ready:data.win.host.connected,replayPending:0,lastSize:'',renderer:'dom',webgl:null,observer:null,frames:[],writing:false,wantControl:false,redrawAfterReplay:false,redrawTimer:0,resizeRequest:null,lastAttempt:'',lastInputAt:0,repaintAt:0,composing:false,historyCursor:null,historyInitialized:false,recoveryGeneration:-1,historyMode:false,historyCapturedAt:0,screenArchive:C.createScreenHistory({maxFrames:128,maxBytes:4*1024*1024})};
+    const pane={sid,host:data.win.host,raw:data.session.raw,generation:data.win.host.generation,el,screen,term,fit,history,historyView,title,own,ready:data.win.host.connected,replayPending:0,lastSize:'',renderer:'dom',webgl:null,observer:null,frames:[],writing:false,wantControl:false,redrawAfterReplay:false,redrawTimer:0,resizeRequest:null,lastAttempt:'',lastInputAt:0,repaintAt:0,composing:false,historyCursor:null,historyInitialized:false,recoveryGeneration:-1,historyMode:false,historyCapturedAt:0,appMouseTracking:false,screenArchive:C.createScreenHistory({maxFrames:128,maxBytes:4*1024*1024})};
+    term.parser.registerCsiHandler({prefix:'?',final:'h'},params=>{if(params[0]===1000||params[0]===1002||params[0]===1003)pane.appMouseTracking=true;return false;});
+    term.parser.registerCsiHandler({prefix:'?',final:'l'},params=>{if(params[0]===1000||params[0]===1002||params[0]===1003)pane.appMouseTracking=false;return false;});
     term.parser.registerOscHandler(7501,data=>{
       if(!livePane(pane))return false;
       const session=pane.host.catalog.flatMap(win=>win.sessions||[]).find(item=>item.id===pane.raw);if(!session||session.agent)return false;
@@ -479,12 +669,24 @@
       if(next)pane.host.agents.set(pane.raw,next);else pane.host.agents.delete(pane.raw);
       session.learnedAgent=next;aggregateCatalog();const info=sessionInfo(pane.sid);if(info)pane.title.textContent=info.win.title+'（'+agentType(info.session,info.win.title)+'）';renderTree();return false;
     });
-    pane.highlighter=C.createHighlighter(term,{enabled:highlightEnabled});
+    pane.localDraftRaw=data.session.interaction_mode!=='managed';
+    pane.highlighter=C.createHighlighter(term,{enabled:highlightEnabled,presentationStyle:'codex'});
     pane.questions=window.TerminalQuestions?.create(pane,{enabled:highlightEnabled,isCurrent:livePane});
     panes.set(sid,pane);setRenderer(pane,false);updateAgentMode(pane);watchAgentContent(pane);
     pane.journalLayer=node('div','pane-journal-layer');pane.journalLayer.hidden=true;screen.append(pane.journalLayer);
     pane.journalToggle=button('代码：显示','显示或折叠此终端的代码记录',()=>showPaneJournal(pane));pane.journalToggle.setAttribute('aria-pressed','true');
-    pane.journalOriginal=button('原始终端','返回原始终端处理输入与权限确认',()=>{restoreJournalTerminal(pane);term.focus();});pane.journalOriginal.hidden=true;
+    pane.journalOriginal=button('原始终端','返回原始终端处理输入与权限确认',()=>{restoreJournalTerminal(pane);pane.localDraftRaw=true;term.focus();});pane.journalOriginal.hidden=true;
+    pane.managedPanel=node('section','managed-controls');pane.managedPanel.hidden=true;
+    pane.managedStatus=node('strong','managed-state');pane.managedPolicy=node('p','managed-policy');pane.managedNote=node('p','managed-note');pane.managedNote.setAttribute('role','status');pane.managedPermissions=node('div','managed-permissions');
+    pane.managedOutcome=node('p','managed-outcome managed-note');pane.managedOutcome.hidden=true;pane.managedOutcome.setAttribute('role','status');
+    pane.managedInterrupt=button('中断本轮','请求中断此对话记录轮次',()=>pane.managedController?.interrupt());
+    pane.managedRetry=button('重试原提交','仅在确认未收到后重试原提交',()=>pane.managedController?.retry());pane.managedRetry.hidden=true;
+    pane.managedControlRetry=button('重试原操作','使用原标识重试未确认操作',()=>{const capture=managedCapture(pane),operation=pane.managedController?.snapshot().operation;if(!capture||operation?.phase!=='unknown')return;
+      if(operation.action==='respond_managed_permission')pane.managedController.respondPermission(operation.permission_request_id,operation.decision);
+      else if(operation.action==='interrupt_managed')pane.managedController.interrupt();else if(operation.action==='close_managed')pane.managedController.closeSession();});pane.managedControlRetry.hidden=true;
+    const managedActions=node('div','managed-actions');managedActions.append(button('编辑消息','编辑此对话记录消息',()=>window.SuperMonoTerminalComposer?.open()),button('检查状态','检查对话记录状态',()=>pane.managedController?.reconcile()),pane.managedInterrupt,pane.managedRetry,pane.managedControlRetry,button('结束记录会话','结束此独立记录会话',()=>pane.managedController?.closeSession()));
+    pane.managedPanel.append(pane.managedStatus,pane.managedPolicy,pane.managedNote,pane.managedOutcome,managedActions,pane.managedPermissions);el.insertBefore(pane.managedPanel,screen);
+    setPaneInput(pane);
     pane.followOutput=true;pane.followFrame=0;pane.followGeometry=viewportGeometry(pane);pane.userScrollUntil=0;
     const scrollIntent=event=>{
       const buffer=term.buffer.active;if(event.type==='wheel'&&event.deltaY>=0&&buffer.viewportY===buffer.baseY)return;
@@ -492,13 +694,30 @@
       cancelAnimationFrame(pane.scrollIntentFrame);const context=owner(pane.host);
       pane.scrollIntentFrame=requestAnimationFrame(()=>{
         pane.scrollIntentFrame=0;if(!validOwner(context)||!livePane(pane))return;
-        const buffer=term.buffer.active;pane.followOutput=buffer.viewportY===buffer.baseY;
+        const buffer=term.buffer.active,normal=!pane.historyMode&&buffer.type==='normal';
+        pane.followOutput=C.localHistoryPolicy(normal?'observe':'output',{following:pane.followOutput,atBottom:normal&&buffer.viewportY===buffer.baseY,userInitiated:normal}).follow;
         // A tap or downward wheel at the bottom is not a history view.
         if(pane.followOutput)keepFollowing(pane);
       });
     };
-    screen.addEventListener('wheel',scrollIntent,{capture:true,passive:true});
-    screen.addEventListener('touchmove',scrollIntent,{capture:true,passive:true});
+    screen.addEventListener('wheel',event=>{
+      if(event.ctrlKey||event.target.closest?.('.conversation-viewer')||!event.deltaY)return;
+      // An alternate-screen agent that enabled mouse tracking (Claude Code after
+      // its first page key) owns the wheel: let xterm translate it to SGR mouse.
+      if(term.buffer.active.type==='alternate'&&pane.appMouseTracking)return;
+      event.preventDefault();event.stopImmediatePropagation();scrollIntent(event);
+      if(term.buffer.active.type==='alternate')pageHistory(pane,event.deltaY<0?'up':'down','wheel');
+      else{term.scrollLines(event.deltaY<0?-3:3);pane.followOutput=C.localHistoryPolicy('observe',{source:'wheel',following:pane.followOutput,atBottom:term.buffer.active.viewportY===term.buffer.active.baseY}).follow;}
+    },{capture:true,passive:false});
+    let historyTouch=null;
+    screen.addEventListener('touchstart',event=>{const point=event.touches?.length===1?event.touches[0]:null;historyTouch=point&&!event.target.closest?.('.conversation-viewer')?{x:point.clientX,y:point.clientY}:null;},{capture:true,passive:true});
+    screen.addEventListener('touchmove',event=>{
+      if(!historyTouch||event.touches?.length!==1)return;const point=event.touches[0],dy=point.clientY-historyTouch.y,dx=point.clientX-historyTouch.x;
+      if(Math.abs(dy)<18||Math.abs(dy)<=Math.abs(dx))return;
+      event.preventDefault();event.stopImmediatePropagation();scrollIntent(event);historyTouch={x:point.clientX,y:point.clientY};
+      if(term.buffer.active.type==='alternate')pageHistory(pane,dy>0?'up':'down','touch');else{term.scrollLines(dy>0?-3:3);pane.followOutput=C.localHistoryPolicy('observe',{source:'touch',following:pane.followOutput,atBottom:term.buffer.active.viewportY===term.buffer.active.baseY}).follow;}
+    },{capture:true,passive:false});
+    screen.addEventListener('touchend',()=>{historyTouch=null;},{capture:true,passive:true});
     screen.addEventListener('pointerdown',event=>{if(event.target.classList?.contains('xterm-viewport'))scrollIntent(event);},true);
     screen.addEventListener('keydown',event=>{if(['PageUp','PageDown','Home','End'].includes(event.key)&&event.shiftKey)scrollIntent(event);},true);
     term.onScroll(()=>{
@@ -506,8 +725,10 @@
       const explicit=performance.now()<pane.userScrollUntil&&pane.userScrollGeometry===viewportGeometry(pane);
       // Zoom can generate a native DOM scroll before fit/resize sees the new geometry.
       // A stable, idle programmatic history scroll is also an intentional view change.
-      if(explicit||(!pane.writing&&!pane.followFrame&&pane.followGeometry===viewportGeometry(pane)))
-        pane.followOutput=term.buffer.active.viewportY===term.buffer.active.baseY;
+      const normal=!pane.historyMode&&term.buffer.active.type==='normal';
+      if(normal&&(explicit||(!pane.writing&&!pane.followFrame&&pane.followGeometry===viewportGeometry(pane))))
+        pane.followOutput=C.localHistoryPolicy('observe',{following:pane.followOutput,atBottom:term.buffer.active.viewportY===term.buffer.active.baseY,userInitiated:true}).follow;
+      if(normal&&pane.followOutput&&pane.unreadOutput){pane.unreadOutput=false;pane.history.hidden=true;}
     });
     const scrollBar=node('div','pane-scroll');
     const scrollAction=fn=>{
@@ -530,7 +751,9 @@
     pane.bindHeader=()=>{
       const context=owner(pane.host),guard=action=>(...args)=>{if(validOwner(context)&&livePane(pane))action(...args);};
       header.replaceChildren(title,own);
-      header.append(pane.journalToggle,pane.journalOriginal,button('绑定源','明确选择此终端的根对话源',guard(()=>bindJournalSource(pane))));
+      header.append(pane.journalToggle,pane.journalOriginal);
+      if(!isManagedPane(pane))header.append(button('绑定源','明确选择此终端的根对话源',guard(()=>bindJournalSource(pane))));
+      if(!isManagedPane(pane)&&pane.host.capabilities.managed_conversation===1)header.append(button('新建对话记录模式','从此原 CLI 新建独立对话记录模式',guard(()=>createManagedDialog(pane))));
       header.oncontextmenu=guard(event=>tabMenu(event,data.win,context));
       header.append(button('接管','接管此终端尺寸',guard(()=>takeControl(sid))),button('刷新','强制后台终端全量重绘',guard(()=>redrawPane(pane))),button('改名','重命名窗口',guard(()=>rename(data.win.id,context))),button('结束','结束后台会话',guard(()=>terminate(sid))),button('×','关闭视图（保留后台进程）',guard(()=>removeView(sid))));
     };
@@ -541,9 +764,10 @@
       pane.inputSubscription=term.onData(text=>{if(!validOwner(context)||!livePane(pane))return;text=C.terminalInput(text,pane.replayPending>0);if(!text)return;if(ctrl&&text.length===1){text=String.fromCharCode(text.toUpperCase().charCodeAt(0)&31);setCtrl(false);}input(sid,text);});
     };
     pane.bindInput();
+    term.textarea.addEventListener('focus',()=>{if(!pane.localDraftRaw&&pane.sid===active)queueMicrotask(()=>{if(livePane(pane)&&!pane.localDraftRaw&&document.activeElement===term.textarea)focusPaneInput(pane);});});
     term.textarea.addEventListener('compositionstart',()=>{pane.composing=true;});term.textarea.addEventListener('compositionend',()=>{pane.composing=false;pane.lastInputAt=performance.now();});
     el.addEventListener('pointerdown',()=>{if(livePane(pane))activate(sid,false);});
-    screen.addEventListener('pointerdown',event=>{if(event.target===screen&&livePane(pane)){event.preventDefault();activate(sid,false);term.focus();}});
+    screen.addEventListener('pointerdown',event=>{if(event.target===screen&&livePane(pane)){event.preventDefault();activate(sid,false);focusPaneInput(pane);}});
     pane.bindObserver=()=>{
       pane.observer?.disconnect();const context=owner(pane.host);
       pane.observer=new ResizeObserver(()=>{if(validOwner(context)&&livePane(pane)){keepFollowing(pane);scheduleFit(pane);}});pane.observer.observe(screen);
@@ -580,9 +804,8 @@
     pane.agentRequested=detected;const generation=pane.agentGeneration=(pane.agentGeneration||0)+1;
     const apply=profile=>{
       if(!livePane(pane)||pane.agentGeneration!==generation)return;
-      pane.term.options.theme={background:'#121212',foreground:'#dedede',cursor:'#ddd',selectionBackground:'#55555588',...profile.theme};
-      pane.term.options.cursorStyle=profile.id==='cursor-cli'?'bar':'block';
-      pane.highlighter.setProfile(profile);pane.agentProfile=profile.id;
+      const presentation=C.presentationPolicy(profile,detected);for(const [name,value] of Object.entries(presentation.terminalOptions))pane.term.options[name]=value;
+      pane.highlighter.setPresentation('codex');pane.highlighter.setProfile(presentation.profile);pane.agentProfile=profile.id;
       if(active===pane.sid)updateFooter();
     };
     if(detected==='auto'){apply(C.commonAgentProfile);return;}
@@ -606,37 +829,41 @@
     return pane.screenArchive.record({cols:pane.term.cols,rows:pane.term.rows,lines});
   }
   function renderPaneHistory(pane){
-    const frame=pane.screenArchive.current();if(!frame){exitPaneHistory(pane);return;}
-    pane.historyMode=true;pane.screen.style.visibility='hidden';pane.historyView.hidden=false;pane.historyView.replaceChildren(document.createTextNode(frame.lines.join('\n')));
-    const message='只读历史 · '+pane.screenArchive.length+' 帧 · 最新帧';pane.history.textContent=message;pane.history.title=message;pane.history.hidden=false;
+    const frame=pane.screenArchive.current;if(!frame){exitPaneHistory(pane);return;}
+    pane.historyMode=true;pane.followOutput=false;pane.screen.classList.add('screen-history-active');pane.historyView.hidden=false;pane.historyView.replaceChildren(document.createTextNode(frame.lines.join('\n')));
+    const message='只读历史 · 画面 #'+frame.id+' · 已保留 '+pane.screenArchive.length+' 帧';pane.history.textContent=message;pane.history.title=message;pane.history.hidden=false;
   }
   function exitPaneHistory(pane){
-    pane.screenArchive.bottom();pane.historyMode=false;pane.screen.style.visibility='';pane.historyView.hidden=true;pane.historyView.textContent='';
+    pane.screenArchive.bottom();pane.historyMode=false;pane.screen.classList.remove('screen-history-active');pane.historyView.hidden=true;pane.historyView.textContent='';pane.history.textContent='已退出本地历史画面';pane.history.title=pane.history.textContent;pane.history.hidden=false;
   }
-  function pageHistory(pane,direction){
+  function pageHistory(pane,direction,source='button'){
+    if(direction==='end'&&pane.unreadOutput){pane.unreadOutput=false;pane.history.hidden=true;}
     const buffer=pane.term.buffer.active;
+    const session=sessionInfo(pane.sid)?.session||{},declared=session.agent||session.learnedAgent;
+    const executable=value=>String(Array.isArray(value)?value[0]||'':value||'').trim().replace(/^"|"$/g,'').split(/[\\/]/).pop();
+    const codex=declared?/^codex$/i.test(declared):[session.shell,session.command,session.argv].some(value=>/^codex(?:\.(?:exe|cmd|js))?$/i.test(executable(value)));
+    const pages=codex||/^(?:claude|claude-code)$/i.test(declared||''),label=codex?'Codex':'Claude';
+    const policy=C.localHistoryPolicy(direction,{source,following:pane.followOutput,atBottom:buffer.viewportY===buffer.baseY,bufferType:buffer.type,baseY:buffer.baseY,archiveAvailable:pane.screenArchive.length>0,historyActive:pane.historyMode,actualAgent:codex?'codex':declared||'auto',nativePaging:pages,ready:pane.ready&&pane.host.connected,replaying:!!pane.replayPending,managed:isManagedPane(pane)});
+    pane.followOutput=policy.follow;
     if(pane.historyMode){
       if(direction==='start')pane.screenArchive.top();
-      else if(direction==='end'){exitPaneHistory(pane);pane.term.scrollToBottom();pane.followOutput=true;keepFollowing(pane);}
+      else if(direction==='end'){exitPaneHistory(pane);pane.term.scrollToBottom();pane.followOutput=true;keepFollowing(pane);return;}
       else if(direction==='up')pane.screenArchive.previous();
       else pane.screenArchive.next();
       renderPaneHistory(pane);return;
     }
     if(buffer.type==='alternate'||buffer.baseY===0){
-      const session=sessionInfo(pane.sid)?.session||{},declared=session.agent||session.learnedAgent;
-      const executable=value=>String(Array.isArray(value)?value[0]||'':value||'').trim().replace(/^"|"$/g,'').split(/[\\/]/).pop();
-      const codex=declared?/^codex$/i.test(declared):[session.shell,session.command,session.argv].some(value=>/^codex(?:\.(?:exe|cmd|js))?$/i.test(executable(value)));
-      const canPage=codex&&pane.ready&&pane.host.connected&&!pane.replayPending;
+      const canPage=policy.route==='native';
       if(!canPage){
         capturePaneHistory(pane,true);
         if(pane.screenArchive.length){
           if(direction==='end'){exitPaneHistory(pane);pane.followOutput=true;keepFollowing(pane);return;}
-          pane.historyMode=true;pane.screen.style.visibility='hidden';pane.historyView.hidden=false;
+          pane.historyMode=true;pane.screen.classList.add('screen-history-active');pane.historyView.hidden=false;
           if(direction==='start')pane.screenArchive.top();else if(direction==='up')pane.screenArchive.previous();else pane.screenArchive.next();
           pane.followOutput=false;renderPaneHistory(pane);return;
         }
       }
-      const message=codex?(canPage?'正在翻阅 Codex 历史。':'请等待连接和历史恢复后再翻屏。'):buffer.type==='alternate'?'此全屏程序没有本地滚动历史，请使用程序自身的历史查看功能。':'当前会话尚无可翻阅的本地历史。';
+      const message=pages?(canPage?`正在翻阅 ${label} 历史。`:'请等待连接和历史恢复后再翻屏。'):buffer.type==='alternate'?'此全屏程序没有本地滚动历史，请使用程序自身的历史查看功能。':'当前会话尚无可翻阅的本地历史。';
       pane.history.textContent=message;pane.history.title=message;pane.history.hidden=false;
       if(canPage){
         if(direction==='up'||direction==='start')pane.followOutput=false;
@@ -758,10 +985,13 @@
   }
   function input(sid,text) {
     const pane=panes.get(sid);
-    if(!livePane(pane)||!pane.ready||!pane.host.connected||!pane.host.supported||!openTabs.includes(sid))return;
+    if(isManagedPane(pane))return false;
+    if(!livePane(pane)||!pane.ready||!pane.host.connected||!pane.host.supported||!openTabs.includes(sid))return false;
+    if(!pane.localDraftSubmitting)window.SuperMonoTerminalComposer?.abortNativeInput?.(pane);
     pane.lastInputAt=performance.now();const frame=C.targetFrame(17,pane.raw,text);
-    if(socketSend(pane.host,frame))pane.questions?.observeAcceptedInput(text);
+    if(socketSend(pane.host,frame)){pane.questions?.observeAcceptedInput(text);return true;}return false;
   }
+  function focusPaneInput(pane,focus=true){if(!pane||pane.sid!==active)return;const composer=window.SuperMonoTerminalComposer;if(composer)composer.bindActive({focus});else if(focus)pane.term.focus();}
   function takeControl(sid=active){const pane=panes.get(sid);if(pane){pane.wantControl=true;pane.lastAttempt='';pane.redrawAfterReplay=true;pane.resizePaused=false;fitPane(pane,true);}}
   function openView(sid, takeover=false) {
     if(!sessionInfo(sid))return;
@@ -772,12 +1002,13 @@
     else if(!visibleIDs().includes(sid)){layout=replaceLeaf(layout,active,sid);}
     active=sid;selectedHost=panes.get(sid).host.id;panes.get(sid).host.selectedGroup=sessionInfo(sid).win.group;updateConnection();renderHosts();
     if(takeover&&(changed||!panes.get(sid).host.controls[panes.get(sid).raw]?.owner)){const pane=panes.get(sid);pane.wantControl=true;pane.lastAttempt='';pane.redrawAfterReplay=true;}
-    renderTree();renderTabs();renderLayout();subscribe();panes.get(sid).term.focus();
+    renderTree();renderTabs();renderLayout();subscribe();focusPaneInput(panes.get(sid));
     $('app').classList.remove('mobile-sidebar');
   }
   function replaceLeaf(tree,find,replacement){if(typeof tree==='string')return tree===find?replacement:tree;if(!tree)return replacement;return {...tree,a:replaceLeaf(tree.a,find,replacement),b:replaceLeaf(tree.b,find,replacement)};}
   function prune(tree,sid){if(typeof tree==='string')return tree===sid?null:tree;if(!tree)return null;const a=prune(tree.a,sid),b=prune(tree.b,sid);return a&&b?{...tree,a,b}:a||b;}
   function removeView(sid, redraw=true){
+    const managedPane=panes.get(sid);if(managedPane)pauseManagedPane(managedPane);
     const journalPane=panes.get(sid);journalPane?.journalDialog?.dispose();journalPane?.journalInline?.dispose();
     openTabs=openTabs.filter(id=>id!==sid);layout=prune(layout,sid);
     if(active===sid){const first=tree=>typeof tree==='string'?tree:tree?first(tree.a):'';active=first(layout)||openTabs[openTabs.length-1]||'';}
@@ -787,7 +1018,7 @@
     if(active&&panes.has(active)){selectedHost=panes.get(active).host.id;updateConnection();renderHosts();}
     if(redraw){renderTree();renderTabs();renderLayout();subscribe();}
   }
-  function activate(sid,focus=true){if(active===sid)return;active=sid;selectedHost=panes.get(sid).host.id;updateConnection();renderHosts();renderTree();renderTabs();if(mobile()||maximized)renderLayout();else for(const p of panes.values())p.el.classList.toggle('active',p.sid===active);updateFooter();if(focus)panes.get(sid)?.term.focus();repaintPane(panes.get(sid));}
+  function activate(sid,focus=true){if(active===sid)return;active=sid;selectedHost=panes.get(sid).host.id;updateConnection();renderHosts();renderTree();renderTabs();if(mobile()||maximized)renderLayout();else for(const p of panes.values())p.el.classList.toggle('active',p.sid===active);updateFooter();focusPaneInput(panes.get(sid),focus);repaintPane(panes.get(sid));}
   function split(direction){
     const candidate=openTabs.find(id=>id!==active&&!visibleIDs().includes(id))||catalog.flatMap(w=>w.sessions||[]).find(s=>s.id!==active&&!visibleIDs().includes(s.id))?.id;
     if(!active||!candidate){notice('先新建另一个终端，再使用分屏。');return;}
@@ -913,7 +1144,7 @@
   function updateFooter(){
     const pane=panes.get(active),info=sessionInfo(active),host=currentHost();
     $('dimensions').textContent=pane?pane.term.cols+' × '+pane.term.rows:'—';$('effective-renderer').textContent=pane?pane.renderer.toUpperCase():'—';
-    if(host?.connected)status((info?.session.cwd||'工作区已连接')+(host.meter.rtt===null?'':' · '+Math.round(host.meter.rtt)+' ms'));
+    if(host?.connected)status((info?.session.cwd?'启动目录：'+info.session.cwd:'工作区已连接')+(host.meter.rtt===null?'':' · '+Math.round(host.meter.rtt)+' ms'));
     for(const pane of panes.values()){const lease=pane.host.controls[pane.raw];pane.own.textContent=lease?(lease.owner?'尺寸主控':'共享观看'):'';}
     $('take-control').disabled=!pane||!pane.host.connected;
     for(const id of ['journal-history','journal-conversation'])if($(id))$(id).disabled=!pane;
@@ -931,7 +1162,7 @@
     const win=catalog.find(win=>win.id===id);if(!win)return;context=context||owner(win.host);if(!validOwner(context))return;
     renameWindow={...context,id:win.raw};$('rename-value').value=win.title;$('rename-dialog').showModal();$('rename-value').focus();$('rename-value').select();
   }
-  function terminate(sid){const pane=panes.get(sid);if(!livePane(pane))return;terminateSession={...owner(pane.host),id:pane.raw};$('terminate-dialog').querySelector('p').textContent='这将终止当前终端中的进程。其他客户端也会断开此会话。';$('terminate-dialog').showModal();}
+  function terminate(sid){const pane=panes.get(sid);if(!livePane(pane))return;if(isManagedPane(pane)){pane.managedController?.closeSession();return;}terminateSession={...owner(pane.host),id:pane.raw};$('terminate-dialog').querySelector('p').textContent='这将终止当前终端中的进程。其他客户端也会断开此会话。';$('terminate-dialog').showModal();}
   function setCtrl(value){ctrl=value;$('ctrl-key').setAttribute('aria-pressed',String(value));}
   function endpoint(settings){
     const url=new URL(C.socketURL(settings.relay,location.origin));url.searchParams.delete('token');url.hash='';
@@ -1114,8 +1345,10 @@
     const host=context.host;
     for(const id of windows){
       if(!validOwner(context)||!host.connected)return;
-      if(!host.catalog.some(win=>win.id===id))continue;
-      if(!send(context,9,{window:id}))return;
+      const window=host.catalog.find(win=>win.id===id);if(!window)continue;
+      if((window.sessions||[]).some(session=>session.interaction_mode==='managed')){
+        try{await closeManagedWindow(context,window);}catch{notice('记录会话的结束操作尚未确认；原生窗口仍可使用，请检查记录会话状态后重试。');return;}
+      }else if(!send(context,9,{window:id}))return;
       const deadline=performance.now()+10000;
       while(validOwner(context)&&host.connected&&host.catalog.some(win=>win.id===id)&&performance.now()<deadline)await new Promise(resolve=>setTimeout(resolve,40));
       if(host.catalog.some(win=>win.id===id)){notice('部分窗口暂未确认关闭，请检查连接后重试。');return;}
@@ -1240,6 +1473,7 @@
   $('terminate-cancel').onclick=()=>$('terminate-dialog').close();$('terminate-form').onsubmit=async e=>{
     e.preventDefault();const context=terminateSession,host=context?.host,dialog=$('terminate-dialog'),message=dialog.querySelector('p'),submit=dialog.querySelector('.danger');
     if(!validOwner(context)){dialog.close();return;}
+    if(sessionInfo(key(host,context.id))?.session.interaction_mode==='managed'){message.textContent='目标已变为对话记录模式；请关闭此对话框并使用该窗口的结束记录操作。';return;}
     if(!host.connected||!send(context,9,{session:context.id})){message.textContent='当前电脑未连接，结束指令未发送。请恢复连接后重试。';return;}
     submit.disabled=true;message.textContent='正在等待后台确认结束会话…';
     try{
@@ -1669,7 +1903,7 @@
     socket.onerror=()=>finish('无法连接电脑目录。');socket.onclose=()=>finish('无法验证此电脑的在线身份。');
   };
   for(const [id,projection] of [['journal-history','history'],['journal-conversation','conversation']])if($(id))$(id).onclick=()=>openPaneJournal(panes.get(active),projection);
-  const journalHealthTimer=setInterval(()=>{for(const pane of panes.values())void refreshPaneJournal(pane);},3000);
+  const journalHealthTimer=setInterval(()=>{for(const pane of panes.values()){void refreshPaneJournal(pane);if(isManagedPane(pane)){void ensureManaged(pane);void pane.managedController?.reconcile();}}},3000);
   addEventListener('beforeunload',()=>clearInterval(journalHealthTimer),{once:true});
   const meterTimer=setInterval(()=>{for(const host of hosts.values())host.rates=host.meter.sample(performance.now());updateConnection();renderHosts();},1000);
   const activityTimer=setInterval(updateSessionDots,300);
@@ -1680,8 +1914,12 @@
     save(sessionStorage,'sma.workspace.token',config.token);const clean=new URL(location.href);clean.searchParams.delete('token');launch.delete('token');clean.hash=launch.toString();history.replaceState(null,'',clean);
   }
   window.smaWorkspace={get activeSession(){return active;},get terminal(){return panes.get(active)?.term;},get panes(){return panes;},metrics,
+    sendComposerEnter:(pane,generation)=>{if(panes.get(active)!==pane||!livePane(pane)||pane.host.generation!==generation||isManagedPane(pane))return false;pane.localDraftSubmitting=true;try{return input(pane.sid,'\r');}finally{pane.localDraftSubmitting=false;}},
+    managed:{isPane:isManagedPane,captureTarget:managedCapture,isCurrent:managedCaptureCurrent,get pending(){return managedPending.size>0;},
+      snapshot:value=>managedCaptureCurrent(value)?value.pane.managedController.snapshot():null,
+      submit:(value,text)=>managedCaptureCurrent(value)?value.pane.managedController.submit(text):Promise.reject(Error('managed_target_changed'))},
     get activePane(){return panes.get(active);},get activeHost(){return currentHost();},get connections(){return hosts;},get directories(){return directories;},get relayAccounts(){return relayAccounts;},
-    get isComposing(){return [...panes.values()].some(pane=>pane.composing);},
+    get isComposing(){return [...panes.values()].some(pane=>pane.composing)||window.SuperMonoTerminalComposer?.isComposing===true;},
     captureUIState:()=>({selectedHost,active,tabs:[...openTabs],layout,renderer}),
     pauseForUIUpdate:()=>{
       const states=[...panes.values()].map(pane=>({pane,disabled:pane.term.options.disableStdin,readonly:pane.term.textarea.readOnly}));
@@ -1693,6 +1931,7 @@
     closeView:id=>removeView(panes.has(id)?id:key(currentHost(),id)),takeControl,redraw:()=>redrawPane(panes.get(active)),setRenderer:value=>{$('renderer').value=C.rendererName(value);$('renderer').onchange();},
     get controls(){return Object.fromEntries([...hosts.values()].flatMap(host=>Object.entries(host.controls).map(([id,value])=>[key(host,id),value])));}};
   function bootstrap(){
+    try{const rows=JSON.parse(read(sessionStorage,'sma.workspace.managed.pending')||'[]');if(Array.isArray(rows))for(const row of rows)if(Array.isArray(row)&&typeof row[0]==='string'&&row[1]?.schema===1)managedPending.set(row[0],row[1]);}catch{}
     loadRelayAccounts();
     if(!explicitToken){
       const established={relay:read(localStorage,'sma.workspace.relay'),code:read(localStorage,'sma.workspace.code')};

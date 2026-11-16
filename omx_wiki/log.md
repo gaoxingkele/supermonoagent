@@ -46,3 +46,7 @@
 ## [2026-10-27T07:38:10.363Z] lint
 - **Pages:** none
 - **Summary:** Lint: 0 issues (0 orphan, 0 stale, 0 broken, 0 contradictions)
+
+## [2026-11-16] ingest | Claude 窗口滚屏归还智能体
+- **Pages:** claude-wheel-native-paging.md
+- **Summary:** 根因：alternate 屏滚轮被本地纯文本存档截胡，Claude 自身的鼠标跟踪滚动从未收到事件。修复：SGR 鼠标放行 + Page 键 native 路由（Codex 维持原状）。真实抓包→重放 e2e 的诊断套路。

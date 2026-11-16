@@ -56,7 +56,7 @@ async def browser_page(playwright, url='ws://127.0.0.1:8819/file/ws', *, enabled
             if document_url:
                 await page.goto(document_url)
             await page.set_content('''<!doctype html><html><head><meta charset="utf-8"></head><body>
-              <div id="app"><header class="titlebar">Owned file workspace fixture</header><aside id="sidebar"></aside>
+              <div id="app"><header class="titlebar"><span>Owned file workspace fixture</span><div class="toolbar-actions"><button id="fixture-toolbar-button">工具</button></div></header><aside id="sidebar"></aside>
               <main><section id="stage">Fixture terminals</section><footer><span id="status">legacy cwd status</span>
               <span class="footer-spacer"></span><select id="agent-mode"><option>自动 Agent</option></select>
               <button id="take-control">尺寸主控</button><span id="dimensions">120 × 40</span></footer></main></div></body></html>''')
@@ -107,6 +107,11 @@ def test_enabling_file_exchange_after_page_boot_initializes_workspace(tmp_path):
             await page.evaluate("SuperMonoFileWorkspaceConfig={enabled:true,broker_url:'ws://127.0.0.1:8819/file/ws',local_room:'A'}")
             await page.wait_for_function('typeof SuperMonoFileWorkspaces==="object"', timeout=5000)
             assert await page.locator('#file-workspace-footer').count() == 1
+            assert await page.locator('.toolbar-actions>#file-workspace-footer').count() == 1
+            assert await page.locator('footer #file-workspace-project').count() == 0
+            assert not await page.locator('#status').evaluate('(el)=>el.hidden')
+            assert await page.locator('footer').get_attribute('data-file-workspaces') is None
+            assert await page.locator('footer').evaluate('el=>el.getBoundingClientRect().height') == 44
             assert not errors
     run(exercise, tmp_path)
 
@@ -133,6 +138,60 @@ def test_home_startup_prompts_for_project_and_keeps_directory_settings_usable(tm
                     assert not (parents[0].project / 'tmp').exists()
                     assert not await page.evaluate('fixtureInputs') and not errors
             assert companions[0].workspaces.get('window1', parents[0].project)['project_dir'] == str(chosen)
+    run(exercise, tmp_path)
+
+
+def test_project_directory_identifies_startup_suggestion_until_explicit_save(tmp_path):
+    async def exercise(playwright, folder):
+        from test_file_companion import environment
+        async with environment(folder) as (_broker, url, parents, companions):
+            async with browser_page(playwright, url) as (page, errors, _sockets):
+                project = page.locator('#file-workspace-project')
+                await page.wait_for_function('document.querySelector("#file-workspace-project")?.title.includes("project-A")')
+                assert '启动目录建议' in await project.get_attribute('aria-label')
+                assert '不代表终端当前目录' in await project.get_attribute('aria-description')
+                assert await project.get_attribute('title') == str(parents[0].project)
+                assert companions[0].workspaces.get('window1', parents[0].project)['revision'] == 0
+                assert not (parents[0].project / 'tmp').exists()
+                await project.click()
+                await page.wait_for_function('!document.querySelector("#file-workspace-save").disabled')
+                await page.locator('#file-workspace-save').click()
+                await page.wait_for_function('document.querySelector("#file-workspace-state").textContent.includes("已保存")')
+                assert '已保存' in await project.get_attribute('aria-label')
+                assert '启动目录建议' not in await project.get_attribute('aria-label')
+                assert await project.get_attribute('title') == str(parents[0].project)
+                assert companions[0].workspaces.get('window1', parents[0].project)['revision'] == 1
+                assert not errors and await page.evaluate('fixtureInputs') == []
+    run(exercise, tmp_path)
+
+
+@pytest.mark.parametrize('directory_status,project_word,exchange_word', [
+    ('missing', '缺失', '待创建'),
+    ('unavailable', '不可用', '不可用'),
+])
+def test_directory_status_is_visible_without_losing_full_paths(tmp_path, directory_status, project_word, exchange_word):
+    async def exercise(playwright, folder):
+        from unittest.mock import patch
+        from test_file_companion import environment
+        async with environment(folder) as (_broker, url, parents, companions):
+            manager = companions[0].workspaces
+            manager.save('window1', parents[0].project, expected_revision=0)
+            original_get = manager.get
+            def reported_status(*args):
+                return {**original_get(*args), 'project_status': directory_status, 'exchange_status': directory_status}
+            with patch.object(manager, 'get', side_effect=reported_status):
+                async with browser_page(playwright, url) as (page, errors, _sockets):
+                    project, exchange = page.locator('#file-workspace-project'), page.locator('#file-workspace-exchange')
+                    await page.wait_for_function('document.querySelector("#file-workspace-project")?.title.includes("project-A")')
+                    assert project_word in await project.inner_text()
+                    assert exchange_word in await exchange.inner_text()
+                    assert project_word in await project.get_attribute('aria-label')
+                    assert '已保存' in await project.get_attribute('aria-label')
+                    assert await project.get_attribute('title') == str(parents[0].project)
+                    assert await exchange.get_attribute('title') == str(parents[0].project / 'tmp')
+                    assert await page.locator('.titlebar #file-workspace-project').count() == 1
+                    assert await page.locator('footer #file-workspace-project').count() == 0
+                    assert not errors and await page.evaluate('fixtureInputs') == []
     run(exercise, tmp_path)
 
 
@@ -171,17 +230,33 @@ def test_real_host_default_browse_cas_save_footer_geometry_and_removal(tmp_path)
                 assert len(events) == 1 and events[0]['room'] == 'A' and events[0]['revision'] == 1
                 assert 'token' not in json.dumps(events)
                 await page.locator('#file-workspace-close').click()
+                artifacts = Path('.omx/artifacts/project-toolbar')
+                artifacts.mkdir(parents=True, exist_ok=True)
                 for width in [1250, 760, 390]:
                     await page.set_viewport_size({'width': width, 'height': 850})
                     geometry = await page.evaluate('''()=>{
                       const nodes=[...document.querySelectorAll('#file-workspace-footer,footer')];
-                      return nodes.map(el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width};});
+                      return nodes.map(el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width,height:r.height};});
                     }''')
                     assert all(item['left'] >= -1 and item['right'] <= width + 1 for item in geometry), geometry
+                    assert await page.locator('.titlebar .toolbar-actions>#file-workspace-footer').count() == 1
+                    assert await page.locator('footer').evaluate('el=>getComputedStyle(el).flexWrap') == 'nowrap'
+                    assert geometry[1]['height'] == 44
+                    assert await page.locator('#file-workspace-footer').evaluate('''el=>{const buttons=[...el.querySelectorAll('button')].map(b=>b.getBoundingClientRect());return buttons.every(r=>r.height===28&&r.top===buttons[0].top);}''')
                     assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                    await page.screenshot(path=str(artifacts / f'toolbar-{width}x850.png'))
+                    (artifacts / f'verdict-{width}.json').write_text(json.dumps(dict(verdict='pass', geometry=geometry,
+                        reasoning='Project/exchange controls remain in top toolbar; full paths retained as titles; footer stays44px single row.', physical_device=False), indent=2), encoding='utf-8')
                 assert await page.evaluate('fixtureInputs') == [] and not errors
+                await page.evaluate('document.querySelector("#status").hidden=true')
                 await page.evaluate('SuperMonoFileWorkspaces.destroy()')
                 assert await page.locator('#file-workspace-footer').count() == 0
+                assert await page.locator('#status').evaluate('(el)=>el.hidden'), 'Destroy must not overwrite unrelated footer status changes'
+                await page.evaluate('document.querySelector("#status").hidden=false')
+                await page.evaluate(UI.read_text(encoding='utf-8'))
+                await page.wait_for_function('document.querySelector("#file-workspace-project")?.title.includes("new-project-A")')
+                assert await page.locator('.titlebar .toolbar-actions>#file-workspace-footer').count() == 1
+                assert await page.locator('#file-workspace-style').count() == await page.locator('#file-workspace-dialog').count() == 1
                 assert not await page.locator('#status').evaluate('(el)=>el.hidden')
             assert all(not parent.pty_written for parent in parents)
     run(exercise, tmp_path)

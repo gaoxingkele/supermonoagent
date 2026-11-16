@@ -10,7 +10,7 @@
   const style=node('style');style.id='terminal-composer-style';
   style.textContent=`#terminal-composer-open{flex:none;white-space:nowrap;font-size:10px}footer:has(>#terminal-composer-open){min-width:0;overflow-x:auto}#terminal-composer{width:620px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);padding:18px;overflow:auto;overflow-wrap:anywhere}#terminal-composer h2{font-size:16px;overflow-wrap:anywhere;line-height:1.5}#terminal-composer label{display:block;margin:10px 0 5px}#terminal-composer-text{box-sizing:border-box;width:100%;min-width:0;max-width:100%;min-height:120px;height:220px;max-height:40dvh;resize:vertical;border:1px solid #555;border-radius:5px;padding:9px;background:#141414;color:inherit;font:inherit;font-size:13px;line-height:1.6;white-space:pre-wrap;overflow:auto}#terminal-composer .composer-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}#terminal-composer input[type=file]{max-width:100%;min-width:0;width:100%}#terminal-composer-files,#terminal-composer-receipts{list-style:none;padding:0;margin:8px 0;max-height:160px;overflow:auto}#terminal-composer li{display:flex;gap:6px;align-items:center;min-width:0;padding:4px 0;border-bottom:1px solid #383838}#terminal-composer li>span{flex:1;min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}#terminal-composer li>button{flex:none;font-size:11px}#terminal-composer p{margin:8px 0;font-size:12px;line-height:1.5;white-space:pre-wrap}#terminal-composer-state{color:#ddd}#terminal-composer-progress{width:100%;height:10px}#terminal-composer-hint,#terminal-composer-capability{color:#aaa}@media(max-width:600px){#terminal-composer{padding:13px}#terminal-composer-text{height:170px;min-height:90px}#terminal-composer-files,#terminal-composer-receipts{max-height:110px}}`;
   document.head.append(style);
-  const openButton=button('terminal-composer-open','指令 / 附件');openButton.title='编辑长指令，选择多个文件或图片一起提交';toolbar.prepend(openButton);
+  const openButton=button('terminal-composer-open','附件');openButton.title='编辑长指令，选择多个文件或图片一起提交';toolbar.prepend(openButton);
   const dialog=node('dialog');dialog.id='terminal-composer';dialog.setAttribute('aria-label','编辑长指令与附件');
   const heading=node('h2','编辑长指令与附件'),label=node('label','多行长指令');label.htmlFor='terminal-composer-text';
   const textarea=node('textarea');textarea.id='terminal-composer-text';textarea.rows=8;textarea.spellcheck=false;
@@ -25,24 +25,33 @@
   const state=node('p');state.id='terminal-composer-state';state.setAttribute('role','status');state.setAttribute('aria-live','polite');
   const upload=button('terminal-composer-upload','上传附件'),cancel=button('terminal-composer-cancel','取消上传'),insert=button('terminal-composer-insert','插入输入行'),close=button('terminal-composer-close','关闭');
   const copyPaths=button('terminal-composer-copy-paths','复制全部路径');
+  const send=button('terminal-composer-send','发送'),expand=button('terminal-composer-expand','展开'),raw=button('terminal-composer-raw','原始输入');
+  send.className='primary';send.title='确认实时终端回显后发送一次回车';expand.title='展开原多行编辑器';raw.title='明确切换到原始终端输入';
+  const dock=node('section');dock.id='terminal-composer-dock';dock.setAttribute('aria-label','本地草稿输入');
+  const editor=node('div');editor.id='terminal-composer-editor';const targetLabel=node('div');targetLabel.id='terminal-composer-target';
+  const inputRow=node('div');inputRow.className='composer-input-row';inputRow.append(textarea,send,expand,raw);
   insert.className='primary';
   const actions=node('div');actions.className='composer-actions';actions.append(paste,chooseFiles,chooseImages,upload,cancel,copyPaths,insert,close);
-  dialog.append(heading,label,textarea,hint,fileLabel,picker,files,receipts,capability,progress,state,actions);document.body.append(dialog);
-  const drafts=[],transfers=new Set();let current=null,inflight=null,nextFile=0,destroyed=false,openError='',listDraft=null,listSignature='';
+  editor.append(targetLabel,heading,label,inputRow,hint,fileLabel,picker,files,receipts,capability,progress,state,actions);dock.append(editor);document.body.append(dialog);toolbar.prepend(dock);
+  const drafts=[],transfers=new Set();let current=null,inflight=null,nextFile=0,destroyed=false,openError='',listDraft=null,listSignature='',composing=false,newline=false,wantedFocus=false;
+  const editorVisible=()=>dialog.open||!dock.hidden;
   function windowOf(host,session){return host.catalog?.find(win=>(win.sessions||[]).some(item=>item.id===session));}
   function capture(){
+    const selected=W.activePane,managed=W.managed?.isPane(selected)?W.managed.captureTarget(selected):null;
+    if(W.managed?.isPane(selected)&&!managed)throw Error('对话记录控制尚未就绪，请检查连接与状态。');
     const api=window.SuperMonoFilePaste;
-    const bound=typeof api?.captureTarget==='function'?api.captureTarget():null;
-    if(typeof api?.captureTarget==='function'&&!bound)throw Error('请先选择已连接的目标窗口。');
-    const pane=bound?.pane||W.activePane,host=pane?.host,key=pane?.sid||W.activeSession,win=host&&windowOf(host,pane.raw);
-    if(!pane||!host||!key||!host.connected||!pane.ready||pane.generation!==host.generation||W.panes.get(key)!==pane||host.ws?.readyState!==1)throw Error('请先选择已连接的目标窗口。');
+    let bound=null;try{if(!managed&&typeof api?.captureTarget==='function'){const value=api.captureTarget();if(value?.pane===selected)bound=value;}}catch{}
+    const pane=selected,host=pane?.host,key=pane?.sid||W.activeSession,win=host&&windowOf(host,pane.raw);
+    if(!pane||!host||!key||!host.connected||(!managed&&!pane.ready)||pane.generation!==host.generation||W.panes.get(key)!==pane||host.ws?.readyState!==1)throw Error('请先选择已连接的目标窗口。');
     return {bound,api,pane,term:pane.term,host,key,ws:host.ws,generation:host.generation,paneGeneration:pane.generation,
+      managed,managedIdentity:managed?JSON.stringify([managed.targetKey,managed.target]):'',
       hostID:host.id,session:pane.raw,windowID:win?.id,token:host.config?.token,relay:host.config?.relay,
-      code:host.config?.code,authMode:host.config?.authMode,room:bound?.room,endpoint:bound?.endpoint||bound?.broker_url,
+      code:host.config?.code,authMode:host.config?.authMode,room:host.config?.code,endpoint:host.config?.relay,
       machine:String(host.name||host.id).slice(0,128),
       title:String(win?.title||pane.title?.textContent||pane.raw).slice(0,128)};
   }
   function live(target){
+    if(target?.managed&&!W.managed?.isCurrent(target.managed))return false;
     if(!target||destroyed||W.panes.get(target.key)!==target.pane||target.pane.host!==target.host
       ||target.pane.raw!==target.session||target.host.ws!==target.ws||target.ws?.readyState!==1
       ||!target.host.connected||target.host.generation!==target.generation||target.pane.generation!==target.paneGeneration
@@ -50,23 +59,25 @@
       ||target.host.config?.code!==target.code||target.host.config?.authMode!==target.authMode
       ||windowOf(target.host,target.session)?.id!==target.windowID)return false;
     if(W.connections?.get&&W.connections.get(target.hostID)!==target.host)return false;
-    if(target.bound){try{return window.SuperMonoFilePaste===target.api&&typeof target.api.isCurrent==='function'&&target.api.isCurrent(target.bound)===true;}catch{return false;}}
     return true;
   }
-  const active=target=>live(target)&&W.activePane===target.pane&&W.activeSession===target.key&&target.pane.ready&&target.pane.term===target.term;
-  const canInsert=target=>active(target)&&typeof target.term?.paste==='function'&&target.term.options?.disableStdin!==true&&target.term.textarea?.readOnly!==true;
-  const sameDraft=(a,b)=>['host','hostID','session','windowID','token','relay','code','authMode','room','endpoint'].every(key=>a[key]===b[key]);
+  const active=target=>live(target)&&W.activePane===target.pane&&W.activeSession===target.key&&(target.managed||target.pane.ready)&&target.pane.term===target.term;
+  const canInsert=target=>!target?.managed&&active(target)&&typeof target.term?.paste==='function'&&target.term.options?.disableStdin!==true&&target.term.textarea?.readOnly!==true;
+  const canSubmitManaged=target=>!!target?.managed&&active(target)&&W.managed.snapshot(target.managed)?.canSubmit===true;
+  const sameDraft=(a,b)=>['host','hostID','session','windowID','token','relay','code','authMode','room','endpoint','managedIdentity'].every(key=>a[key]===b[key]);
+  function saveManagedDraft(draft){if(!draft?.target.managed)return;try{sessionStorage.setItem('sma.workspace.managed.draft.'+draft.target.managedIdentity,JSON.stringify({text:draft.text}));}catch{draft.message='草稿仍在此窗口；本地存储不可用，请保持窗口开启。';}}
   function draftFor(target){
     let draft=drafts.find(item=>sameDraft(item.target,target));
     if(!draft){
       if(drafts.length>=64){const empty=drafts.findIndex(item=>!item.text&&!item.files.length&&!item.receipts.length&&inflight?.draft!==item);if(empty<0)throw Error('已保留 64 个会话草稿；请先处理已有草稿。');drafts.splice(empty,1);}
-      draft={target,text:'',revision:0,inserted:-1,files:[],receipts:[],message:''};drafts.push(draft);
+      let text='';if(target.managed){try{const saved=JSON.parse(sessionStorage.getItem('sma.workspace.managed.draft.'+target.managedIdentity)||'null');text=typeof saved?.text==='string'?saved.text:W.managed.snapshot(target.managed)?.pending?.text||'';}catch{}}
+      draft={target,text,revision:0,inserted:-1,files:[],receipts:[],message:'',uncertain:null,submitter:null,sendJob:null};drafts.push(draft);
     }
     draft.target=target;
     return draft;
   }
-  function remember(){if(current&&textarea.value!==current.draft.text){current.draft.text=textarea.value;current.draft.revision++;}}
-  function usableUpload(target){return live(target)&&!!target.bound&&typeof target.api?.upload==='function'&&typeof target.api?.captureTarget==='function'&&typeof target.api?.isCurrent==='function';}
+  function remember(){if(current&&textarea.value!==current.draft.text){current.draft.text=textarea.value;current.draft.revision++;saveManagedDraft(current.draft);}}
+  function usableUpload(target){try{return !target?.managed&&live(target)&&!!target.bound&&window.SuperMonoFilePaste===target.api&&typeof target.api?.upload==='function'&&typeof target.api?.captureTarget==='function'&&typeof target.api?.isCurrent==='function'&&target.api.isCurrent(target.bound)===true;}catch{return false;}}
   function receipt(value){return value&&plain(value.name,256)&&plain(value.path,4096)&&!value.path.includes('://')
     &&Number.isSafeInteger(value.size)&&value.size>=0&&typeof value.sha256==='string'&&/^[a-fA-F0-9]{64}$/.test(value.sha256);}
   function appendPaths(draft,values){
@@ -86,14 +97,26 @@
   }
   function render(){
     const ctx=current,draft=ctx?.draft,target=ctx?.target,uploading=[...transfers].some(item=>item.draft===draft);
-    insert.disabled=!ctx||!canInsert(target)||!draft.text||draft.inserted===draft.revision||!!draft.files.length||uploading;
-    insert.textContent=uploading?'等待附件保存':draft?.files.length?'请先处理附件':'提交文本';
+    const pending=draft?.submitter?.pending===true,uncertain=!!draft&&draft.uncertain===draft.text;
+    insert.disabled=!ctx||!(canInsert(target)||canSubmitManaged(target))||!draft.text||draft.inserted===draft.revision||!!draft.files.length||uploading||pending||uncertain;
+    insert.textContent=uploading?'等待附件保存':draft?.files.length?'请先处理附件':'插入（不回车）';
     insert.title='附件必须先收到目标电脑的保存回执；文本通过终端粘贴提交，不额外按 Enter。';
-    paste.disabled=!ctx;picker.disabled=!ctx||uploading;chooseFiles.disabled=chooseImages.disabled=picker.disabled;
+    if(target?.managed){insert.textContent='发送记录消息';insert.title='通过结构化对话发送；只有保存接受回执后才清空对应草稿。未知回执保留原提交标识。';}
+    send.disabled=insert.disabled||(!target?.managed&&typeof window.TerminalClient?.createComposerSubmitter!=='function');
+    send.hidden=!!target?.managed&&dialog.open;insert.hidden=!!target?.managed&&!dialog.open;
+    expand.hidden=dialog.open;raw.hidden=dialog.open;raw.disabled=!target||!!target.managed;
+    raw.textContent=target?.managed?'只读输出':target?.pane.localDraftRaw?'原始输入':'本地草稿';
+    raw.setAttribute('aria-pressed',String(!!target&&!target.managed&&target.pane.localDraftRaw));
+    raw.title=target?.managed?'独立对话画面只读':target?.pane.localDraftRaw?'当前原始输入；切换到本地草稿':'当前本地草稿；切换到原始输入';
+    targetLabel.textContent=target?target.machine+' / '+target.title+(target.pane.localDraftRaw?' · 原始输入':' · 本地草稿'):'本地草稿 · 请选择终端';
+    textarea.title=targetLabel.textContent;expand.title='展开长文本、附件和完整提示 · '+targetLabel.textContent;
+    expand.textContent=draft?.files.length||draft?.receipts.length?'展开 · '+((draft?.files.length||0)+(draft?.receipts.length||0)):'展开';
+    paste.disabled=!ctx||pending;picker.disabled=!ctx||uploading||pending||!!target?.managed;chooseFiles.disabled=chooseImages.disabled=picker.disabled;
     upload.disabled=!ctx||uploading||!draft.files.some(item=>!item.pending&&!item.nativeClipboard)||!usableUpload(target)||!active(target);
     cancel.disabled=!inflight||inflight.controller.signal.aborted;
     copyPaths.disabled=!draft?.receipts.length;
     capability.textContent=ctx&&!usableUpload(target)?'附件上传不可用：当前客户端缺少目标绑定上传入口，或目标连接已变化。文本草稿仍保留。':'选择后自动上传；目标电脑确认保存后才允许提交文本，附件路径自动加入草稿。';
+    if(target?.managed){const status=W.managed.snapshot(target.managed);capability.textContent='对话记录模式：文本最多 64 KiB UTF-8；此模式暂不提交附件。'+(status?.pending?'上次提交回执待确认，请检查状态；不会自动重发。':status?.canSubmit?'就绪，可以发送。':'当前轮次尚未结束或连接不可用。');}
     if(ctx&&!active(target))capability.textContent+=' 当前活动窗口已变化；返回此窗口或重新选择编辑目标后再插入。';
     const signature=JSON.stringify([(draft?.files||[]).map(item=>[item.id,item.pending,item.pendingFileId,item.pendingUploadId,item.unknownCommit,item.failed]),(draft?.receipts||[]).map(item=>[item.path,item.sha256]),uploading]);
     if(listDraft!==draft||listSignature!==signature){listDraft=draft;listSignature=signature;files.replaceChildren();receipts.replaceChildren();
@@ -109,26 +132,39 @@
       row.append(name,add);receipts.append(row);
     }
     }
-    state.textContent=draft?.message||openError;
+    state.textContent=draft?.message||openError||'';
     if(inflight&&inflight.draft!==draft)state.textContent+='\n'+inflight.target.machine+' / '+inflight.target.title+' 仍在上传；不会改投当前窗口。';
+    state.title=state.textContent;
     progress.hidden=!inflight;
   }
-  function open(){
-    if(destroyed)return;remember();
-    try{const target=capture(),draft=draftFor(target);current={target,draft};openError='';heading.textContent='编辑 · '+target.machine+' / '+target.title;textarea.value=draft.text;textarea.disabled=false;}
-    catch(error){current=null;heading.textContent='编辑文本与附件';textarea.value='';textarea.disabled=true;openError=String(error.message||'目标窗口不可用。');}
-    if(!dialog.open)dialog.showModal();render();textarea.focus();
+  function cancelNative(draft,message='目标或输入方式已变化；粘贴可能已到达终端，尚未自动发送回车，请核对原始输入。'){
+    if(!draft?.submitter?.pending)return;if(draft.sendJob?.pasted){draft.uncertain=draft.sendJob.text;draft.message=message;}draft.submitter.cancel();draft.sendJob=null;
   }
-  function dismiss(){remember();dialog.close();}
-  openButton.onclick=open;close.onclick=dismiss;dialog.addEventListener('cancel',()=>remember());
+  function bindActive({focus=false,modal=false}={}){
+    if(destroyed)return false;if(dialog.open&&!modal){if(focus)textarea.focus();return true;}remember();
+    try{const target=capture(),draft=draftFor(target);if(current?.draft!==draft)cancelNative(current?.draft);current={target,draft};openError='';heading.textContent='编辑 · '+target.machine+' / '+target.title;textarea.value=draft.text;textarea.disabled=false;wantedFocus=false;}
+    catch(error){const old=current?.target,host=W.activePane?.host,same=!!old&&old.pane===W.activePane&&old.token===host?.config?.token&&old.relay===host?.config?.relay&&old.code===host?.config?.code&&old.authMode===host?.config?.authMode;
+      if(!same){cancelNative(current?.draft);current=null;textarea.value='';textarea.disabled=true;}openError=String(error.message||'目标窗口不可用。');if(focus)wantedFocus=true;}
+    dock.hidden=!W.activePane;render();
+    if(focus&&current){if(current.target.pane.localDraftRaw&&!modal)current.target.term.focus();else textarea.focus();}
+    return !!current;
+  }
+  function open(){
+    if(destroyed)return;const same=current?.draft,start=textarea.selectionStart,end=textarea.selectionEnd;bindActive({modal:true});
+    if(current)current.target.pane.localDraftRaw=false;dialog.append(editor);if(!dialog.open)dialog.showModal();render();textarea.focus();if(current?.draft===same)textarea.setSelectionRange(start,end);
+  }
+  function dismiss(){remember();dialog.close();dock.append(editor);bindActive({focus:true});}
+  function focusDraft(){if(W.activePane)W.activePane.localDraftRaw=false;return bindActive({focus:true});}
+  function rawEscape(){remember();if(!current||current.target.managed)return;cancelNative(current.draft);current.target.pane.localDraftRaw=!current.target.pane.localDraftRaw;render();if(current.target.pane.localDraftRaw)current.target.term.focus();else textarea.focus();}
+  openButton.onclick=open;expand.onclick=open;raw.onclick=rawEscape;close.onclick=dismiss;dialog.addEventListener('cancel',event=>{event.preventDefault();dismiss();});
   textarea.addEventListener('input',()=>{remember();render();});
   async function pasteClipboard(){
-    const ctx=current;if(!ctx||!dialog.open||textarea.disabled||textarea.readOnly||!active(ctx.target))return false;
+    const ctx=current;if(!ctx||!editorVisible()||textarea.disabled||textarea.readOnly||!active(ctx.target))return false;
     remember();const revision=ctx.draft.revision,start=textarea.selectionStart,end=textarea.selectionEnd;
     try{
       const api=window.pywebview?.api;
       let files=false;try{files=typeof api?.clipboard_has_files==='function'&&await api.clipboard_has_files()===true;}catch{}
-      if(!dialog.open||current!==ctx||!active(ctx.target))return false;
+      if(!editorVisible()||current!==ctx||!active(ctx.target))return false;
       if(files){
         if(typeof ctx.target.api?.uploadClipboard!=='function'){ctx.draft.message='当前客户端缺少原生附件上传入口，请更新完整客户端。';render();return false;}
         return startUpload(true,ctx);
@@ -136,7 +172,7 @@
       let value;
       try{if(typeof api?.clipboard_read_text!=='function')throw Error();value=await api.clipboard_read_text();}
       catch{if(!navigator.clipboard?.readText)throw Error();value=await navigator.clipboard.readText();}
-      if(!dialog.open||current!==ctx||!active(ctx.target))return false;
+      if(!editorVisible()||current!==ctx||!active(ctx.target))return false;
       if(textarea.disabled||textarea.readOnly||ctx.draft.revision!==revision||textarea.selectionStart!==start||textarea.selectionEnd!==end){ctx.draft.message='草稿、光标或编辑权限已变化，请在所需光标位置重新粘贴。';render();return false;}
       if(typeof value!=='string'||!value){ctx.draft.message='剪贴板没有可用文本；文件或图片请使用下方选择附件。';render();return false;}
       textarea.setRangeText(value,start,end,'end');textarea.dispatchEvent(new Event('input',{bubbles:true}));ctx.draft.message='文本已放入草稿。';render();textarea.focus();return true;
@@ -144,17 +180,17 @@
   }
   paste.textContent='粘贴';paste.onclick=pasteClipboard;
   function addFiles(values){
-    const draft=current?.draft,chosen=[...(values||[])];if(!draft||!dialog.open||!active(current.target))return false;
+    const draft=current?.draft,chosen=[...(values||[])];if(!draft||current.target.managed||!editorVisible()||!active(current.target))return false;
     if(draft.files.length+chosen.length>32){draft.message='每批最多选择 32 个文件。';render();return false;}
     if(chosen.some(file=>!plain(file.name,256)||!Number.isSafeInteger(file.size)||file.size<0||file.size>64*1024*1024||file.webkitRelativePath)){
       draft.message='请选择普通文件；每个文件不超过 64 MiB，暂不支持整个文件夹。';render();return false;
     }
     draft.files.push(...chosen.map(file=>({id:++nextFile,file})));draft.message='正在准备附件；收到保存回执前不会发送文本。';render();
-    const ctx=current;queueMicrotask(()=>{if(current===ctx&&dialog.open)startUpload(false,ctx);});return true;
+    const ctx=current;queueMicrotask(()=>{if(current===ctx&&editorVisible())startUpload(false,ctx);});return true;
   }
   chooseFiles.onclick=()=>{picker.accept='';picker.click();};
   chooseImages.onclick=()=>{picker.accept='image/*';picker.click();};
-  dialog.addEventListener('paste',event=>{
+  editor.addEventListener('paste',event=>{
     if(event.target!==textarea)return;
     const selected=[...(event.clipboardData?.files||[])],plain=event.clipboardData?.getData('text/plain')||'';
     if(plain&&!selected.length)return;
@@ -231,8 +267,18 @@
   cancel.onclick=()=>{if(inflight){for(const item of transfers)item.controller.abort();inflight.draft.message=inflight.phase==='receiving'?
     '本项已提交中继，不能撤销；正在等待目标确认，之后停止后续附件。':inflight.phase==='submitting'?
     '提交结果尚待确认；取消后不会继续后续附件，请勿重复上传。':'正在取消未提交上传；已保存项会保留。';render();}};
-  insert.onclick=()=>{
+  insert.onclick=async()=>{
     const ctx=current;if(!ctx)return;remember();
+    if(ctx.draft.submitter?.pending||ctx.draft.uncertain===ctx.draft.text)return;
+    if(ctx.target.managed){
+      if(!canSubmitManaged(ctx.target)||ctx.draft.files.length||!ctx.draft.text)return;
+      if(new TextEncoder().encode(ctx.draft.text).length>65536){ctx.draft.message='文本超过 64 KiB UTF-8；草稿完整保留，请缩短后再发送。';render();return;}
+      const pendingText=ctx.draft.text;ctx.draft.message='正在等待记录保存回执…';
+      const operation=W.managed.submit(ctx.target.managed,pendingText);render();
+      try{const status=await operation;if(ctx.draft.text===pendingText&&status.pending)ctx.draft.message='提交回执待确认；原文和提交标识已保留，请检查状态。';}
+      catch{ctx.draft.message='目标连接已变化；草稿保留，请重新打开此目标并检查状态。';}
+      if(current===ctx)render();return;
+    }
     if(!canInsert(ctx.target)){ctx.draft.message='当前活动窗口或输入能力已变化；请返回捕获窗口并检查输入权限。';render();return;}
     if(ctx.draft.files.length||[...transfers].some(item=>item.draft===ctx.draft)){ctx.draft.message='附件尚未全部确认保存，文本未发送；请等待完成或移除失败附件。';render();return;}
     if(!ctx.draft.text||ctx.draft.inserted===ctx.draft.revision)return;
@@ -240,14 +286,45 @@
     catch{ctx.draft.message='无法插入当前输入行；草稿已保留，请检查终端连接。';}
     render();
   };
+  function submit(){
+    const ctx=current;if(!ctx||composing)return false;remember();const draft=ctx.draft,target=ctx.target;
+    if(target.managed){if(canSubmitManaged(target))void insert.onclick();return true;}
+    const C=window.TerminalClient;if(!canInsert(target)||!draft.text||draft.files.length||[...transfers].some(item=>item.draft===draft)||draft.inserted===draft.revision||draft.uncertain===draft.text||typeof C?.createComposerSubmitter!=='function')return false;
+    if(!draft.submitter)draft.submitter=C.createComposerSubmitter({onPending:pending=>{
+      if(current?.draft===draft){if(pending&&!draft.ownsReadonly){draft.priorReadonly=textarea.readOnly;draft.ownsReadonly=true;textarea.readOnly=true;}else if(!pending&&draft.ownsReadonly){textarea.readOnly=draft.priorReadonly;draft.ownsReadonly=false;}render();}
+    }});
+    if(draft.submitter.pending)return false;
+    const text=draft.text,revision=draft.revision,job={text,revision,pasted:false};draft.sendJob=job;draft.message='正在等待实时输入回显；确认后发送一次回车…';
+    const isCurrent=()=>{const valid=active(target)&&canInsert(target)&&draft.text===text&&draft.revision===revision;if(!valid&&job.pasted){draft.uncertain=text;draft.message='目标或草稿已变化，尚未自动发送回车；请核对原始终端，避免重复粘贴。';}return valid;};
+    try{const accepted=draft.submitter.submit(text,{isCurrent,echo:C.createComposerEcho(target.term,text),
+      paste:value=>{if(!isCurrent())return false;target.pane.localDraftSubmitting=true;try{const result=target.term.paste(value);job.pasted=result!==false;return result;}finally{target.pane.localDraftSubmitting=false;}},
+      enter:()=>isCurrent()&&W.sendComposerEnter?.(target.pane,target.generation)===true,
+      onUncertain:()=>{draft.uncertain=text;draft.message='粘贴或提交状态待核对；不会自动重发，请检查原始终端输入。';if(current?.draft===draft)render();},
+      onTimeout:()=>{draft.uncertain=text;draft.message='未收到实时输入回显，尚未发送回车；请核对原始终端，避免重复粘贴。';draft.sendJob=null;render();},
+      onSent:()=>{if(draft.revision===revision&&draft.text===text){draft.text='';draft.revision++;draft.inserted=-1;draft.uncertain=null;if(current?.draft===draft)textarea.value='';}draft.message='已发送；回显只表示终端收到了输入。';draft.sendJob=null;render();}
+    });if(!accepted)draft.message='未完成粘贴，未发送回车；草稿保留。';render();return accepted;}
+    catch{if(draft.uncertain!==text)draft.message='粘贴失败，未发送回车；草稿保留。';draft.sendJob=null;render();return false;}
+  }
+  send.onclick=submit;
+  textarea.addEventListener('focus',()=>{if(current&&!dialog.open&&current.target.pane.localDraftRaw){current.target.pane.localDraftRaw=false;render();}});
+  textarea.addEventListener('compositionstart',()=>{composing=true;});textarea.addEventListener('compositionend',()=>{composing=false;});
+  textarea.addEventListener('keydown',event=>{
+    if(dialog.open){if(event.ctrlKey&&event.key==='Enter'&&!composing&&!event.isComposing){event.preventDefault();submit();}return;}
+    const action=window.TerminalClient?.composerAction(event,composing);newline=action==='newline';if(action==='send'){event.preventDefault();submit();}
+  });
+  textarea.addEventListener('beforeinput',event=>{if(dialog.open)return;if(newline){newline=false;return;}if(window.TerminalClient?.composerAction(event,composing)==='send'){event.preventDefault();submit();}});
+  function output(pane,{replaying=false}={}){for(const draft of drafts)if(draft.target.pane===pane)draft.submitter?.output({replaying});}
+  function abortNativeInput(pane){for(const draft of drafts)if(draft.target.pane===pane)cancelNative(draft,'原始输入已变化；已停止自动回车，请核对终端内容。');}
   const timer=setInterval(()=>{
-    for(const item of transfers)if(!live(item.target)&&!item.controller.signal.aborted)item.controller.abort();
-    if(dialog.open)render();
+    for(const item of transfers)if(!usableUpload(item.target)&&!item.controller.signal.aborted)item.controller.abort();
+    if(!dialog.open){const shouldBind=!current||current.target.pane!==W.activePane||!live(current.target);if(shouldBind)bindActive({focus:wantedFocus});}
+    for(const draft of drafts)if(draft.submitter?.pending&&!active(draft.target))cancelNative(draft);
+    if(editorVisible())render();
     openButton.disabled=!W.activePane?.host?.connected;
   },200);
   function destroy(){
     if(destroyed)return;destroyed=true;for(const item of transfers)item.controller.abort();clearInterval(timer);window.removeEventListener('beforeunload',destroy);
-    dialog.remove();openButton.remove();style.remove();drafts.length=0;current=null;delete window.SuperMonoTerminalComposer;
+    for(const draft of drafts)draft.submitter?.cancel();dialog.remove();dock.remove();openButton.remove();style.remove();drafts.length=0;current=null;delete window.SuperMonoTerminalComposer;
   }
   // Quote is a draft mutation only. The existing explicit insert action owns PTY paste.
   function appendQuote(text,source,expected){
@@ -256,12 +333,19 @@
     if(!active(target)||target.pane!==expected.pane||target.generation!==expected.generation||source.targetKey!==target.key)return false;
     const formatter=window.TerminalClient?.formatQuote;if(typeof formatter!=='function')return false;
     const quote=formatter(text,source);if(typeof quote!=='string'||!quote)return false;
-    remember();let draft;try{draft=draftFor(target);}catch{return false;}
+    remember();let draft;try{draft=draftFor(target);}catch{return false;}if(draft.submitter?.pending)return false;
     draft.text+=(draft.text&&!draft.text.endsWith('\n')?'\n':'')+quote;draft.revision++;
+    saveManagedDraft(draft);
     draft.message='引用已追加到草稿；尚未插入终端。';
     if(current?.draft===draft)textarea.value=draft.text;
     open();return true;
   }
-  window.SuperMonoTerminalComposer={open,close:dismiss,destroy,pasteClipboard,addFiles,appendQuote,get busy(){return transfers.size>0;}};
-  window.addEventListener('beforeunload',destroy,{once:true});render();
+  function acceptManaged(receipt,record){
+    try{const key='sma.workspace.managed.draft.'+JSON.stringify([record.targetKey,record.target]),saved=JSON.parse(sessionStorage.getItem(key)||'null');if(saved?.text===record.text)sessionStorage.setItem(key,JSON.stringify({text:''}));}catch{}
+    remember();for(const draft of drafts){const target=draft.target.managed;if(!target||target.targetKey!==record.targetKey||JSON.stringify(target.target)!==JSON.stringify(record.target)||draft.text!==record.text)continue;
+      draft.text='';draft.revision++;draft.inserted=-1;saveManagedDraft(draft);draft.message='消息已被持久保存并接受 · #'+receipt.seq+'。';if(current?.draft===draft)textarea.value='';
+    }if(editorVisible())render();
+  }
+  window.SuperMonoTerminalComposer={open,close:dismiss,destroy,pasteClipboard,addFiles,appendQuote,acceptManaged,bindActive,focusDraft,rawEscape,submit,output,abortNativeInput,get isComposing(){return composing;},get busy(){return transfers.size>0||W.managed?.pending===true||drafts.some(draft=>draft.submitter?.pending);}};
+  window.addEventListener('beforeunload',destroy,{once:true});bindActive({focus:false});
 })();

@@ -52,6 +52,7 @@ async def check_buttons(playwright):
                     page.on('pageerror', lambda error: errors.append(str(error)))
                     await page.goto(origin+'/mobile/index.html#'+quote(json.dumps(config)))
                     await page.wait_for_function('MobileTerminal.ready')
+                    await page.locator('#tools-toggle').click()
                     assert await page.locator('#terminal-actions button').all_text_contents() == ['上翻','下翻','顶部','底部','回车','刷新']
                     session.pty.inbox.put(('\r\n'.join(f'HISTORY-{i:03}' for i in range(120))+'\r\n').encode())
                     await page.wait_for_function('MobileTerminal.terminal.buffer.active.baseY>80')
@@ -124,9 +125,8 @@ async def check_buttons(playwright):
                     await touch.send('Input.dispatchTouchEvent',{'type':'touchStart','touchPoints':[{'x':x,'y':y}]})
                     await touch.send('Input.dispatchTouchEvent',{'type':'touchMove','touchPoints':[{'x':x,'y':y+80}]})
                     await touch.send('Input.dispatchTouchEvent',{'type':'touchEnd','touchPoints':[]})
-                    async with asyncio.timeout(3):
-                        while bytes(session.pty.written)==before:await asyncio.sleep(.01)
-                    assert bytes(session.pty.written)==before+b'\x1b[5~', 'Codex swipe must page the remote program exactly once'
+                    await page.wait_for_function('!document.getElementById("screen-history").hidden')
+                    assert bytes(session.pty.written)==before, 'Touch history stays local; native paging is an explicit Codex button action'
                     session.pty.inbox.put(b'\x1b[?1049l')
                     await page.wait_for_function("MobileTerminal.terminal.buffer.active.type==='normal'")
                     # Even a size owner must not resize the PTY just by showing a history hint.

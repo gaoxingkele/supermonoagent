@@ -12,7 +12,7 @@
 | `file_broker.py` | 独立鉴权中继暂存、配额、摘要校验、持久任务、主机登记及短期 Bearer 下载凭据；HTTP 下载服务只监听 loopback，公网须经 HTTPS 代理 |
 | `file_companion.py` | 只读检查本机 daemon 所有者与会话、默认通过 HTTPS HTTP 下载、SHA256 校验、发布前绑定复核及持久 ACK 日志；投递到中央暂存目录并在 `workspace.get` 上报 `upload_dir`/`upload_ready` |
 | `static/file-client.js` | 独立文件服务请求、连接和请求超时、端点检查及回复关联；不自动创建连接 |
-| `static/file-workspace-ui.js` | 原生配置门控、底部目录栏、目录浏览／CAS 保存及目标绑定；普通切换页签不改变已捕获传输目标 |
+| `static/file-workspace-ui.js` | 原生配置门控、顶部工具栏目录设置、目录浏览／CAS 保存及目标绑定；普通切换页签不改变已捕获传输目标 |
 | `file_transfer.py` | 新增显式 `strict_name` 发布策略：重名拒绝且不创建别名，原调用默认行为不变 |
 
 主机登记使用独立安装密钥与已绑定的主机密钥，不把查看 Token 当作主机注册凭据。文件先到中继，再由目标电脑拉取到其中央暂存目录（优先 D 盘，无 D 盘时为 C 盘的 `aicoding\supermonoagent\tmp`）；完成暂存与目标确认保存是不同状态。凭据通过私有文件读取，未提交真实 Token、登记密钥、运行数据库或暂存文件。

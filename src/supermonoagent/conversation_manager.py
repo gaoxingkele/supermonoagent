@@ -59,6 +59,7 @@ class ConversationManager:
         self._mirrors = {}
         self._sync_errors = {}
         self._config_error = None
+        self.managed_sources = None
         self._load_mirrors()
 
     def owner_scope(self, token, *, default_token=None, accounts=None):
@@ -115,6 +116,22 @@ class ConversationManager:
                 source_record_id=f'pty:{session.process_generation}:{start}:{start+len(data)}',
                 metadata={'byte_start': start, 'byte_end': start + len(data)})
 
+    def register_managed_session(self, session, *, owner_scope, room, journal_id):
+        manifest = self.store.status(owner_scope, journal_id, rooms=[room])
+        if any(manifest[key] != value for key, value in (
+                ('session_id', session.id), ('window_id', session.window_id),
+                ('process_generation', session.process_generation))):
+            raise JournalError('terminal_generation_mismatch')
+        with self._lock:
+            if self._closed or session.id in self._sessions:
+                raise JournalError('session_conflict')
+            self._sessions[session.id] = dict(session=session, journal_id=journal_id,
+                owner_scope=owner_scope, room=room, active=True, position=0, managed=True)
+
+    def _source_status(self, journal_id):
+        source = self.managed_sources.source_status(journal_id) if self.managed_sources is not None else None
+        return source if source is not None else self.sources.status(journal_id)
+
     def start_background(self, loop):
         with self._lock:
             if self._closed or self._background is not None:
@@ -163,8 +180,8 @@ class ConversationManager:
         try:
             flushed = await joined_io(self.capture.flush, 30)
             # Freeze pending IDs before the trusted EOF transition.
-            source = self.sources.status(journal_id)
-            if source.get('binding_id'):
+            source = self._source_status(journal_id)
+            if source.get('binding_id') and source.get('origin') != 'managed':
                 deadline = time.monotonic() + 30
                 while True:
                     remaining = deadline - time.monotonic()
@@ -177,18 +194,18 @@ class ConversationManager:
                     except JournalError as error:
                         if error.code != 'reconcile_in_progress':
                             raise
-                source = self.sources.status(journal_id)
-            else:
+                source = self._source_status(journal_id)
+            elif source.get('origin') != 'managed':
                 await joined_io(self.sources.terminal_end, journal_id)
             await joined_io(self.store.terminal_end, journal_id,
                                     outcome='interrupted' if outcome == 'read_error' else 'exited',
                                     pending=bool(source.get('pending_turns')))
-            if source.get('binding_id') and self._drain_seconds:
+            if source.get('binding_id') and source.get('origin') != 'managed' and self._drain_seconds:
                 deadline = time.monotonic() + self._drain_seconds
                 while not self._closed and time.monotonic() < deadline:
                     await self.sources.reconcile(source['binding_id'])
                     await asyncio.sleep(min(2, max(0, deadline - time.monotonic())))
-            state = self.sources.status(journal_id)
+            state = self._source_status(journal_id)
             error = self.capture.status(journal_id)['error']
             if not state.get('pending_turns'):
                 await joined_io(self.store.settle_pending, journal_id)
@@ -241,6 +258,8 @@ class ConversationManager:
             if not allow_bind:
                 raise JournalError('owner_required')
             entry = self._entry(owner_scope, params.get('session_id'), rooms, active=True)
+            if entry.get('managed') or getattr(entry['session'], 'interaction_mode', 'native') == 'managed':
+                raise JournalError('managed_source_owned')
             if action == 'list_sources':
                 provider = params.get('provider')
                 if provider == 'claude':
@@ -260,7 +279,7 @@ class ConversationManager:
             journal_id = checked_id(params.get('journal_id'))
         manifest = self.store.status(owner_scope, journal_id, rooms=rooms)
         if action == 'status':
-            manifest['source'] = self.sources.status(journal_id)
+            manifest['source'] = self._source_status(journal_id)
             manifest['storage'] = dict(available=True, **self.capture.status(journal_id),
                 sync_error=self._sync_errors.get(journal_id) or self._config_error)
             return manifest

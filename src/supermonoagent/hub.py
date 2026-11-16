@@ -48,6 +48,10 @@ class Session:
     process_generation: str = field(default_factory=lambda: secrets.token_hex(16))
     journal_id: str | None = None
     journal_error: str | None = None
+    interaction_mode: str = 'native'
+    provider: str = ''
+    managed_snapshot: Callable | None = field(default=None, repr=False)
+    reader_done: threading.Event = field(default_factory=threading.Event, repr=False)
 
 
 @dataclass
@@ -82,6 +86,7 @@ class Client:
     history_resume: bool = False
     history_chunks: bool = False
     conversation_journal: bool = False
+    managed_conversation: bool = False
     subscriptions: set[str] = field(default_factory=set)
     failure: str = ""
     feed_offsets: dict[str, int] = field(default_factory=dict)
@@ -159,6 +164,7 @@ class Hub:
         self.default_owner = ""
         self.journals = None
         self.journal_factory = None
+        self.managed_service = None
         self.machine = ""
         self.project = "默认"
         self._ensure_default()
@@ -210,7 +216,8 @@ class Hub:
         owned = {group.id for group in groups}
         windows = [window for window in self.windows.values() if owner is None or window.group_id in owned]
         return {
-            "capabilities": {**CAPABILITIES, **({'conversation_journal': 1} if self.journals is not None else {})},
+            "capabilities": {**CAPABILITIES, **({'conversation_journal': 1} if self.journals is not None else {}),
+                             **({'managed_conversation': 1} if self.managed_service is not None else {})},
             "windows": [
                 {
                     "id": window.id,
@@ -222,6 +229,9 @@ class Hub:
                         {"id": item.id, "shell": item.shell, "cwd": item.cwd,
                          **({'journal_id': item.journal_id, 'process_generation': item.process_generation} if item.journal_id else {}),
                          **({'journal_error': item.journal_error} if item.journal_error else {}),
+                         **({'interaction_mode': 'managed', 'provider': item.provider,
+                             'managed_state': (item.managed_snapshot() if item.managed_snapshot else {}).get('state', 'starting')}
+                            if item.interaction_mode == 'managed' else {}),
                          **({"output_age_ms": item.pump.output_age_ms()} if history_context else {}),
                          **({"agent": item.task_detector.app} if item.task_detector.app else {})}
                         for item in window.sessions.values()
@@ -482,6 +492,21 @@ class Hub:
         self._catalog()
         return session
 
+    def add_managed_session(self, session: Session, *, group_id: str, title: str) -> None:
+        """Publish a pre-journaled independent session; never spawn a native CLI."""
+        if self.loop is None or session.interaction_mode != 'managed':
+            raise ValueError('Invalid managed session')
+        if session.window_id in self.windows or session.id in self.sessions or group_id not in self.groups:
+            raise ValueError('Managed session already exists')
+        session.pump.mark_grid(session.cols, session.rows)
+        window = Window(session.window_id, title[:40], group_id,
+                        sessions={session.id: session}, focused=session.id)
+        with self._lock:
+            self.windows[window.id] = window
+            self.sessions[session.id] = session
+        threading.Thread(target=self._read, args=(session,), name=f'pty-{session.id}', daemon=True).start()
+        self._catalog()
+
     def select(self, client: Client, window_id: str) -> None:
         window = self.windows.get(window_id)
         if window is None or not self.owns(client.token, window.id):
@@ -510,7 +535,7 @@ class Hub:
 
     def write(self, client: Client, data: bytes) -> None:
         session = self.view(client)
-        if session is None or not data:
+        if session is None or session.interaction_mode == 'managed' or not data:
             return
         with session.io_lock:
             if self.view(client) is session:
@@ -667,7 +692,7 @@ class Hub:
 
     def write_session(self, client: Client, session_id: str, data: bytes) -> bool:
         session = self.subscribed_session(client, session_id)
-        if session is None or not data:
+        if session is None or session.interaction_mode == 'managed' or not data:
             return False
         with session.io_lock:
             if self.subscribed_session(client, session_id) is not session:
@@ -746,10 +771,15 @@ class Hub:
                 window.sessions.pop(session_id, None)
                 if window.focused == session_id:
                     window.focused = next(iter(window.sessions), None)
+                remove_managed_window = session.interaction_mode == 'managed' and not window.sessions
+                if remove_managed_window:
+                    self.windows.pop(window.id, None)
                 for client in self.clients.values():
                     client.subscriptions.discard(session_id)
                     if client.session_id == session_id:
                         client.session_id = window.focused
+                        if remove_managed_window and client.window_id == window.id:
+                            client.window_id = None
                         watchers.append(client)
         for client in watchers:
             self._send(client, self._feed_snapshot(client))
@@ -833,19 +863,25 @@ class Hub:
             if not chunk:
                 break
             if self.journals is not None and session.journal_id:
-                self.journals.record_output(session, chunk)
+                saved = self.journals.record_output(session, chunk)
+                if not saved and session.interaction_mode == 'managed' and self.managed_service is not None:
+                    self.loop.call_soon_threadsafe(self.managed_service.capture_failed, session.id)
             # Observe fresh bytes before overflow/history coalescing, even when
             # no terminal viewer has subscribed to this session.
-            self.loop.call_soon_threadsafe(self._task_output, session.id, chunk)
+            if session.interaction_mode != 'managed':
+                self.loop.call_soon_threadsafe(self._task_output, session.id, chunk)
             session.pump.remember(chunk)
             session.pump.stage(
                 chunk,
                 self.loop,
                 lambda data, overflow, sid=session.id: self._flushed(sid, data, overflow),
             )
-        if self.journals is not None and session.journal_id:
-            self.journals.end_session(session, outcome=outcome)
-        self.loop.call_soon_threadsafe(self.close_session, session.id)
+        try:
+            if self.journals is not None and session.journal_id:
+                self.journals.end_session(session, outcome=outcome)
+            self.loop.call_soon_threadsafe(self.close_session, session.id)
+        finally:
+            session.reader_done.set()
 
     def subscribe_task_events(self, client: Client, after: str = "", replay: bool = True) -> list[bytes]:
         if (self.clients.get(client.key) is not client or client.failure
@@ -1025,6 +1061,8 @@ class Hub:
         summary = self.summary(client.token, history_context=client.history_context)
         if not client.conversation_journal or client.delegated:
             summary['capabilities'].pop('conversation_journal', None)
+        if not client.managed_conversation or client.delegated:
+            summary['capabilities'].pop('managed_conversation', None)
         return summary
 
     def _catalog(self) -> None:

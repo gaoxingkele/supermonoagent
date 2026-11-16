@@ -67,6 +67,18 @@ def _eligible(event):
         and proof in {'provider_final_phase', 'provider_terminal_result', 'user_attestation'})
 
 
+def managed_creation_ids(host_installation_id, owner_scope, nonce):
+    """Parameter-independent durable lookup; anchor/provider belong in a digest."""
+    for value in [host_installation_id, owner_scope]:
+        checked_id(value)
+    checked_id(nonce, 64)
+    key = uuid.uuid5(uuid.NAMESPACE_URL, canonical_json(
+        ['sma-managed-create-1', host_installation_id, owner_scope, nonce]).decode('utf-8'))
+    return dict(creation_key=str(key), **{field: str(uuid.uuid5(key, label)) for field, label in
+        [('journal_id', 'journal'), ('window_id', 'window'), ('session_id', 'session'),
+         ('process_generation', 'process'), ('binding_id', 'binding')]})
+
+
 class JournalStore:
     """One recorder owns a root. All DB operations are thread safe and durable."""
 
@@ -124,10 +136,22 @@ class JournalStore:
                 journal = path.name.removesuffix('.history.sqlite')
                 db = self._open(journal)
                 manifest = self._manifest(db)
+                creation = self._control(db, 'managed_creation')
                 # A reopened recorder has no evidence that its original PTY died.
-                if manifest['terminal_state'] == 'running':
-                    manifest.update(terminal_state='unknown', capture_state='suspended', local_error='recorder_restart')
+                if (manifest['terminal_state'] == 'running' or creation is not None
+                        and manifest['terminal_state'] not in {'ended', 'interrupted'}):
                     with db:
+                        if manifest['terminal_state'] == 'running':
+                            manifest.update(terminal_state='unknown', capture_state='suspended', local_error='recorder_restart')
+                        if creation is not None:
+                            creation['state'] = 'ambiguous'
+                            self._set_control(db, 'managed_creation', creation)
+                            active_id = self._control(db, 'managed_active')
+                            if active_id:
+                                active = self._managed_submission(db, active_id)
+                                active['dispatch_state'] = 'ambiguous'
+                                self._save_managed_submission(db, active)
+                                self._invalidate_managed_permissions(db, active, 'stale')
                         self._save_manifest(db, manifest)
                         self._append_status(db, manifest)
         except JournalError:
@@ -299,7 +323,7 @@ class JournalStore:
 
     def create(self, owner_scope, *, room, window_id, session_id, source_epoch,
                process_generation, title='', agent='', coverage='full', journal_id=None,
-               host_installation_id=None):
+               host_installation_id=None, managed_creation=None):
         checked_id(owner_scope)
         for value in [window_id, session_id, source_epoch, process_generation]:
             checked_id(value)
@@ -308,16 +332,45 @@ class JournalStore:
         checked_label(agent, 128, empty=True)
         checked_label(coverage, 128)
         host = checked_id(host_installation_id or self.host_installation_id)
+        creation = None
+        if managed_creation is not None:
+            if (not isinstance(managed_creation, dict) or set(managed_creation) != {'nonce', 'request'}
+                    or host != self.host_installation_id):
+                raise JournalError('creation_conflict')
+            ids = managed_creation_ids(host, owner_scope, managed_creation['nonce'])
+            request = json.loads(canonical_json(managed_creation['request']))
+            if (not isinstance(request, dict) or set(request) != {'anchor_window_id', 'anchor_session_id',
+                    'anchor_process_generation', 'provider', 'cwd', 'room'}
+                    or request.get('provider') not in {'claude', 'codex'} or request.get('room') != room):
+                raise JournalError('creation_conflict')
+            for key in ['anchor_window_id', 'anchor_session_id', 'anchor_process_generation']:
+                checked_id(request[key])
+            checked_label(request['cwd'], 32768)
+            if (window_id != ids['window_id'] or session_id != ids['session_id']
+                    or process_generation != ids['process_generation']
+                    or journal_id is not None and journal_id != ids['journal_id']):
+                raise JournalError('creation_conflict')
+            journal_id = ids['journal_id']
+            creation = dict(schema=1, nonce=managed_creation['nonce'], creation_key=ids['creation_key'],
+                binding_id=ids['binding_id'], request=request,
+                request_sha256=hashlib.sha256(canonical_json(request)).hexdigest(), state='starting')
         journal = checked_id(journal_id or str(uuid.uuid4()))
         with self._guard():
             db = self._open(journal, create=True)
             if db.execute('SELECT 1 FROM manifest').fetchone():
                 old = self._manifest(db)
+                prior = self._control(db, 'managed_creation')
+                if creation is not None or prior is not None:
+                    if (creation is None or prior is None or prior['creation_key'] != creation['creation_key']
+                            or prior['request_sha256'] != creation['request_sha256']):
+                        raise JournalError('creation_conflict')
                 binding = dict(owner_scope=owner_scope, room=room, window_id=window_id,
                     session_id=session_id, source_epoch=source_epoch,
                     process_generation=process_generation, host_installation_id=host)
                 if any(old[key] != value for key, value in binding.items()):
                     raise JournalError('journal_conflict')
+                if prior is not None:
+                    return old  # A known creation never resumes or launches itself.
                 if old['terminal_state'] in {'unknown', 'running'}:
                     old.update(terminal_state='running', capture_state='capturing')
                     with db:
@@ -333,9 +386,470 @@ class JournalStore:
                 terminal_ended_at=None, sealed_at=None, last_seq=0, local_error=None,
                 mirror=dict(destination=None, through_seq=0, pending_batch=None, last_receipt=None))
             with db:
+                if creation is not None:
+                    self._set_control(db, 'managed_creation', creation)
+                    self._set_control(db, 'managed_provider', None)
+                    self._set_control(db, 'managed_active', None)
                 self._save_manifest(db, manifest)
                 self._append_status(db, manifest)
             return manifest
+
+    def _managed_context(self, db, owner_scope, journal_id, target, rooms):
+        manifest = self._authorize(db, owner_scope, rooms)
+        fields = {'window_id', 'session_id', 'process_generation', 'journal_id'}
+        if (not isinstance(target, dict) or set(target) != fields
+                or any(target[key] != manifest[key] for key in fields)
+                or target['journal_id'] != journal_id):
+            raise JournalError('stale_target')
+        creation = self._control(db, 'managed_creation')
+        if creation is None:
+            raise JournalError('not_managed')
+        return manifest, creation
+
+    def _managed_live(self, manifest, creation):
+        if creation['state'] == 'ambiguous':
+            raise JournalError('managed_ambiguous')
+        if (manifest['terminal_state'] != 'running' or manifest['capture_state'] != 'capturing'
+                or manifest['local_error'] is not None):
+            raise JournalError('managed_unavailable')
+
+    def _managed_submission(self, db, submission_id):
+        checked_id(submission_id)
+        nonce = self._control(db, 'managed_submission_id:' + submission_id)
+        row = self._control(db, 'managed_submission:' + nonce) if nonce else None
+        if row is None:
+            raise JournalError('stale_submission')
+        return row
+
+    def _save_managed_submission(self, db, submission):
+        self._set_control(db, 'managed_submission:' + submission['nonce'], submission)
+
+    def _managed_active(self, db, submission_id):
+        if self._control(db, 'managed_active') != submission_id:
+            raise JournalError('stale_submission')
+        return self._managed_submission(db, submission_id)
+
+    def _invalidate_managed_permissions(self, db, active, state):
+        for permission_id in active['permission_ids']:
+            permission = self._control(db, 'managed_permission:' + permission_id)
+            if permission is not None and permission['state'] in {'pending', 'decided'}:
+                permission['state'] = state
+                self._set_control(db, 'managed_permission:' + permission_id, permission)
+
+    def _managed_event(self, db, manifest, creation, *, kind, source_id, submission=None,
+                       content=b'', proof=None, state=None, metadata=None, provider_item_id=None):
+        provider = self._control(db, 'managed_provider') or {}
+        return self._append_event(manifest['journal_id'], dict(kind=kind,
+            actor='human' if kind == 'user_input' else 'assistant' if kind == 'assistant_final' else 'system',
+            origin='managed', binding_id=creation['binding_id'],
+            provider_thread_id=provider.get('provider_root_id'),
+            provider_turn_id=submission.get('provider_turn_id') if submission else None,
+            provider_item_id=provider_item_id, source_record_id=source_id,
+            state=state, proof=proof, metadata=metadata or {}), content, database=db)
+
+    def get_managed_creation(self, owner_scope, journal_id, *, rooms=None):
+        with self._guard():
+            db = self._open(journal_id)
+            self._authorize(db, owner_scope, rooms)
+            return self._control(db, 'managed_creation')
+
+    def confirm_managed_provider(self, owner_scope, journal_id, *, target, provider,
+                                 provider_version, provider_root_id, policy=None,
+                                 confirmed=True, rooms=None):
+        if provider not in {'claude', 'codex'} or type(confirmed) is not bool:
+            raise JournalError('invalid_provider')
+        checked_id(provider_root_id, 512)
+        checked_label(provider_version, 64)
+        policy = {} if policy is None else json.loads(canonical_json(policy))
+        if not isinstance(policy, dict) or len(canonical_json(policy)) > 4096:
+            raise JournalError('invalid_policy')
+        _no_credentials(policy)
+        pending = [policy]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, dict):
+                if set(node) & {'input', 'arguments', 'tool_args', 'details', 'messages', 'control', 'environment'}:
+                    raise JournalError('invalid_policy')
+                pending.extend(node.values())
+            elif isinstance(node, list):
+                pending.extend(node)
+        with self._guard():
+            db = self._open(journal_id)
+            manifest, creation = self._managed_context(db, owner_scope, journal_id, target, rooms)
+            self._managed_live(manifest, creation)
+            if provider != creation['request']['provider']:
+                raise JournalError('binding_conflict')
+            prior = self._control(db, 'managed_provider')
+            descriptor = dict(provider=provider, provider_version=provider_version,
+                provider_root_id=provider_root_id if confirmed else None,
+                requested_root_id=provider_root_id, confirmed=confirmed, policy=policy)
+            if prior is not None:
+                if (any(prior[key] != descriptor[key] for key in
+                        ['provider', 'provider_version', 'requested_root_id', 'policy'])
+                        or prior['confirmed'] and not confirmed):
+                    raise JournalError('binding_conflict')
+                if prior == descriptor:
+                    return prior
+            with self._transaction(db):
+                self._set_control(db, 'managed_provider', descriptor)
+                creation['state'] = 'ready'
+                self._set_control(db, 'managed_creation', creation)
+                self._managed_event(db, manifest, creation, kind='binding',
+                    source_id='managed-provider:' + ('confirmed' if confirmed else 'requested'),
+                    state='confirmed' if confirmed else 'requested', metadata=dict(
+                        provider=provider, provider_version=provider_version,
+                        provider_root_id=descriptor['provider_root_id']))
+            return descriptor
+
+    def read_managed_control(self, owner_scope, journal_id, *, target, nonce=None, rooms=None):
+        if nonce is not None:
+            checked_id(nonce, 64)
+        with self._guard():
+            db = self._open(journal_id)
+            manifest, creation = self._managed_context(db, owner_scope, journal_id, target, rooms)
+            provider = self._control(db, 'managed_provider')
+            active_id = self._control(db, 'managed_active')
+            active = self._managed_submission(db, active_id) if active_id else None
+            permissions = []
+            if active:
+                for permission_id in active['permission_ids']:
+                    permission = self._control(db, 'managed_permission:' + permission_id)
+                    if permission is not None:
+                        if permission['expires_at'] <= self._clock() and permission['state'] in {'pending', 'decided'}:
+                            permission['state'] = 'expired'
+                        permissions.append(permission)
+            state = ('ended' if manifest['terminal_state'] in {'ended', 'interrupted'} else
+                'ambiguous' if creation['state'] == 'ambiguous' else
+                'error' if manifest['local_error'] else
+                'interrupting' if active and active['cancel_requested'] else
+                'waiting_permission' if any(item['state'] == 'pending' for item in permissions) else
+                'running' if active else 'ready' if provider else 'starting')
+            submission = self._control(db, 'managed_submission:' + nonce) if nonce else None
+            return dict(state=state, creation=creation, provider=provider, active_submission=active,
+                permissions=permissions, receipt=submission['receipt'] if submission else None)
+
+    def accept_managed_submission(self, owner_scope, journal_id, *, target, nonce, text, rooms=None):
+        checked_id(nonce, 64)
+        if not isinstance(text, str) or not text:
+            raise JournalError('invalid_prompt')
+        try:
+            raw = text.encode('utf-8')
+        except UnicodeError:
+            raise JournalError('invalid_prompt') from None
+        if len(raw) > 65536:
+            raise JournalError('prompt_too_large')
+        digest = hashlib.sha256(raw).hexdigest()
+        with self._guard():
+            db = self._open(journal_id)
+            manifest, creation = self._managed_context(db, owner_scope, journal_id, target, rooms)
+            prior = self._control(db, 'managed_submission:' + nonce)
+            if prior is not None:
+                if prior['body_sha256'] != digest:
+                    raise JournalError('nonce_conflict')
+                return dict(prior['receipt'], replayed=True)
+            self._managed_live(manifest, creation)
+            if self._control(db, 'managed_provider') is None:
+                raise JournalError('managed_not_ready')
+            if self._control(db, 'managed_active') is not None:
+                raise JournalError('managed_busy')
+            submission_id = str(uuid.uuid5(uuid.UUID(journal_id), 'submission:' + nonce))
+            user_uuid = str(uuid.uuid5(uuid.UUID(submission_id), 'provider-user'))
+            submission = dict(submission_id=submission_id, user_message_uuid=user_uuid, nonce=nonce,
+                body_sha256=digest, dispatch_state='intent', cancel_requested=False, cancel_version=0,
+                provider_turn_id=None, permission_ids=[], outcome=None, settlement=None)
+            with self._transaction(db):
+                event = self._managed_event(db, manifest, creation, kind='user_input',
+                    source_id='managed-input:' + submission_id, submission=submission,
+                    content=text, state='accepted', proof=dict(kind='app_submission', submission_id=submission_id,
+                        user_message_uuid=user_uuid, process_generation=manifest['process_generation']))
+                receipt = dict(target, submission_id=submission_id, user_message_uuid=user_uuid,
+                    nonce=nonce, event_id=event['event_id'], seq=event['seq'], state='accepted',
+                    dispatch_state='intent', cancel_version=0)
+                submission.update(event_id=event['event_id'], seq=event['seq'], content_id=event['content_id'], receipt=receipt)
+                self._save_managed_submission(db, submission)
+                self._set_control(db, 'managed_submission_id:' + submission_id, nonce)
+                self._set_control(db, 'managed_active', submission_id)
+            return dict(receipt, replayed=False)
+
+    def mark_managed_dispatching(self, owner_scope, journal_id, *, target,
+                                submission_id, cancel_version, rooms=None):
+        checked_integer(cancel_version)
+        with self._guard():
+            db = self._open(journal_id)
+            manifest, creation = self._managed_context(db, owner_scope, journal_id, target, rooms)
+            self._managed_live(manifest, creation)
+            active = self._managed_active(db, submission_id)
+            if (active['cancel_requested'] or active['cancel_version'] != cancel_version
+                    or active['dispatch_state'] != 'intent'):
+                raise JournalError('stale_dispatch')
+            active['dispatch_state'] = 'dispatching'
+            with self._transaction(db):
+                self._save_managed_submission(db, active)
+                self._managed_event(db, manifest, creation, kind='status', source_id='managed-dispatch:' + submission_id,
+                    submission=active, state='dispatching', metadata={'submission_id': submission_id})
+            return active
+
+    def associate_managed_turn(self, owner_scope, journal_id, *, target, submission_id,
+                               user_message_uuid, provider_root_id, provider_turn_id, rooms=None):
+        checked_id(provider_turn_id, 512)
+        with self._guard():
+            db = self._open(journal_id)
+            manifest, creation = self._managed_context(db, owner_scope, journal_id, target, rooms)
+            if creation['state'] == 'ambiguous':
+                raise JournalError('managed_ambiguous')
+            active = self._managed_active(db, submission_id)
+            provider = self._control(db, 'managed_provider')
+            if (provider is None or not provider['confirmed'] or provider['provider_root_id'] != provider_root_id
+                    or active['user_message_uuid'] != user_message_uuid
+                    or active['dispatch_state'] not in {'dispatching', 'running'}
+                    or active['provider_turn_id'] is not None and active['provider_turn_id'] != provider_turn_id):
+                raise JournalError('binding_conflict')
+            if active['provider_turn_id'] == provider_turn_id:
+                return active
+            active.update(provider_turn_id=provider_turn_id, dispatch_state='running')
+            with self._transaction(db):
+                self._save_managed_submission(db, active)
+                self._managed_event(db, manifest, creation, kind='binding',
+                    source_id='managed-turn:' + submission_id, submission=active, state='associated',
+                    metadata=dict(submission_id=submission_id, user_message_uuid=user_message_uuid))
+            return active
+
+    def _settle_managed(self, db, manifest, creation, active, *, outcome, finals, reason, digest):
+        event_ids = []
+        provider = self._control(db, 'managed_provider') or {}
+        for final in finals:
+            proof = dict(final['proof'])
+            canonical = dict(provider=provider['provider'], provider_version=provider['provider_version'],
+                binding_id=creation['binding_id'], provider_root_id=provider['provider_root_id'],
+                process_generation=manifest['process_generation'], submission_id=active['submission_id'],
+                user_message_uuid=active['user_message_uuid'], provider_turn_id=active['provider_turn_id'],
+                provider_record_id=final['provider_record_id'], terminal_status='completed')
+            if any(key in proof and proof[key] != value for key, value in canonical.items()):
+                raise JournalError('invalid_proof')
+            proof.update(canonical)
+            event = self._managed_event(db, manifest, creation, kind='assistant_final',
+                source_id='managed-final:' + active['submission_id'] + ':' + final['provider_record_id'],
+                submission=active, provider_item_id=final['provider_record_id'], content=final['text'],
+                state='completed', proof=proof)
+            event_ids.append(event['event_id'])
+        outcome_event = self._managed_event(db, manifest, creation, kind='turn_outcome',
+            source_id='managed-outcome:' + active['submission_id'], submission=active, state=outcome,
+            metadata=dict(submission_id=active['submission_id'], outcome=outcome, reason=reason))
+        result = dict(submission_id=active['submission_id'], outcome=outcome,
+            event_ids=event_ids, outcome_event_id=outcome_event['event_id'], seq=outcome_event['seq'])
+        active.update(outcome=outcome, settlement=result, settlement_sha256=digest,
+                      dispatch_state='not_dispatched' if reason == 'not_dispatched' else 'settled')
+        self._save_managed_submission(db, active)
+        self._invalidate_managed_permissions(db, active, 'settled')
+        self._set_control(db, 'managed_active', None)
+        return result
+
+    def settle_managed_submission(self, owner_scope, journal_id, *, target, submission_id,
+                                  user_message_uuid, provider_root_id, provider_turn_id=None,
+                                  outcome, finals=(), reason=None, rooms=None):
+        if outcome not in {'completed', 'failed', 'interrupted', 'blocked', 'ambiguous'}:
+            raise JournalError('invalid_outcome')
+        if reason is not None:
+            if not isinstance(reason, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', reason):
+                raise JournalError('invalid_outcome')
+        if not isinstance(finals, (list, tuple)) or len(finals) > 32 or outcome != 'completed' and finals:
+            raise JournalError('invalid_proof')
+        finals = json.loads(canonical_json(finals))
+        for final in finals:
+            if (not isinstance(final, dict) or set(final) != {'provider_record_id', 'text', 'proof'}
+                    or not isinstance(final['text'], str) or not final['text']
+                    or not isinstance(final['proof'], dict)
+                    or final['proof'].get('kind') not in {'provider_final_phase', 'provider_terminal_result'}):
+                raise JournalError('invalid_proof')
+            checked_id(final['provider_record_id'], 256)
+            _no_credentials(final['proof'])
+            proof = final['proof']
+            if (set(proof) - {'kind', 'provider', 'provider_version', 'provider_root_id', 'provider_turn_id',
+                    'submission_id', 'user_message_uuid', 'client_user_message_id', 'provider_record_id',
+                    'phase', 'terminal_status', 'result_uuid', 'result_index', 'conversation_epoch',
+                    'terminal_reason', 'num_turns', 'origin', 'binding_id', 'process_generation',
+                    'schema', 'schema_version'}
+                    or 'phase' in proof and proof['phase'] != 'final_answer'
+                    or 'terminal_reason' in proof and proof['terminal_reason'] != 'completed'
+                    or 'num_turns' in proof and (type(proof['num_turns']) is not int or proof['num_turns'] <= 0)):
+                raise JournalError('invalid_proof')
+        if len({final['provider_record_id'] for final in finals}) != len(finals):
+            raise JournalError('invalid_proof')
+        digest = hashlib.sha256(canonical_json(dict(submission_id=submission_id,
+            user_message_uuid=user_message_uuid, provider_root_id=provider_root_id,
+            provider_turn_id=provider_turn_id, outcome=outcome, finals=finals, reason=reason))).hexdigest()
+        with self._guard():
+            db = self._open(journal_id)
+            manifest, creation = self._managed_context(db, owner_scope, journal_id, target, rooms)
+            known = self._managed_submission(db, submission_id)
+            if known['settlement'] is not None:
+                if known.get('settlement_sha256') != digest:
+                    raise JournalError('settlement_conflict')
+                return dict(known['settlement'], replayed=True)
+            active = self._managed_active(db, submission_id)
+            provider = self._control(db, 'managed_provider') or {}
+            if (active['user_message_uuid'] != user_message_uuid
+                    or active['provider_turn_id'] != provider_turn_id
+                    or provider_root_id is not None and provider.get('provider_root_id') != provider_root_id):
+                raise JournalError('binding_conflict')
+            if finals and (not provider.get('confirmed') or not active['provider_turn_id']
+                    or provider_root_id != provider.get('provider_root_id')
+                    or creation['state'] == 'ambiguous'):
+                raise JournalError('invalid_proof')
+            if finals and any(final['proof'].get('client_user_message_id', user_message_uuid) != user_message_uuid
+                    or provider.get('provider') == 'claude' and (
+                        final['proof']['kind'] != 'provider_terminal_result'
+                        or final['proof'].get('origin', 'human') != 'human') for final in finals):
+                raise JournalError('invalid_proof')
+            with self._transaction(db):
+                result = self._settle_managed(db, manifest, creation, active,
+                    outcome=outcome, finals=finals, reason=reason, digest=digest)
+            return dict(result, replayed=False)
+
+    def cancel_managed_submission(self, owner_scope, journal_id, *, target, submission_id,
+                                  nonce, provider_turn_id=None, rooms=None):
+        checked_id(nonce, 64)
+        request = dict(submission_id=submission_id, provider_turn_id=provider_turn_id)
+        with self._guard():
+            db = self._open(journal_id)
+            manifest, creation = self._managed_context(db, owner_scope, journal_id, target, rooms)
+            prior = self._control(db, 'managed_cancel:' + nonce)
+            if prior is not None:
+                if prior['request'] != request:
+                    raise JournalError('nonce_conflict')
+                return dict(prior['receipt'], replayed=True)
+            active = self._managed_active(db, submission_id)
+            if provider_turn_id is not None and provider_turn_id != active['provider_turn_id']:
+                raise JournalError('binding_conflict')
+            active['cancel_requested'] = True
+            active['cancel_version'] += 1
+            not_dispatched = active['dispatch_state'] == 'intent'
+            receipt = dict(submission_id=submission_id, cancel_version=active['cancel_version'],
+                state='not_dispatched' if not_dispatched else 'interrupt_requested')
+            with self._transaction(db):
+                self._invalidate_managed_permissions(db, active, 'cancelled')
+                if not_dispatched:
+                    self._settle_managed(db, manifest, creation, active, outcome='interrupted',
+                        finals=(), reason='not_dispatched', digest='cancel:' + nonce)
+                else:
+                    self._save_managed_submission(db, active)
+                    self._managed_event(db, manifest, creation, kind='status',
+                        source_id='managed-cancel:' + nonce, submission=active, state='interrupt_requested',
+                        metadata=dict(submission_id=submission_id, cancel_version=active['cancel_version']))
+                self._set_control(db, 'managed_cancel:' + nonce, dict(request=request, receipt=receipt))
+            return dict(receipt, replayed=False)
+
+    def register_managed_permission(self, owner_scope, journal_id, *, target,
+                                    permission_request_id, submission_id, provider_turn_id=None,
+                                    tool_name='', choices=('deny',), requires_user_interaction=False,
+                                    expires_at=None, rooms=None):
+        checked_id(permission_request_id, 256)
+        checked_label(tool_name, 128, empty=True)
+        if not isinstance(choices, (list, tuple)) or not all(isinstance(choice, str) for choice in choices):
+            raise JournalError('invalid_permission')
+        choices = tuple(choices)
+        if (not choices or len(choices) != len(set(choices))
+                or set(choices) - {'allow_once', 'deny'} or 'deny' not in choices
+                or type(requires_user_interaction) is not bool
+                or requires_user_interaction and 'allow_once' in choices):
+            raise JournalError('invalid_permission')
+        now = self._clock()
+        expires_at = now + 300 if expires_at is None else expires_at
+        if type(expires_at) not in (int, float) or not math.isfinite(expires_at) or not now < expires_at <= now + 300:
+            raise JournalError('invalid_permission')
+        with self._guard():
+            db = self._open(journal_id)
+            manifest, creation = self._managed_context(db, owner_scope, journal_id, target, rooms)
+            self._managed_live(manifest, creation)
+            active = self._managed_active(db, submission_id)
+            if active['cancel_requested'] or provider_turn_id != active['provider_turn_id']:
+                raise JournalError('stale_permission')
+            descriptor = dict(permission_request_id=permission_request_id, submission_id=submission_id,
+                provider_turn_id=provider_turn_id, tool_name=tool_name, choices=list(choices),
+                requires_user_interaction=requires_user_interaction, expires_at=expires_at,
+                cancel_version=active['cancel_version'], state='pending')
+            prior = self._control(db, 'managed_permission:' + permission_request_id)
+            if prior is not None:
+                # A provider replay cannot resurrect an already consumed ID.
+                if any(prior[key] != descriptor[key] for key in ['submission_id', 'provider_turn_id',
+                        'tool_name', 'choices', 'requires_user_interaction']):
+                    raise JournalError('source_conflict')
+                return prior
+            if len(active['permission_ids']) >= 32:
+                raise JournalError('permission_limit')
+            active['permission_ids'].append(permission_request_id)
+            with self._transaction(db):
+                self._set_control(db, 'managed_permission:' + permission_request_id, descriptor)
+                self._save_managed_submission(db, active)
+                self._managed_event(db, manifest, creation, kind='status',
+                    source_id='managed-permission:' + permission_request_id, submission=active,
+                    state='waiting_permission', metadata=dict(permission_request_id=permission_request_id,
+                        submission_id=submission_id, choices=list(choices)))
+            return descriptor
+
+    def withdraw_managed_permission(self, owner_scope, journal_id, *, target,
+                                    permission_request_id, rooms=None):
+        checked_id(permission_request_id, 256)
+        with self._guard():
+            db = self._open(journal_id)
+            manifest, creation = self._managed_context(db, owner_scope, journal_id, target, rooms)
+            permission = self._control(db, 'managed_permission:' + permission_request_id)
+            if permission is None:
+                raise JournalError('stale_permission')
+            if permission['state'] not in {'pending', 'decided'}:
+                return permission
+            permission['state'] = 'withdrawn'
+            with self._transaction(db):
+                self._set_control(db, 'managed_permission:' + permission_request_id, permission)
+                if self._control(db, 'managed_active') == permission['submission_id']:
+                    active = self._managed_submission(db, permission['submission_id'])
+                    if permission_request_id in active['permission_ids']:
+                        active['permission_ids'].remove(permission_request_id)
+                        self._save_managed_submission(db, active)
+                self._managed_event(db, manifest, creation, kind='status',
+                    source_id='managed-withdraw:' + permission_request_id, state='withdrawn',
+                    metadata={'permission_request_id': permission_request_id})
+            return permission
+
+    def decide_managed_permission(self, owner_scope, journal_id, *, target,
+                                  permission_request_id, submission_id, decision, nonce,
+                                  cancel_version, provider_turn_id=None, rooms=None):
+        checked_id(nonce, 64)
+        checked_id(permission_request_id, 256)
+        checked_integer(cancel_version)
+        if decision not in {'allow_once', 'deny'}:
+            raise JournalError('invalid_permission')
+        request = dict(permission_request_id=permission_request_id, submission_id=submission_id,
+            provider_turn_id=provider_turn_id, decision=decision, cancel_version=cancel_version)
+        with self._guard():
+            db = self._open(journal_id)
+            manifest, creation = self._managed_context(db, owner_scope, journal_id, target, rooms)
+            prior = self._control(db, 'managed_permission_nonce:' + nonce)
+            if prior is not None:
+                if prior['request'] != request:
+                    raise JournalError('nonce_conflict')
+                return dict(prior['receipt'], replayed=True)
+            self._managed_live(manifest, creation)
+            active = self._managed_active(db, submission_id)
+            permission = self._control(db, 'managed_permission:' + permission_request_id)
+            if (permission is None or permission['state'] != 'pending'
+                    or permission['submission_id'] != submission_id
+                    or permission['provider_turn_id'] != provider_turn_id
+                    or active['provider_turn_id'] != provider_turn_id
+                    or active['cancel_requested'] or active['cancel_version'] != cancel_version
+                    or permission['cancel_version'] != cancel_version
+                    or permission['expires_at'] <= self._clock() or decision not in permission['choices']):
+                raise JournalError('stale_permission')
+            receipt = dict(request, state='decided')
+            permission.update(state='decided', decision=decision)
+            with self._transaction(db):
+                self._set_control(db, 'managed_permission:' + permission_request_id, permission)
+                self._set_control(db, 'managed_permission_nonce:' + nonce, dict(request=request, receipt=receipt))
+                self._managed_event(db, manifest, creation, kind='status',
+                    source_id='managed-decision:' + nonce, submission=active, state='decided',
+                    metadata=dict(permission_request_id=permission_request_id, decision=decision,
+                                  submission_id=submission_id, cancel_version=cancel_version))
+            return dict(receipt, replayed=False)
 
     def append_raw(self, journal_id, data: bytes, *, source_record_id=None, observed_at=None, metadata=None):
         if not isinstance(data, bytes):

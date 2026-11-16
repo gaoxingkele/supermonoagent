@@ -31,12 +31,13 @@ OP_FILE_TRANSFER = 21
 OP_ASSISTANT_CONTEXT = 22
 OP_HISTORY_CONTEXT = 23
 OP_JOURNAL = 24
+OP_URL_OPEN = 25
 
 CAPABILITIES = {
     "history_context": 1,
     "history_resume": 1,
     "history_chunks": 1,
-    "protocol_version": 2, "multiplex": True, "targeted_input": True, "resize_lease": True, "reliable": True, "window_themes": True, "snapshot_sgr": True, "snapshot_footer": True, "snapshot_refresh": True, "daemon_logs": True, "assistant_context": True, "file_transfer": True, "resize_ack": True, "conpty_paste": True, "relay_delegation": True, "task_events": True}
+    "protocol_version": 2, "multiplex": True, "targeted_input": True, "resize_lease": True, "reliable": True, "window_themes": True, "snapshot_sgr": True, "snapshot_footer": True, "snapshot_refresh": True, "daemon_logs": True, "assistant_context": True, "file_transfer": True, "resize_ack": True, "conpty_paste": True, "relay_delegation": True, "task_events": True, "url_open": True}
 
 _HEADER = struct.Struct("<I")
 MAX_FRAME = 256 * 1024

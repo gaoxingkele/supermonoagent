@@ -58,10 +58,11 @@ dialog input,dialog select{min-width:0;max-width:100%}
 #keys{display:grid;grid-template-columns:repeat(8,minmax(0,1fr))}
 #keys #model{grid-column:span 2}
 #keys #mode,#keys #github{grid-column:span 3}
-#quick-composer{display:flex;align-items:flex-end;gap:6px;padding:5px;background:var(--panel);border-top:1px solid var(--line);flex:none}
-#quick-draft{flex:1;min-width:0;min-height:40px;max-height:96px;padding:8px 10px;line-height:1.4}
-#tools-toggle{flex:none;min-width:56px;min-height:40px;padding:6px 8px}
-#quick-send{flex:none;min-width:64px;min-height:40px;background:#d8eadf;color:#11261a;border-color:#b5d6c1}
+#bottom-toolbar{display:flex;align-items:center;gap:3px;min-width:0;padding:4px 4px max(4px,env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--panel);flex:none}
+#quick-composer{display:flex;align-items:center;gap:3px;min-width:0;padding:0;border:0;background:transparent;flex:1}
+#quick-draft{flex:1;width:0;min-width:40px;height:40px;min-height:40px;max-height:40px;padding:8px 6px;line-height:22px;overflow:auto}
+#bottom-toolbar button{flex:none;width:36px;min-width:36px;height:40px;min-height:40px;max-height:40px;padding:3px 1px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#quick-send{background:#d8eadf;color:#11261a;border-color:#b5d6c1}
 @media(min-width:600px){#keys{display:flex}}
 @media(max-height:430px){#composer{padding:10px}#composer .dialog-heading{margin-bottom:6px}#composer #draft{min-height:52px;max-height:25dvh}#composer-status{min-height:0}#composer .form-actions{margin-top:6px}}
 
@@ -131,8 +132,7 @@ dialog input,dialog select{min-width:0;max-width:100%}
 #terminal-stage{position:relative;display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;overflow:hidden}
 #journal-reading{position:absolute;inset:0;z-index:2;min-width:0;min-height:0;overflow:hidden;background:var(--bg)}
 #journal-reading>.conversation-viewer{height:100%;border-radius:0!important}
-#journal-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;padding:4px 5px max(4px,env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--panel);flex:none}
-#journal-actions button{min-width:0;padding:4px;font-size:12px;min-height:36px}
+#journal-actions{display:flex;gap:3px;padding:0;border:0;background:transparent;flex:none}
 #journal-code[aria-pressed=false]{border-color:#83b8ff;color:#b5d7ff}
 .conversation-viewer{max-width:calc(100vw - 12px);max-height:calc(100dvh - 16px)!important;overflow:hidden;overflow-wrap:anywhere}
 .conversation-viewer button{min-width:0;min-height:34px;padding:4px 8px;font-size:12px}
@@ -141,4 +141,16 @@ dialog input,dialog select{min-width:0;max-width:100%}
 #journal-sources{display:grid;gap:8px;margin-top:10px}
 #journal-sources button{text-align:left;overflow-wrap:anywhere}
 #journal-source-status{margin-top:10px}
-@media(max-height:430px){#journal-actions{padding-top:2px;padding-bottom:2px}#journal-actions button{min-height:30px}.conversation-viewer{font-size:12px!important;padding:8px!important;gap:5px!important}.conversation-viewer button{min-height:30px}}
+@media(max-height:430px){.conversation-viewer{font-size:12px!important;padding:8px!important;gap:5px!important}.conversation-viewer button{min-height:30px}}
+
+/* Independent sessions keep their composer separate from readonly observations. */
+.new{flex-wrap:wrap}.new #new-interaction-mode{flex:1 1 100%}.new #managed-provider{flex:1;min-width:0}
+#managed-panel{flex:none;max-height:38dvh;overflow:auto;padding:6px 9px;border-bottom:1px solid #465166;background:#1c2430;overflow-wrap:anywhere}
+.managed-toolbar{display:flex;gap:5px;align-items:center;flex-wrap:wrap}.managed-toolbar strong{flex:1;font-size:12px}.managed-toolbar button{min-height:30px;font-size:11px;padding:3px 7px}
+#managed-panel .hint{margin-top:4px}.managed-permission{margin-top:7px;padding:8px;border:1px solid #806b43;border-radius:7px;background:#302a20}
+#managed-outcome{color:#e7cf9c}
+#raw-input[aria-pressed=true]{border-color:#82cfff;color:#82cfff}
+#quick-draft{white-space:pre;overflow-x:auto}
+.managed-permission strong{display:block;font-size:12px;line-height:1.3}.managed-permission pre{margin:5px 0;max-height:16dvh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace}
+.managed-permission button{margin-right:6px;min-height:34px;font-size:12px}.managed-permission button[data-decision=deny]{border-color:#d2b67f}
+@media(max-height:430px){#managed-panel{max-height:35dvh;padding:4px 7px}#managed-panel .hint{font-size:10px}.managed-toolbar button{min-height:28px}}

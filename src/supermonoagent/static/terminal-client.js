@@ -52,6 +52,122 @@
     {pattern:'\\b(?:Success|SUCCESS|Passed|PASSED)\\b|(?:成功|已完成)',flags:'gu',color:'#98c379'},
     {pattern:'^#{1,6} [^\\n]+|\\*\\*[^*\\n]+\\*\\*',flags:'gu',color:'#82cfff'}
   ]});
+  const presentationProfiles=new WeakMap();
+  const neutralPresentationRGB=new Set(['foreground','black','white','brightBlack','brightWhite'].map(key=>parseInt(commonAgentProfile.theme[key].slice(1),16)));
+  const codeKeywordPattern='\\b(?:const|let|var|function|async|await|class|def|import|from|return|export|interface|type|public|private|static|void|new|throw|try|catch)\\b';
+  function presentationPolicy(profile=commonAgentProfile,actualAgent='auto'){
+    profile=validateAgentProfile(profile);
+    let shared=presentationProfiles.get(profile);
+    if(!shared){
+      const seen=new Set(),tokens=[...profile.tokens,...commonAgentProfile.tokens,
+        {pattern:codeKeywordPattern,flags:'gu',color:'#c678dd'}]
+        .filter(token=>{const key=token.pattern+'\0'+token.flags;if(seen.has(key))return false;seen.add(key);return true;}).slice(0,32);
+      // Keep the original CLI's recognition rules and label. This derived
+      // profile changes presentation, never executable identity or controls.
+      shared=validateAgentProfile({id:profile.id,label:profile.label,theme:{...commonAgentProfile.theme},tokens});presentationProfiles.set(profile,shared);
+    }
+    return {actualAgent,profile:shared,terminalOptions:{theme:{...commonAgentProfile.theme},cursorStyle:'block',cursorBlink:false,
+      fontFamily:'"Cascadia Mono", "Cascadia Code", Consolas, monospace',minimumContrastRatio:4.5}};
+  }
+  function composerAction(event,composing=false){
+    // Android can report a committed Enter as 229. Composition state, rather
+    // than that neutral key marker, determines whether text is still preedit.
+    if(composing||event.isComposing)return 'none';
+    if(event.type==='beforeinput')return ['insertLineBreak','insertParagraph'].includes(event.inputType)?'send':'none';
+    return event.key!=='Enter'?'none':event.shiftKey?'newline':'send';
+  }
+  function createComposerSubmitter({schedule=setTimeout,cancel=clearTimeout,onPending=()=>{}}={}){
+    let pending=null;
+    const current=job=>{try{return !!job.isCurrent();}catch{return false;}};
+    function uncertain(job,reason){
+      if(!job.pasted||job.uncertain)return;job.uncertain=true;
+      // This callback deliberately belongs to the captured operation, including
+      // after a target switch. Adapters retain its original target/text only.
+      try{job.onUncertain(reason);}catch{}
+    }
+    function clear(reason=null){
+      if(!pending)return;const job=pending;pending=null;
+      for(const timer of [job.timer,job.timeout])if(timer!==null)cancel(timer);
+      if(reason){job.cancelReason=reason;uncertain(job,reason);}onPending(false);
+    }
+    function timeout(job){
+      if(job.timeout!==null)return;
+      job.timeout=schedule(()=>{if(pending!==job)return;const live=current(job);clear('timeout');if(live&&!pending&&current(job))job.onTimeout();},5000);
+    }
+    function arm(job){
+      if(pending!==job||job.timer!==null||job.replayBlocked)return;
+      if(!current(job)){clear('stale_target');return;}
+      if(job.timeout!==null){cancel(job.timeout);job.timeout=null;}
+      job.timer=schedule(()=>{
+        if(pending!==job||job.replayBlocked)return;
+        if(!current(job)){clear('stale_target');return;}clear();
+        if(pending||!current(job)){uncertain(job,'stale_target');return;}
+        let sent;try{sent=job.enter();}catch{uncertain(job,'enter_failed');return;}
+        if(sent===false){uncertain(job,'enter_failed');return;}
+        if(pending||!current(job)){uncertain(job,'stale_target');return;}job.onSent();
+      },200);
+    }
+    function output({replaying=false}={}){
+      const job=pending;if(!job)return;
+      if(!current(job)){clear('stale_target');return;}
+      if(replaying){
+        // Replay can contain a matching old paste. Latch uncertainty so a later
+        // unrelated live batch cannot turn that replay into receipt evidence.
+        job.replayBlocked=true;uncertain(job,'replay');if(pending!==job)return;
+        if(job.timer!==null){cancel(job.timer);job.timer=null;}timeout(job);return;
+      }
+      if(!job.echo||job.timer!==null||job.replayBlocked)return;
+      if(job.echo())arm(job);
+    }
+    return {submit(text,{paste,enter,isCurrent,echo=null,onTimeout=()=>{},onSent=()=>{},onUncertain=()=>{}}){
+      if(typeof text!=='string'||!text||pending||typeof paste!=='function'||typeof enter!=='function'||typeof isCurrent!=='function')return false;
+      const job={timer:null,timeout:null,enter,isCurrent,echo,onSent,onTimeout,onUncertain,replayBlocked:false,pasted:false,uncertain:false,cancelReason:null};
+      if(!current(job))return false;
+      pending=job;onPending(true);
+      if(pending!==job||!current(job)){if(pending===job)clear();return false;}
+      let pasted;try{pasted=paste(text);}catch(error){job.pasted=true;uncertain(job,'paste_failed');if(pending===job)clear();throw error;}
+      if(pasted===false){if(pending===job)clear();return false;}
+      job.pasted=true;
+      if(pending!==job){uncertain(job,job.cancelReason||'cancelled');return false;}
+      if(!current(job)){clear('stale_target');return false;}
+      // Only the native adapter uses this echo receipt. Managed submissions
+      // retain their independent durable nonce/event acknowledgement path.
+      if(echo){timeout(job);output();}else arm(job);
+      return true;
+    },output,cancel(reason='cancelled'){clear(typeof reason==='string'&&reason?reason:'cancelled');},get pending(){return pending!==null;}};
+  }
+  function createComposerEcho(term,text){
+    const parts=text.replace(/\r\n?/g,'\n').split('\n').map(line=>line.replace(/\s/g,'')).filter(Boolean);
+    const needle=(parts[parts.length-1]||'').slice(-128);
+    function read(){
+      const buffer=term.buffer.active,end=buffer.baseY+buffer.cursorY,lines=[];
+      for(let row=Math.max(buffer.baseY,end-100);row<=end;row++){
+        const line=buffer.getLine(row);if(line)lines.push(line.translateToString(true,0,row===end?buffer.cursorX:undefined));
+      }
+      return lines.join('').replace(/\s/g,'');
+    }
+    const count=(value,part)=>part?value.split(part).length-1:0;
+    const placeholders=value=>[...value.matchAll(/\[Pasted(?:Content|text)[^\]]{0,64}\]/gi)].map(match=>match[0]).join('|');
+    const before=read(),copies=count(before,needle),previousPlaceholder=placeholders(before);
+    return ()=>{const after=read();return !needle||count(after,needle)>copies||(after!==before&&after.endsWith(needle))
+      ||(text.length>1000&&placeholders(after)!==previousPlaceholder&&placeholders(after)!=='');};
+  }
+  function localHistoryPolicy(action,context={}){
+    let follow=context.following!==false;
+    if(action==='output'||action==='observe'){
+      if(action==='observe'&&(context.userInitiated===true||['wheel','touch','button'].includes(context.source)))follow=!!context.atBottom;
+      return {route:'none',follow};
+    }
+    if(!['up','down','start','end'].includes(action))return {route:'none',follow};
+    if(action==='up'||action==='start')follow=false;else if(action==='end')follow=true;
+    if(context.historyActive)return {route:'archive',follow};
+    if(context.bufferType==='normal'&&context.baseY>0)return {route:'terminal',follow};
+    // Claude Code announces itself (OSC 7501) and pages its own transcript with
+    // page keys or SGR mouse; Codex native paging stays button-only as before.
+    const nativeSources=context.actualAgent==='codex'?['button']:['button','wheel','touch'];
+    if(nativeSources.includes(context.source)&&['codex','claude','claude-code'].includes(context.actualAgent)&&context.nativePaging===true&&context.ready===true&&!context.replaying&&!context.managed)return {route:'native',follow};
+    return {route:context.archiveAvailable?'archive':'unavailable',follow};
+  }
   async function loadAgentProfile(value,id){
     if(!agentProfiles.some(item=>item.id===id))throw new Error('Unknown agent mode');
     const url=new URL(value,root.location?.href);
@@ -101,7 +217,7 @@
     }
     return {request(){if(!dead&&timer===null&&isUnknown())timer=schedule(scan,delay);},dispose(){dead=true;if(timer!==null)cancel(timer);timer=null;}};
   }
-  function highlightSpans(line,cols,profile=commonAgentProfile){
+  function highlightSpans(line,cols,profile=commonAgentProfile,{presentationStyle='native'}={}){
     profile=validateAgentProfile(profile);
     cols=Math.min(500,Math.max(0,Math.floor(cols)||0));
     let text='';const columns=[],plain=[];
@@ -111,22 +227,34 @@
       if(text.length+chars.length>4096)return [];
       for(let i=0;i<chars.length;i++)columns[text.length+i]=x;
       text+=chars;columns[text.length]=x+width;
-      const eligible=cell.isFgDefault()&&cell.isBgDefault()&&!cell.isInverse()&&!cell.isInvisible()&&!cell.isDim();
+      let neutral=false;
+      if(presentationStyle==='codex'){
+        if(cell.isFgPalette?.())neutral=[7,8,15].includes(cell.getFgColor());
+        else if(cell.isFgRGB?.()){
+          const value=cell.getFgColor(),channels=[value>>>16&255,value>>>8&255,value&255];
+          neutral=channels[0]===channels[1]&&channels[1]===channels[2]||neutralPresentationRGB.has(value);
+        }
+      }
+      const eligible=(cell.isFgDefault()||neutral)&&cell.isBgDefault()&&!cell.isInverse()&&!cell.isInvisible()&&!cell.isDim();
       for(let i=0;i<width;i++)plain[x+i]=eligible;
     }
     const spans=[];
     const occupied=[];
-    for(const {expression,color} of compiledProfiles.get(profile))for(const match of text.matchAll(expression)){
+    for(const {expression,color} of compiledProfiles.get(profile)){
+      // Generic words such as "return" are code only with code-shaped context.
+      if(expression.source===codeKeywordPattern&&!/[=;{}()]|^\s*(?:import\s+[\w.*]+|from\s+[\w.]+\s+import|(?:def|class)\s+\w+.*:)/.test(text))continue;
+      for(const match of text.matchAll(expression)){
       const start=columns[match.index],end=columns[match.index+match[0].length];
       // Faint text is application styling too (for example CLI suggestions).
       // Split around it and explicit colors instead of replacing either.
       let run=start;
       while(run<end){while(run<end&&(!plain[run]||occupied[run]))run++;let stop=run;while(stop<end&&plain[stop]&&!occupied[stop])stop++;
         if(stop>run){spans.push({x:run,width:stop-run,foregroundColor:color});for(let x=run;x<stop;x++)occupied[x]=true;}run=stop;}
+      }
     }
     return spans;
   }
-  function createHighlighter(term,{enabled=true,profile=commonAgentProfile,schedule=root.requestAnimationFrame||((fn)=>setTimeout(fn,0)),cancel=root.cancelAnimationFrame||clearTimeout}={}){
+  function createHighlighter(term,{enabled=true,profile=commonAgentProfile,presentationStyle='native',schedule=root.requestAnimationFrame||((fn)=>setTimeout(fn,0)),cancel=root.cancelAnimationFrame||clearTimeout}={}){
     profile=validateAgentProfile(profile);
     let entries=[],buffer=null,frame=null,dead=false;
     const remove=entry=>{for(const decoration of entry.decorations)decoration.dispose();entry.marker.dispose();};
@@ -137,15 +265,26 @@
       if(!enabled){clear();term.refresh(0,term.rows-1);return;}
       const previous=new Map();for(const entry of entries){if(entry.marker.isDisposed)remove(entry);else previous.set(entry.marker.line,entry);}
       entries=[];let changed=false;
-      // A cursor-addressed CLI does not expose a trustworthy input boundary.
-      // Leave the cursor's whole soft-wrapped paragraph in application styling,
-      // including ordinary input; decorate it only after the cursor leaves it.
-      let inputStart=active.baseY+active.cursorY,inputEnd=inputStart;
-      while(inputStart>0&&active.getLine(inputStart)?.isWrapped)inputStart--;
-      while(inputEnd+1<active.length&&active.getLine(inputEnd+1)?.isWrapped)inputEnd++;
-      for(let row=active.viewportY;row<Math.min(active.length,active.viewportY+Math.min(200,term.rows));row++){
-        const line=active.getLine(row);if(!line)continue;
-        const spans=row>=inputStart&&row<=inputEnd?[]:highlightSpans(line,term.cols,profile),signature=JSON.stringify(spans),old=previous.get(row);previous.delete(row);
+      // Cursor paragraphs can span the full scrollback. Inspect only the capped
+      // viewport plus eight context rows per side; a missing boundary means the
+      // unresolved continuation remains input, not permission to decorate it.
+      const visibleStart=Math.max(0,active.viewportY),visibleEnd=Math.min(active.length,visibleStart+Math.min(200,term.rows));
+      const lower=Math.max(0,visibleStart-8),upper=Math.min(active.length,visibleEnd+8),lines=new Map();
+      const lineAt=row=>{if(!lines.has(row))lines.set(row,active.getLine(row));return lines.get(row);};
+      const cursor=active.baseY+active.cursorY;
+      let inputStart=lower,inputEnd=upper-1;
+      if(cursor>=upper){
+        for(let row=upper-1;row>=lower;row--){const line=lineAt(row);if(line&&!line.isWrapped){inputStart=row;break;}}
+      }else if(cursor<lower){
+        for(let row=lower;row<upper;row++){const line=lineAt(row);if(line&&!line.isWrapped){inputEnd=row-1;break;}}
+      }else{
+        inputStart=cursor;inputEnd=cursor;
+        while(inputStart>lower){const line=lineAt(inputStart);if(line&&!line.isWrapped)break;inputStart--;}
+        while(inputEnd+1<upper){const line=lineAt(inputEnd+1);if(line&&!line.isWrapped)break;inputEnd++;}
+      }
+      for(let row=visibleStart;row<visibleEnd;row++){
+        const line=lineAt(row);if(!line)continue;
+        const spans=row>=inputStart&&row<=inputEnd?[]:highlightSpans(line,term.cols,profile,{presentationStyle}),signature=JSON.stringify(spans),old=previous.get(row);previous.delete(row);
         if(old&&old.signature===signature){entries.push(old);continue;}
         if(old){remove(old);changed=true;}if(!spans.length)continue;
         const marker=term.registerMarker(row-active.baseY-active.cursorY);if(!marker)continue;
@@ -158,7 +297,7 @@
     function request(){if(!dead&&frame===null)frame=schedule(refresh);}
     const listeners=[term.onWriteParsed(request),term.onScroll(request),term.onResize(request),term.buffer.onBufferChange(()=>{clear();buffer=null;request();})];
     request();
-    return {setEnabled(value){enabled=!!value;request();},setProfile(value){if(dead)return;profile=validateAgentProfile(value);clear();buffer=null;term.refresh(0,term.rows-1);request();},dispose(){if(dead)return;dead=true;if(frame!==null)cancel(frame);for(const listener of listeners)listener.dispose();clear();}};
+    return {setEnabled(value){enabled=!!value;request();},setPresentation(value){if(dead)return;presentationStyle=value==='codex'?'codex':'native';clear();buffer=null;request();},setProfile(value){if(dead)return;profile=validateAgentProfile(value);clear();buffer=null;term.refresh(0,term.rows-1);request();},dispose(){if(dead)return;dead=true;if(frame!==null)cancel(frame);for(const listener of listeners)listener.dispose();clear();}};
   }
 
   function pack(op, payload = new Uint8Array()) {
@@ -644,7 +783,201 @@
     function setCodeVisible(value){codeVisible=!!value;if(journalId)preferences.set(journalId,codeVisible);render();}
     return {open,close,refresh:()=>refresh(),setCodeVisible,setContext(value){clear();context={...context,...value};preferences.clear();},dispose(){if(disposed)return;clear();disposed=true;preferences.clear();host?.remove();host=null;ui=null;}};
   }
-  const api = {createConversationViewer,parseCodeFences,formatQuote,agentProfiles,commonAgentProfile,validateAgentProfile,loadAgentProfile,agentModeFromSession,inferAgentContent,createAgentDetector,highlightSpans,createHighlighter,createScreenHistory,pack, unpack, targetFrame, sessionPayload, historyPayload, historyFrameBytes, terminalInput, cursorKey, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,updateHintRevision,
+  // Pure source-daemon control state. Transport/authentication and draft storage
+  // belong to the invoking frontend; this helper never opens a socket or PTY.
+  function createManagedController(options={}){
+    const fields=['window_id','session_id','process_generation','journal_id'];
+    const states=new Set(['starting','ready','idle','running','waiting_permission','interrupting','closing','ended','error','unknown']);
+    const copy=value=>value===undefined?null:JSON.parse(JSON.stringify(value));
+    const id=value=>typeof value==='string'&&value.length>0&&value.length<=256&&!/[\x00-\x1f\x7f]/.test(value);
+    const textOK=value=>{if(typeof value!=='string'||!value.length)return false;const bytes=encoder.encode(value);return bytes.length<=65536&&new TextDecoder().decode(bytes)===value;};
+    const fitsEnvelope=record=>encoder.encode(JSON.stringify({request_id:'x'.repeat(64),action:'submit_managed',params:{...record.target,nonce:record.nonce,text:record.text}})).length<=196608;
+    const sameTarget=(a,b)=>!!a&&!!b&&fields.every(key=>a[key]===b[key]);
+    function targetOf(value){if(!value||!fields.every(key=>id(value[key])))throw new Error('Invalid managed target');return Object.fromEntries(fields.map(key=>[key,value[key]]));}
+    function nonce(){
+      if(root.crypto?.randomUUID)return root.crypto.randomUUID();
+      if(!root.crypto?.getRandomValues)throw new Error('Secure random unavailable');
+      const bytes=root.crypto.getRandomValues(new Uint8Array(16));bytes[6]=bytes[6]&15|64;bytes[8]=bytes[8]&63|128;
+      return Array.from(bytes,(byte,index)=>([4,6,8,10].includes(index)?'-':'')+byte.toString(16).padStart(2,'0')).join('');
+    }
+    let context={...options},target=targetOf(options.target),targetKey=options.targetKey??options.target?.targetKey??'';
+    let version=0,dead=false,state='unknown',pending=null,receipt=null,active=null,permissions=[],policy=null,lastOutcome=null;
+    let provider=null,providerVersion=null,providerRoot=null,error=null,operation=null,query=null,submissionFlight=null,cancelEpoch=0;
+    const accepted=new Set(),cancelledSubmissions=new Set(),controls=new Map();
+    const current=()=>{try{return !dead&&typeof context.request==='function'&&typeof context.isCurrent==='function'&&!!context.isCurrent();}catch{return false;}};
+    const valid=epoch=>epoch===version&&current();
+    const idle=()=>['ready','idle'].includes(state)&&!active;
+    function snapshot(){return copy({target,targetKey,state:dead?'disposed':state,pending,receipt,active_submission:active,permissions,provider,
+      provider_version:providerVersion,provider_root_id:providerRoot,policy,last_outcome:lastOutcome,operation,error,
+      canSubmit:current()&&!pending&&!operation&&idle()});}
+    function notify(){const value=snapshot();if(current()&&typeof context.onState==='function'){try{Promise.resolve(context.onState(value)).catch(()=>{});}catch{}}return value;}
+    function fail(code){error=code;return notify();}
+    function exportPending(){return pending?copy(pending):null;}
+    function restorePending(record){
+      if(dead||pending||typeof targetKey!=='string'||!targetKey||record?.schema!==1||record.targetKey!==targetKey
+        ||!sameTarget(record.target,target)||typeof record.nonce!=='string'||!/^[A-Za-z0-9_-]{1,64}$/.test(record.nonce)||!textOK(record.text)||!fitsEnvelope(record))return false;
+      pending={schema:1,targetKey,target:{...target},nonce:record.nonce,text:record.text,phase:'unknown'};error=null;notify();return true;
+    }
+    function accept(value,record,fromStatus=false){
+      if(!value||!sameTarget(value,record.target)||value.nonce!==record.nonce||value.state!=='accepted'
+        ||!id(value.submission_id)||!id(value.event_id)||!Number.isSafeInteger(value.seq)||value.seq<1
+        ||typeof value.dispatch_state!=='string'||value.dispatch_state.length>64)return false;
+      receipt=Object.fromEntries([...fields,'nonce','submission_id','event_id','seq','state','dispatch_state']
+        .filter(key=>value[key]!==undefined).map(key=>[key,value[key]]));
+      if(typeof value.replayed==='boolean')receipt.replayed=value.replayed;
+      pending=null;error=null;
+      if(!fromStatus&&lastOutcome?.submission_id!==value.submission_id)lastOutcome=null;
+      if(!fromStatus&&!['closing','ended'].includes(state)){state='running';active={submission_id:value.submission_id,cancel_version:0};permissions=[];}
+      if(!accepted.has(record.nonce)){
+        accepted.add(record.nonce);
+        if(typeof context.onAccepted==='function'){try{Promise.resolve(context.onAccepted(copy(receipt),copy(record))).catch(()=>{});}catch{}}
+      }
+      return true;
+    }
+    async function sendPending(){
+      if(!current()||!pending)return fail('stale_target');
+      const epoch=version,record=pending,request=context.request;submissionFlight=record;record.phase='sending';error=null;notify();
+      try{
+        if(!valid(epoch)||pending!==record)return snapshot();
+        const result=await request('submit_managed',{...record.target,nonce:record.nonce,text:record.text});
+        if(!valid(epoch)||pending!==record)return snapshot();
+        if(!accept(result,record)){record.phase='unknown';error='acceptance_unknown';}
+      }catch{if(valid(epoch)&&pending===record){record.phase='unknown';error='acceptance_unknown';}}
+      finally{if(submissionFlight===record)submissionFlight=null;}
+      return valid(epoch)?notify():snapshot();
+    }
+    async function submit(text){
+      if(!current())return fail('stale_target');
+      if(pending)return snapshot();
+      if(active||operation||['starting','running','waiting_permission','interrupting','closing','ended','error'].includes(state))return fail('session_busy');
+      if(!textOK(text))return fail('invalid_text');
+      let token;try{token=nonce();}catch{return fail('secure_random_unavailable');}
+      if(!fitsEnvelope({target,nonce:token,text}))return fail('request_too_large');
+      pending={schema:1,targetKey,target:{...target},nonce:token,text,phase:'sending'};
+      return sendPending();
+    }
+    async function retry(){
+      if(!current())return fail('stale_target');
+      if(!pending||pending.phase!=='absent'||!idle()||operation)return fail('retry_not_confirmed');
+      return sendPending();
+    }
+    function applyStatus(value){
+      if(!sameTarget(value,target)||!states.has(value.state)||!Array.isArray(value.permissions)||value.permissions.length>32
+        ||encoder.encode(JSON.stringify(value)).length>196608)throw new Error('Invalid managed status');
+      const outcome=value.last_outcome;
+      if(outcome!==null&&outcome!==undefined&&(!id(outcome.submission_id)
+        ||!['completed','failed','interrupted','blocked','ambiguous','not_dispatched','cancelled'].includes(outcome.outcome)
+        ||typeof outcome.has_final!=='boolean'||outcome.has_final&&outcome.outcome!=='completed'
+        ||outcome.reason!==null&&outcome.reason!==undefined&&(typeof outcome.reason!=='string'||!/^[A-Za-z0-9_:-]{0,128}$/.test(outcome.reason))))throw new Error('Invalid managed outcome');
+      const next=value.active_submission;
+      if(next!==null&&next!==undefined&&(!id(next.submission_id)||next.provider_turn_id!==undefined&&next.provider_turn_id!==null&&!id(next.provider_turn_id)
+        ||next.cancel_version!==undefined&&(!Number.isSafeInteger(next.cancel_version)||next.cancel_version<0)))throw new Error('Invalid active submission');
+      if(active?.submission_id!==next?.submission_id||active?.provider_turn_id!==next?.provider_turn_id
+        ||Number(next?.cancel_version||0)>Number(active?.cancel_version||0))cancelEpoch++;
+      active=next?Object.fromEntries(['submission_id','provider_turn_id','cancel_version','nonce'].filter(key=>next[key]!==undefined).map(key=>[key,next[key]])):null;
+      if(operation?.submission_id&&operation.submission_id!==active?.submission_id)operation=null;
+      permissions=value.permissions.filter(item=>item&&item.state==='pending'&&id(item.permission_request_id)&&item.submission_id===active?.submission_id
+        &&(item.provider_turn_id??null)===(active?.provider_turn_id??null)
+        &&typeof(item.details??'')==='string'&&encoder.encode(item.details??'').length<=65536).map(item=>({
+          permission_request_id:item.permission_request_id,submission_id:item.submission_id,...(item.provider_turn_id?{provider_turn_id:item.provider_turn_id}:{}),
+          tool_name:typeof item.tool_name==='string'?item.tool_name:'',details:item.details||'',state:'pending',
+          choices:Array.isArray(item.choices)?item.choices.filter(choice=>choice==='deny'||choice==='allow_once'&&!item.requires_user_interaction):['deny'],
+          ...(item.requires_user_interaction?{requires_user_interaction:true}:{})}));
+      state=value.state;provider=typeof value.provider==='string'?value.provider:null;providerVersion=typeof value.provider_version==='string'?value.provider_version:null;
+      providerRoot=typeof value.provider_root_id==='string'?value.provider_root_id:null;policy=copy(value.policy);error=null;
+      if(outcome!==undefined)lastOutcome=outcome===null?null:{submission_id:outcome.submission_id,outcome:outcome.outcome,reason:outcome.reason??null,has_final:outcome.has_final};
+      if(active&&(cancelledSubmissions.has(active.submission_id)||Number(active.cancel_version||0)>0)){
+        cancelledSubmissions.add(active.submission_id);if(!['closing','ended','error'].includes(state))state='interrupting';
+      }
+      if(['interrupting','closing','ended','error'].includes(state))permissions=[];
+      if(operation?.permission_request_id&&!permissions.some(item=>item.permission_request_id===operation.permission_request_id))operation=null;
+      if(operation?.action==='close_managed'&&['closing','ended'].includes(state))operation=null;
+    }
+    async function reconcile(){
+      if(!current())return fail('stale_target');
+      if(query)return snapshot();
+      const epoch=version,request=context.request,record=pending,marker={};query=marker;
+      try{
+        const result=await request('managed_status',{...target,...(record?{nonce:record.nonce}:{})});
+        if(!valid(epoch))return snapshot();
+        applyStatus(result);
+        if(record&&pending===record){
+          if(result.receipt){if(!accept(result.receipt,record,true)){record.phase='unknown';error='acceptance_unknown';}}
+          else record.phase=submissionFlight===record?'sending':result.receipt===null&&idle()?'absent':'unknown';
+        }
+      }catch{if(valid(epoch))error='status_unavailable';}
+      finally{if(query===marker)query=null;}
+      return valid(epoch)?notify():snapshot();
+    }
+    function controlKey(action,params){return action==='close_managed'?'close':action+':'+params.submission_id+':'+(params.permission_request_id||'');}
+    async function control(action,params,guard,onSuccess){
+      if(!current())return fail('stale_target');
+      const key=controlKey(action,params),prior=controls.get(key);
+      if(prior?.params.decision!==undefined&&prior.params.decision!==params.decision)return fail('conflicting_control');
+      if(prior&&prior.phase!=='unknown')return snapshot();
+      let token;try{token=prior?.nonce||nonce();}catch{return fail('secure_random_unavailable');}
+      const epoch=version,request=context.request,entry=prior||{action,nonce:token,params:{...params},phase:'sending'};entry.phase='sending';params=entry.params;controls.set(key,entry);
+      while(controls.size>64)controls.delete(controls.keys().next().value);
+      operation={action,nonce:token,phase:'sending',...params};error=null;notify();
+      try{
+        if(!valid(epoch)||!guard())return snapshot();
+        const result=await request(action,{...target,...params,nonce:token});
+        if(!valid(epoch)||!guard())return snapshot();
+        if(result?.nonce!==undefined&&result.nonce!==token||fields.some(key=>result?.[key]!==undefined)&&!sameTarget(result,target))throw new Error('Control target mismatch');
+        if(!onSuccess(result))throw new Error('Invalid control acknowledgement');
+        entry.phase='acknowledged';if(operation?.nonce===token)operation=null;
+      }catch{if(valid(epoch)&&guard()){entry.phase='unknown';if(operation?.nonce===token)operation={...operation,phase:'unknown'};error='control_unknown';}}
+      return valid(epoch)?notify():snapshot();
+    }
+    async function interrupt(){
+      if(!current())return fail('stale_target');
+      if(!active||['closing','ended','error'].includes(state))return fail('no_active_submission');
+      const captured=copy(active),submission=captured.submission_id;
+      cancelEpoch++;cancelledSubmissions.add(submission);permissions=[];state='interrupting';
+      return control('interrupt_managed',{submission_id:submission,...(captured.provider_turn_id?{provider_turn_id:captured.provider_turn_id}:{})},
+        ()=>active?.submission_id===submission&&!['closing','ended','error'].includes(state),result=>{
+          if(result?.submission_id!==submission||!['interrupt_requested','not_dispatched'].includes(result.state)
+            ||!Number.isSafeInteger(result.cancel_version)||result.cancel_version<Number(captured.cancel_version||0))return false;
+          active={...active,cancel_version:result.cancel_version};state='interrupting';return true;
+        });
+    }
+    async function respondPermission(permissionID,decision){
+      if(!current())return fail('stale_target');
+      if(!['allow_once','deny'].includes(decision))return fail('invalid_decision');
+      const permission=permissions.find(item=>item.permission_request_id===permissionID);
+      if(!permission||!active||!permission.choices.includes(decision)||decision==='allow_once'&&permission.requires_user_interaction
+        ||['interrupting','closing','ended','error'].includes(state))return fail('stale_permission');
+      const captured=copy(active),epoch=cancelEpoch;
+      return control('respond_managed_permission',{submission_id:captured.submission_id,...(captured.provider_turn_id?{provider_turn_id:captured.provider_turn_id}:{}),permission_request_id:permissionID,decision},
+        ()=>epoch===cancelEpoch&&active?.submission_id===captured.submission_id
+          &&(active?.provider_turn_id??null)===(captured.provider_turn_id??null)&&permissions.some(item=>item.permission_request_id===permissionID),result=>{
+          if(result?.permission_request_id!==permissionID||result.decision!==decision||result.state!=='decided'
+            ||result.submission_id!==undefined&&result.submission_id!==captured.submission_id
+            ||result.cancel_version!==undefined&&result.cancel_version!==Number(captured.cancel_version||0))return false;
+          permissions=permissions.filter(item=>item.permission_request_id!==permissionID);return true;
+        });
+    }
+    async function closeSession(){
+      if(!current())return fail('stale_target');
+      if(state==='ended')return snapshot();
+      cancelEpoch++;permissions=[];state='closing';
+      return control('close_managed',{},()=>state==='closing',result=>{
+        if(!sameTarget(result,target)||!['closing','ended'].includes(result.state))return false;
+        state=result.state;if(state==='ended')active=null;return true;
+      });
+    }
+    function setContext(value={}){
+      const old=exportPending(),next={...context,...value},nextTarget=targetOf(next.target);
+      version++;context=next;target=nextTarget;targetKey=next.targetKey??next.target?.targetKey??'';
+      state='unknown';pending=null;receipt=null;active=null;permissions=[];policy=null;lastOutcome=null;provider=null;providerVersion=null;providerRoot=null;
+      error=null;operation=null;query=null;submissionFlight=null;cancelEpoch++;accepted.clear();cancelledSubmissions.clear();controls.clear();
+      if(value.pendingState)restorePending(value.pendingState);else notify();return old;
+    }
+    if(options.pendingState)restorePending(options.pendingState);
+    return {snapshot,submit,reconcile,interrupt,respondPermission,closeSession,retry,exportPending,restorePending,setContext,
+      dispose(){const old=exportPending();version++;dead=true;pending=null;receipt=null;active=null;permissions=[];lastOutcome=null;operation=null;query=null;submissionFlight=null;controls.clear();accepted.clear();cancelledSubmissions.clear();return old;}};
+  }
+  const api = {composerAction,createComposerSubmitter,createComposerEcho,presentationPolicy,localHistoryPolicy,createManagedController,createConversationViewer,parseCodeFences,formatQuote,agentProfiles,commonAgentProfile,validateAgentProfile,loadAgentProfile,agentModeFromSession,inferAgentContent,createAgentDetector,highlightSpans,createHighlighter,createScreenHistory,pack, unpack, targetFrame, sessionPayload, historyPayload, historyFrameBytes, terminalInput, cursorKey, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,updateHintRevision,
     retryDelay: attempt => Math.min(15000, 500 * 2 ** Math.min(10, attempt)),
     rendererName: name => ['auto', 'dom', 'webgl'].includes(name) ? name : 'auto'};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -270,7 +270,8 @@ async def check_mobile_cursor_detection(playwright):
                         session.pty.inbox.put('Ask When Needed  K2.8 Preview thinking: max  D:\\aicoding\\repo master\r\ncontext: 41% (402k/1M)\r\n'.encode())
                         await page.wait_for_function('document.getElementById("screen").dataset.agentMode==="cursor-cli"')
                         assert await page.locator('#screen').get_attribute('data-agent-preference') == 'auto'
-                        assert await page.evaluate('MobileTerminal.terminal.options.cursorStyle') == 'bar'
+                        assert await page.evaluate('MobileTerminal.terminal.options.cursorStyle') == 'block'
+                        assert await page.locator('#screen').get_attribute('data-actual-agent') == 'cursor-cli'
                         assert not errors
                         assert not session.pty.written
                         artifacts = ROOT/'.omx/artifacts/android-agent-modes'

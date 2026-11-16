@@ -14,6 +14,7 @@ import socket
 import struct
 import tempfile
 import time
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +52,7 @@ from .protocol import (
     OP_SUBSCRIBE,
     OP_SNAPSHOT,
     OP_TASK_SUBSCRIBE,
+    OP_URL_OPEN,
     OP_WINDOW,
     ProtocolError,
     pack,
@@ -259,6 +261,7 @@ class Daemon:
         self.hub.task_events = TaskEventStore(STATE / "task-events.json")
         self.hub.default_owner = token
         self.journals = None
+        self.managed = None
         self._journal_started = False
         self.hub.journal_factory = self._start_journals
         self.hub.load_desktop()
@@ -287,7 +290,38 @@ class Daemon:
                 # paths, provider payloads or exception text enter diagnostics.
                 LOGGER.warning('journal_unavailable reason=initialization_failed')
             self.hub.journals = self.journals
+            if self.journals is not None:
+                try:
+                    from .managed_conversation import ManagedConversationService
+                    pinned = Path.home() / '.codex/packages/app-server-daemon/releases/0.167.0-x86_64-pc-windows-msvc/bin/codex.exe'
+                    manager = self.journals
+                    managed = None
+                    def credential_current(*args):
+                        return (self.journals is manager and self.managed is managed
+                            and self.hub.managed_service is managed
+                            and self._managed_credential_authorized(*args))
+                    managed = ManagedConversationService(self.hub, manager,
+                        credential_authorized=credential_current,
+                        binaries={'codex': str(pinned)} if pinned.is_file() else {})
+                    self.managed = managed
+                    self.hub.managed_service = self.journals.managed_sources = self.managed
+                except Exception:
+                    LOGGER.warning('managed_unavailable reason=initialization_failed')
         return self.journals
+
+    def _managed_credential_authorized(self, owner_scope, owner_token, room, session):
+        """Dispatch follows current credentials and target, not an open viewer."""
+        try:
+            if (not self.allowed(owner_token) or self.journals is None
+                    or self.journals.owner_scope(owner_token, default_token=self.token,
+                                               accounts=self.accounts) != owner_scope
+                    or self.hub.sessions.get(session.id) is not session):
+                return False
+            window = self.hub.windows.get(session.window_id)
+            group = self.hub.groups.get(window.group_id) if window is not None else None
+            return group is not None and group.owner == owner_token and group.channel == room
+        except (ValueError, AttributeError):
+            return False
 
     def client_authorized(self, client) -> bool:
         if self.hub.clients.get(client.key) is not client or client.failure:
@@ -369,6 +403,8 @@ class Daemon:
             await asyncio.gather(*list(self._file_cleanup_tasks), return_exceptions=True)
         if self._sidecar_calls:
             await asyncio.gather(*list(self._sidecar_calls), return_exceptions=True)
+        if getattr(self, 'managed', None) is not None:
+            await self.managed.aclose()
         if self.journals is not None:
             manager, self.journals = self.journals, None
             self.hub.journals = None
@@ -458,6 +494,17 @@ class Daemon:
                       'read_content': {'journal_id', 'content_id', 'offset', 'limit'},
                       'list_sources': {'session_id', 'provider'},
                       'bind_source': {'session_id', 'source_ref', 'terminal_generation'}}
+            target_fields = {'window_id', 'session_id', 'process_generation', 'journal_id'}
+            managed_fields = {
+                'create_managed': {'session_id', 'process_generation', 'provider', 'nonce'},
+                'submit_managed': target_fields | {'nonce', 'text'},
+                'managed_status': target_fields | {'nonce'},
+                'interrupt_managed': target_fields | {'submission_id', 'provider_turn_id', 'nonce'},
+                'respond_managed_permission': target_fields | {'submission_id', 'provider_turn_id',
+                    'permission_request_id', 'decision', 'nonce'},
+                'close_managed': target_fields | {'nonce'},
+            }
+            fields.update(managed_fields)
             if (set(body) - {'request_id', 'action', 'params'} or not isinstance(action, str)
                     or action not in fields or not isinstance(params, dict) or set(params) - fields[action]):
                 raise JournalError()
@@ -471,6 +518,25 @@ class Daemon:
             token, channel = client.token, client.channel
             owner = manager.owner_scope(token, default_token=self.token, accounts=self.accounts)
             rooms = {channel} if channel else None
+            if action in managed_fields:
+                if not getattr(client, 'managed_conversation', False):
+                    raise JournalError('not_negotiated')
+                managed = getattr(self, 'managed', None)
+                if managed is None:
+                    raise JournalError('unavailable')
+                def managed_current():
+                    return (self.client_authorized(client) and not client.delegated
+                        and client.token == token and client.channel == channel
+                        and self.journals is manager and self.managed is managed
+                        and client.conversation_journal and client.managed_conversation
+                        and manager.owner_scope(token, default_token=self.token, accounts=self.accounts) == owner)
+                result = await managed.handle(action, params, owner_scope=owner,
+                    owner_token=token, rooms=rooms, authorize=managed_current)
+                if not self.client_authorized(client):
+                    return [], 4001
+                if not managed_current():
+                    raise JournalError('permission_denied')
+                return [self._journal_frame(request_id, result=result)], None
             source_action = action in {'list_sources', 'bind_source'}
             if source_action and token != self.token:
                 raise JournalError('permission_denied')
@@ -698,6 +764,21 @@ class Daemon:
             return [], 4001
         if op == OP_JOURNAL:
             return await self._journal_request(client, payload)
+        if op == OP_URL_OPEN:
+            body = unpack_json(payload)
+            request, url = body.get('request', ''), body.get('url', '')
+            if not isinstance(request, str) or len(request) > 64:
+                raise ProtocolError('Invalid URL open request')
+            if not isinstance(url, str) or len(url) > 2048:
+                raise ProtocolError('Invalid URL open target')
+            parsed = urlsplit(url.strip())
+            if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+                return [pack_json(OP_URL_OPEN, {'request': request, 'ok': False, 'error': '仅支持完整的 http(s) 链接。'})], None
+            opened = await asyncio.to_thread(webbrowser.open, parsed.geturl(), new=2)
+            if not self.client_authorized(client):
+                return [], 4001
+            return [pack_json(OP_URL_OPEN, {'request': request, 'ok': bool(opened),
+                                            **({} if opened else {'error': '电脑上的默认浏览器未能打开。'})})], None
         if op == OP_ASSISTANT_CONTEXT:
             body = unpack_json(payload)
             request, sid = body.get('request', ''), body.get('session', '')
@@ -773,6 +854,8 @@ class Daemon:
                 return [], 4001
             client.conversation_journal = (type(body.get('conversation_journal')) is int
                                            and body['conversation_journal'] == 1 and not client.delegated)
+            client.managed_conversation = (client.conversation_journal
+                and type(body.get('managed_conversation')) is int and body['managed_conversation'] == 1)
             client.multiplex = body.get("multiplex") is True
             client.reliable = body.get("reliable") is True
             client.history_context = client.multiplex and type(body.get('history_context')) is int and body['history_context'] == 1
@@ -839,6 +922,8 @@ class Daemon:
         if op == OP_OPEN:
             body = unpack_json(payload)
             window_id = str(body.get("window") or "")
+            if self.hub.owns(client.token, window_id) and self._window_has_managed(window_id):
+                return [self._state(client, error='请在原始 CLI 窗口中新建终端。')], None
             if not self.hub.owns(client.token, window_id):
                 window_id = self.hub.open_window(group_id=str(body.get("group") or ""), owner=client.token).id
                 self.hub.select(client, window_id)
@@ -876,6 +961,12 @@ class Daemon:
             return [], None
         if op == OP_CLOSE:
             body = unpack_json(payload) if payload else {}
+            wid = str(body.get('window') or '')
+            requested = self.hub.sessions.get(str(body.get('session') or ''))
+            if (wid and self.hub.owns(client.token, wid) and self._window_has_managed(wid)
+                    or not wid and requested is not None and requested.interaction_mode == 'managed'
+                    and self.hub.owns(client.token, requested.window_id)):
+                return [self._state(client, error='请使用对话记录模式的关闭会话按钮。')], None
             before = len(self.hub.windows), len(self.hub.sessions)
             if body.get("window"):
                 if self.hub.owns(client.token, str(body["window"])):
@@ -892,6 +983,18 @@ class Daemon:
         if op == OP_GROUP:
             body = unpack_json(payload) if payload else {}
             action = str(body.get("action") or "")
+            if action == 'move':
+                wid = str(body.get('window') or '')
+                if self.hub.owns(client.token, wid) and self._window_has_managed(wid):
+                    return [self._state(client, error='请先结束记录会话，再调整分组。')], None
+            elif action in {'delete', 'rename'}:
+                group = self.hub.groups.get(str(body.get('id') or ''))
+                changes_room = (action == 'delete' or isinstance(body.get('channel'), str)
+                                and body['channel'].strip() and body['channel'].strip() != getattr(group, 'channel', None))
+                if (group is not None and group.owner == client.token and changes_room
+                        and any(window.group_id == group.id and self._window_has_managed(window.id)
+                                for window in self.hub.windows.values())):
+                    return [self._state(client, error='请先结束记录会话，再调整分组。')], None
             if action == "create":
                 self.hub.add_group(str(body.get("name") or ""), str(body.get("channel") or ""), client.token)
             elif action == "rename":
@@ -924,6 +1027,11 @@ class Daemon:
                     await self.push_identity()
             return [self._state(client)], None
         return [], None
+
+    def _window_has_managed(self, window_id):
+        window = self.hub.windows.get(window_id)
+        return window is not None and any(session.interaction_mode == 'managed'
+                                         for session in window.sessions.values())
 
     def allowed(self, token: str) -> bool:
         if token and token == self.token:
@@ -1051,6 +1159,9 @@ class Daemon:
         if not getattr(client, 'conversation_journal', False) or client.delegated or self.journals is None:
             visible = {**visible, 'capabilities': {key: value for key, value in visible['capabilities'].items()
                                                   if key != 'conversation_journal'}}
+        if not client.managed_conversation or client.delegated or getattr(self, 'managed', None) is None:
+            visible['capabilities'] = {key: value for key, value in visible['capabilities'].items()
+                                       if key != 'managed_conversation'}
         service = self.service_status()
         service['owner_authenticated'] = client.token == self.token and not client.delegated
         if client.token == self.token and not client.delegated:

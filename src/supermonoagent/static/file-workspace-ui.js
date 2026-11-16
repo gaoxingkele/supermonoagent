@@ -1,4 +1,4 @@
-/* Optional file-workspace footer. Captured transfers survive ordinary tab changes. */
+/* Optional file-workspace toolbar. Captured transfers survive ordinary tab changes. */
 (function(){
   'use strict';
   if(typeof window==='undefined')return;
@@ -13,7 +13,7 @@
     route_timeout:'目标文件助手未响应。',unauthorized:'目标电脑未确认窗口所有者权限。',
     session_unavailable:'目标窗口已关闭或尚未就绪。',target_changed:'窗口或连接已变化，请重新打开设置。',
     revision_conflict:'目录配置已被修改，请重新加载后再保存。',directory_unavailable:'目标目录不可用；交换目录必须在项目目录内。',
-    project_required:'请先在底部选择当前项目目录；附件保存到目标电脑中央暂存目录（优先 D:\\aicoding\\supermonoagent\\tmp，无 D 盘时为 C 盘对应目录），不能使用用户主目录。',
+    project_required:'请先在顶部工具栏选择当前项目目录；附件保存到目标电脑中央暂存目录（优先 D:\\aicoding\\supermonoagent\\tmp，无 D 盘时为 C 盘对应目录），不能使用用户主目录。',
     missing_token:'当前连接缺少文件服务 Token。',insecure_endpoint:'文件服务需要 WSS 加密连接。',
     invalid_endpoint:'文件服务地址无效。',unsupported:'当前客户端不支持文件工作区。'};
   const message=error=>Object.hasOwn(messages,error?.code)?messages[error.code]:'文件工作区暂不可用，请检查目标电脑的文件助手。';
@@ -30,11 +30,10 @@
     catch{installing=false;if(!stopped)setTimeout(boot,2000);return;}
     installing=false;
     if(stopped||!object(nativeConfig)||nativeConfig.enabled!==true){if(!stopped)setTimeout(boot,2000);return;}
-    const W=root.smaWorkspace,F=root.SuperMonoFileClient,footer=document.querySelector('main footer')||document.querySelector('footer');
-    if(!footer)return;
+    const W=root.smaWorkspace,F=root.SuperMonoFileClient,toolbar=document.querySelector('.titlebar .toolbar-actions')||document.querySelector('.toolbar-actions');
+    if(!toolbar)return;
     let destroyed=false,active=null,reading=0,modalTarget=null,modalRevision=null,browseSequence=0,browseField='',browsePage=null,autoExchange=false;
-    const clients=[],originalStatus=document.getElementById('status'),statusHidden=originalStatus?.hidden;
-    const originalFooter=footer.getAttribute('data-file-workspaces');
+    const clients=[];
     function config(){return object(root.SuperMonoFileWorkspaceConfig)?root.SuperMonoFileWorkspaceConfig:nativeConfig;}
     function transport(host){
       const cfg=config(),settings=host?.config;
@@ -97,14 +96,13 @@
     }
     async function getWorkspace(target){return workspace(target,await request(target,'workspace.get',{}));}
     const style=create('style');style.id='file-workspace-style';
-    style.textContent=`footer[data-file-workspaces]{min-width:0;height:auto;min-height:29px;flex-wrap:wrap;gap:6px}footer[data-file-workspaces]>.footer-spacer{display:none}#file-workspace-footer{display:grid;grid-template-columns:minmax(0,1fr);flex:1 1 180px;min-width:0;max-width:100%;line-height:1.2}#file-workspace-footer button{min-width:0;max-width:100%;width:100%;min-height:12px;height:12px;padding:0;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;line-height:12px}#file-workspace-dialog{width:580px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow:auto;overflow-wrap:anywhere}#file-workspace-dialog label{margin:12px 0 4px}#file-workspace-dialog input{width:100%;min-width:0;max-width:100%}#file-workspace-dialog .file-path-row{display:flex;gap:6px;min-width:0}#file-workspace-dialog .file-path-row input{flex:1}#file-workspace-dialog .file-path-row button{flex:none}#file-workspace-browser{margin-top:12px;padding-top:10px;border-top:1px solid #444}#file-workspace-browser nav{display:flex;flex-wrap:wrap;gap:5px}#file-browse-list{display:grid;gap:3px;max-height:220px;overflow:auto;margin:8px 0}#file-browse-list button{text-align:left;overflow-wrap:anywhere;min-width:0;white-space:normal}#file-workspace-state,#file-browse-path{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}#file-workspace-dialog .dialog-actions{flex-wrap:wrap;margin-top:12px}@media(max-width:600px){#file-workspace-footer{flex-basis:100%}#file-workspace-dialog{padding:14px}}`;
+    style.textContent=`.toolbar-actions:has(>#file-workspace-footer){min-width:0}#file-workspace-footer{display:flex;align-items:center;gap:4px;flex:0 1 144px;min-width:80px;max-width:min(32vw,180px)}#file-workspace-footer button{flex:1;min-width:0;max-width:100%;height:28px;min-height:28px;padding:3px 6px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:20px}#file-workspace-dialog{width:580px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow:auto;overflow-wrap:anywhere}#file-workspace-dialog label{margin:12px 0 4px}#file-workspace-dialog input{width:100%;min-width:0;max-width:100%}#file-workspace-dialog .file-path-row{display:flex;gap:6px;min-width:0}#file-workspace-dialog .file-path-row input{flex:1}#file-workspace-dialog .file-path-row button{flex:none}#file-workspace-browser{margin-top:12px;padding-top:10px;border-top:1px solid #444}#file-workspace-browser nav{display:flex;flex-wrap:wrap;gap:5px}#file-browse-list{display:grid;gap:3px;max-height:220px;overflow:auto;margin:8px 0}#file-browse-list button{text-align:left;overflow-wrap:anywhere;min-width:0;white-space:normal}#file-workspace-state,#file-browse-path{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}#file-workspace-dialog .dialog-actions{flex-wrap:wrap;margin-top:12px}@media(max-width:600px){#file-workspace-dialog{padding:14px}}`;
     document.head.append(style);
     const paths=create('div');paths.id='file-workspace-footer';paths.setAttribute('aria-label','当前窗口文件目录');
     const projectButton=create('button','项目: 未选择窗口'),exchangeButton=create('button','交换: 未选择窗口');
     projectButton.id='file-workspace-project';exchangeButton.id='file-workspace-exchange';
     projectButton.disabled=exchangeButton.disabled=true;
-    projectButton.type=exchangeButton.type='button';paths.append(projectButton,exchangeButton);footer.prepend(paths);
-    footer.setAttribute('data-file-workspaces','true');if(originalStatus)originalStatus.hidden=true;
+    projectButton.type=exchangeButton.type='button';paths.append(projectButton,exchangeButton);toolbar.prepend(paths);
     const dialog=create('dialog');dialog.id='file-workspace-dialog';dialog.setAttribute('aria-label','窗口文件目录');
     const form=create('form'),heading=create('h2','窗口文件目录'),targetLabel=create('p'),note=create('p','交换目录必须位于项目内；留空使用项目/tmp。中继附件实际保存到目标电脑中央暂存目录（优先 D:\\aicoding\\supermonoagent\\tmp，无 D 盘时为 C 盘对应目录）。此设置不会改变终端当前目录。');
     targetLabel.id='file-workspace-target';
@@ -129,10 +127,19 @@
     function display(value,error){
       for(const button of [projectButton,exchangeButton])button.disabled=!active;
       const required=value?.project_status==='selection_required';
-      projectButton.textContent='项目: '+(required?'请选择当前项目目录':value?.project_dir||error||'未选择窗口');
-      exchangeButton.textContent='交换: '+(required?'选择项目后使用 tmp':value?.exchange_dir||(error?'不可用':'未选择窗口'));
+      const projectState={missing:'缺失',unavailable:'不可用'}[value?.project_status]||'';
+      const exchangeState={missing:'待创建',unavailable:'不可用'}[value?.exchange_status]||'';
+      const projectText=required?'请选择当前项目目录':value?.project_dir||error||'未选择窗口';
+      const exchangeText=required?'选择项目后使用 tmp':value?.exchange_dir||(error?'不可用':'未选择窗口');
+      projectButton.textContent='项目'+projectState+': '+projectText;
+      exchangeButton.textContent='交换'+exchangeState+': '+exchangeText;
       projectButton.title=exchangeButton.title=required?messages.project_required:'';
       if(!required){projectButton.title=value?.project_dir||error||'';exchangeButton.title=value?.exchange_dir||error||'';}
+      const source=required?'未设置':value?.source==='startup'?'启动目录建议':value?.source==='configured'?'已保存':'来源未确认';
+      projectButton.setAttribute('aria-label','项目设置（'+source+'）：'+(projectState?projectState+' · ':'')+projectText);
+      projectButton.setAttribute('aria-description',value?.source==='startup'?'尚未保存项目设置；此路径是后台会话的启动目录建议，不代表终端当前目录。':'这是文件项目目录设置，不代表终端当前目录。');
+      exchangeButton.setAttribute('aria-label','交换目录设置：'+(exchangeState?exchangeState+' · ':'')+exchangeText);
+      exchangeButton.setAttribute('aria-description','项目内配置的交换目录；状态独立于终端当前目录。');
     }
     async function refresh(){
       let target;try{target=captureTarget();}catch(error){active=null;display(null,message(error));return;}
@@ -227,8 +234,6 @@
       if(destroyed)return;destroyed=true;stopped=true;clearInterval(timer);reading++;browseSequence++;
       for(const entry of clients)entry.client.close();clients.length=0;
       dialog.remove();paths.remove();style.remove();
-      if(originalStatus)originalStatus.hidden=statusHidden;
-      if(originalFooter===null)footer.removeAttribute('data-file-workspaces');else footer.setAttribute('data-file-workspaces',originalFooter);
       root.removeEventListener('beforeunload',destroy);root.removeEventListener('pywebviewready',boot);
       root.removeEventListener('sma-file-exchange-config-changed',refreshConfig);delete root.SuperMonoFileWorkspaces;
     }

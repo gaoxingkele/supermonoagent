@@ -85,11 +85,13 @@ async def check_mobile(playwright,intercepted):
                         await page.wait_for_function("document.querySelectorAll('#session-list .session')[0]?.dataset.state==='waiting'")
                         await page.locator('#sessions-close').tap()
                         assert await page.evaluate('document.activeElement.tagName') not in ('TEXTAREA','INPUT')
+                        assert await page.locator('#terminal-actions').is_hidden() and await page.locator('#keys').is_hidden()
+                        await page.locator('#tools-toggle').tap()
                         height_before=await page.locator('#screen').evaluate('e=>e.clientHeight')
                         await page.locator('#tools-toggle').tap()
                         assert await page.locator('#terminal-actions').is_hidden() and await page.locator('#keys').is_hidden()
                         assert await page.locator('#quick-composer').is_visible() and await page.locator('#quick-send').is_visible()
-                        assert await page.locator('#tools-toggle').inner_text()=='展开'
+                        assert await page.locator('#tools-toggle').inner_text()=='工具'
                         await page.evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))')
                         assert await page.locator('#screen').evaluate('e=>e.clientHeight')>height_before
                         assert await page.evaluate("localStorage.getItem('sma.mobile.tools-collapsed')")=='1'
@@ -97,6 +99,8 @@ async def check_mobile(playwright,intercepted):
                         assert await page.locator('#terminal-actions').is_visible() and await page.locator('#keys').is_visible()
                         assert await page.locator('#quick-composer').is_visible()
                         assert await page.evaluate("localStorage.getItem('sma.mobile.tools-collapsed')")=='0'
+                        assert await page.locator('#raw-input').get_attribute('aria-pressed')=='true'
+                        await page.locator('#raw-input').tap()
                         before_tap = bytes(first.pty.written)
                         await page.tap('#screen')
                         await page.keyboard.insert_text('中文')

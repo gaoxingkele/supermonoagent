@@ -150,7 +150,7 @@ test('source picker binds only opaque choice with authoritative process generati
 });
 test('HTML retains both bottom records buttons and raw parser remains outside journal integration',()=>{
   const html=fs.readFileSync(path.join(__dirname,'../android/assets/mobile/index.html'),'utf8');
-  assert.match(html,/id="journal-history"[^>]*>历史记录/);assert.match(html,/id="journal-conversation"[^>]*>对话记录/);
+  assert.match(html,/id="journal-history"[^>]*aria-label="历史记录"[^>]*>历史/);assert.match(html,/id="journal-conversation"[^>]*aria-label="对话记录"[^>]*>对话/);
   assert.match(html,/id="journal-reading"[^>]*hidden/);assert.match(html,/id="screen" aria-label="远端终端"/);
   assert.ok(!/\b(?:input|paste|resize|reset|write)\(/.test(block));
 });

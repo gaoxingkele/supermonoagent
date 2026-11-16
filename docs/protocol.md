@@ -73,6 +73,7 @@
 | 21 | FILE_TRANSFER | 客户端 ↔ daemon | 有界文件传输控制与分块；仅对应授权会话 |
 | 22 | ASSISTANT_CONTEXT | 客户端 ↔ daemon | 有界项目上下文请求与响应 |
 | 23 | HISTORY_CONTEXT | daemon → 客户端 | raw session 前缀、有界 JSON 元数据和终端字节；快照、实时输出或增量恢复 |
+| 25 | URL_OPEN | 客户端 ↔ daemon | `{request,url}` 请求在主机默认浏览器打开；仅完整 http(s) 绝对链接、URL ≤2048 字节，回复同 request 与 `ok`／安全错误；旧 daemon 不广播 `url_open` 能力，客户端不得发送 |
 
 OP16/17/5 都受 Token 所有权与订阅约束。OP18 的回放按 Token 所有权过滤，relay 客户端还按频道过滤；OP19 只发给已订阅且仍有权限的连接。客户端内部的 host/session 元组键不能放进线协议；不同 daemon 的相同 raw ID 由其所属连接隔离。关闭标签页只从 OP16 订阅集移除该 ID，不发送 OP9。
 
