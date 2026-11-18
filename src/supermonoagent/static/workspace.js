@@ -22,7 +22,7 @@
   let renameWindow = null, terminateSession = null, connectionOwner = null;
   let homeConfig={...config}, savedHosts=loadHosts(), selectedHost='local', editingHost='', homeRelays=[];
   let relayProfiles=loadRelayProfiles(),profileLegacy='connection',roomMenu=null;
-  let runtimeDefaultToken='',prefilledTokenTarget='',defaultTokenEdited=false;
+  let runtimeDefaultToken='',prefilledTokenTarget='',defaultTokenEdited=false,prefilledProfile=null;
   let relayProbe=null;
   const daemonMonitor={hostID:'',timer:null,pending:null,sequence:0,denied:null};
   const hosts=new Map(), directories=new Map(), relayAccounts=new Map();
@@ -851,9 +851,9 @@
     profileLegacy=legacy;closeAppMenu();cancelRelayProbe();$('relay-profile-error').textContent='';
     $('relay-profiles-dialog').querySelector('details').open=false;
     let url;try{url=new URL(C.socketURL(currentHost()?.config.code?currentHost().config.relay:relayProfiles.at(-1)?.endpoint||homeRelays[0]?.url||$('default-relay').value,location.origin));}catch{url=new URL(C.socketURL($('default-relay').value,location.origin));}
-    $('relay-profile-address').value=['/','/ws','/ws/'].includes(url.pathname)?url.hostname:url.toString();$('relay-profile-port').value=url.port||(url.protocol==='wss:'?'443':'80');$('relay-profile-room').value='';$('relay-profile-token').value='';$('relay-profile-remember').checked=read(localStorage,'sma.workspace.profile-remember')!=='off';prefilledTokenTarget='';defaultTokenEdited=false;
+    $('relay-profile-address').value=['/','/ws','/ws/'].includes(url.pathname)?url.hostname:url.toString();$('relay-profile-port').value=url.port||(url.protocol==='wss:'?'443':'80');$('relay-profile-room').value='';$('relay-profile-token').value='';$('relay-profile-remember').checked=read(localStorage,'sma.workspace.profile-remember')!=='off';prefilledTokenTarget='';defaultTokenEdited=false;prefilledProfile=null;
     const stored=[...relayProfiles].reverse().find(profile=>profile.endpoint===url.toString()&&!profile.code&&profileToken(profile));
-    if(stored){$('relay-profile-token').value=profileToken(stored);prefilledTokenTarget=stored.endpoint;defaultTokenEdited=true;}
+    if(stored){$('relay-profile-token').value=profileToken(stored);prefilledTokenTarget=stored.endpoint;defaultTokenEdited=true;prefilledProfile=stored;}
     renderRelayProfiles();$('relay-profiles-dialog').showModal();prefillRuntimeToken();$('relay-profile-address').focus();
     const local=hosts.get('local');if(local?.connected&&homeRelayAccess())send(owner(local),16,{sessions:openTabs.map(id=>panes.get(id)).filter(pane=>pane?.host===local).map(pane=>pane.raw)});
   }
@@ -1140,6 +1140,12 @@
       const {target,token,code}=probe;
       if(target!==profileEndpoint($('relay-profile-address').value,$('relay-profile-port').value.trim())||token!==$('relay-profile-token').value.trim()||code!==$('relay-profile-room').value.trim())throw new Error('连接信息已修改，请重新测试。');
       if(probe.rooms.length&&!probe.rooms.some(room=>probe.selected.get(room.code)))throw new Error('请至少勾选一个房间。');
+      // Saving another token for the pre-filled credential switches it: the old scope's rooms, hosts and views must not linger.
+      if(prefilledProfile&&prefilledProfile.endpoint===target&&!code&&!prefilledProfile.code&&profileToken(prefilledProfile)&&profileToken(prefilledProfile)!==token){
+        relayProfiles=relayProfiles.filter(item=>item!==prefilledProfile);
+        for(const storage of [localStorage,sessionStorage])for(const suffix of ['','.target'])save(storage,'sma.workspace.profile-token.'+prefilledProfile.id+suffix,'');
+      }
+      prefilledProfile=null;
       let profile=relayProfiles.find(item=>item.endpoint===target&&(item.code||'')===code&&(profileToken(item)===token||!profileToken(item)));
       if(!profile){if(relayProfiles.length>=32)throw new Error('最多添加 32 组连接。');profile={id:crypto.randomUUID(),endpoint:target,code};relayProfiles.push(profile);}
       profile.excludedRooms=[...probe.selected].filter(([,selected])=>!selected).map(([code])=>code);
@@ -1153,7 +1159,7 @@
   for(const id of ['relay-profile-address','relay-profile-port','relay-profile-room','relay-profile-token'])$(id).addEventListener('input',()=>cancelRelayProbe());
   for(const id of ['relay-profile-address','relay-profile-port'])$(id).addEventListener('input',()=>{
     if(!prefilledTokenTarget)return;let same=false;try{same=profileEndpoint($('relay-profile-address').value,$('relay-profile-port').value)===prefilledTokenTarget;}catch{}
-    if(!same){$('relay-profile-token').value='';prefilledTokenTarget='';defaultTokenEdited=true;$('relay-profile-token').title='';}
+    if(!same){$('relay-profile-token').value='';prefilledTokenTarget='';defaultTokenEdited=true;$('relay-profile-token').title='';prefilledProfile=null;}
   });
   document.addEventListener('click',event=>{if(!event.target.closest('.tab-picker'))closeTabPicker();if(!event.target.closest('#app-menu,#app-menu-toggle')||event.target.closest('#app-menu button'))closeAppMenu();if(roomMenu&&!event.target.closest('.room-menu,.workspace-host-edit'))closeRoomMenu();});
   document.addEventListener('keydown',event=>{

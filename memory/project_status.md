@@ -45,3 +45,5 @@
 2026-10-14：左侧分组。分组名对应推送频道。订阅端只收该频道。命令行和 Alt 快捷键在设定里改，记在 desktop.json。中转仍是 WebSocket，不另开 MQTT。
 2026-10-14：直连窗口的输出帧不再带会话号。会话号只加在中继帧上，否则 cmd / PowerShell 提示符前会印出 8 位十六进制。
 2026-10-14：子窗口改为叠放。拖标题移动，拖边缘改大小，可最大化、最小化到下方任务条。只有当前窗口收键盘，被挡住的窗口继续刷新自己的输出。终端黑底，PowerShell 回显按语法上色，报错和重点为红色。打开的窗口都会把输出转发到中转，远程切换能看到最新记录。键盘仍只进当前 CLI。
+
+2026-11-18：连接工作区对话框预填已保存凭据；在此基础上改 Token 并「测试连接」「连接所选房间」时按切换处理：替换旧凭据（含 localStorage/sessionStorage 键），旧 Token 的房间、主机和已开页签从侧栏清空，再按新 Token 重新列出。对话框未预填时仍可对同一中继添加多个 Token。测试 test_workspace_profile_rooms.py::test_switching_prefilled_token_replaces_old_credential_and_clears_its_rooms。

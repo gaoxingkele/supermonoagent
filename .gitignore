@@ -25,3 +25,7 @@ study/orca/
 token.txt
 defaults.private.json
 download-link.private.json
+
+# 运行期日志与临时测试状态
+tmp/
+dist/windows/*/run2.bat

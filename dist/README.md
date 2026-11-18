@@ -1,24 +1,47 @@
 # 发布产物
 
-平板候选 0.2.70／0.2.71 当前为未完成 WIP：用户已停止调试，历史按钮触摸高度与低高度视口遮挡仍待修复，真机验收未完成。归档仅用于保留当前工作，详见 [平板适配状态](../docs/tablet-layout.md)。
+2026-11-18 清理：本地只保留各平台**最新三个版本**，早于 0.2.78 的构建已删除（仍保留在 Git 历史中，可按提交恢复）。
 
-完整版本索引：[VERSIONS.md](VERSIONS.md)；机器可读路径、文件大小与 SHA-256：[versions.json](versions.json)。仓库保留 35 个 Android 数字版本、42 个 Windows 数字／hotfix 版本、29 个完整签名界面快照，以及原有旧命名构建目录。
+## Windows（完整目录 + 公共安装包）
 
-最新已完成真机验收的 Android APK：**0.2.69（构建 71）**，修复链接脚本遗漏原生白名单导致终端页面无法打开，以及 Update 指向旧频道的问题；已在荣耀 FLC-AN00 保留数据覆盖安装并完成窗口切换、在线检查与草稿保留验证。0.2.67／0.2.68 原包作为历史版本保留。详细证据与范围见 [Android 验收记录](../omx_wiki/android-live-updates.md)。
+| 版本 | 完整目录 | 公共安装 ZIP | SHA-256 |
+| --- | --- | --- | --- |
+| **0.2.80** | [windows/0.2.80/](windows/0.2.80/) | [SuperMonoAgent-0.2.80-Setup.zip](windows/SuperMonoAgent-0.2.80-Setup.zip) | `cb4002c78e271d17bb1264f721194ee3fb116653460f99da27f0aa546ccfc2cf` |
+| 0.2.79 | [windows/0.2.79/](windows/0.2.79/) | [SuperMonoAgent-0.2.79-Setup.zip](windows/SuperMonoAgent-0.2.79-Setup.zip) | `0499800ef8026366be359478deb1c4f27d50ba82c2ce7c066343558b35141657` |
+| 0.2.78 | [windows/0.2.78/](windows/0.2.78/) | [SuperMonoAgent-0.2.78-Setup.zip](windows/SuperMonoAgent-0.2.78-Setup.zip) | `5359a63d1629af5595c45f8a5a305e5e1391460bc224e52997289802a979b121` |
 
-最新 Android 平板适配候选：**0.2.71（构建 73）**，用于横竖屏与历史显示适配；已准备通用无凭据安装包，但设备断开后尚未安装或完成真机验收。0.2.70 为首轮平板候选构建，一并保留用于版本追溯。候选不替代上述 0.2.69 真机验收结论。
+三个 ZIP 均为**通用无凭据版**（164 个条目、158 个负载文件，无 `defaults.private.json`），已用 `c728238ab3ebabab` 私钥签名并通过 `openssl dgst -verify` 校验。完整目录内运行 `02-Orca-Workspace.vbs` 即可。
 
-最新 Windows 构建：**0.2.67**，支持上传后复制全部保存路径，保留终端链接打开、复制与焦点修复。
+### 0.2.80 构建说明
 
-最新签名界面候选：**0.2.71**，加入平板适配，并保留 0.2.70 对桌面和手机全部 Cursor CLI 模式的前缀状态高亮改进。0.2.70 和 0.2.71 均尚未发布到在线更新频道，最后核对的在线界面仍为 **0.2.67**。归档历史签名包不表示该包曾上线；旧清单保留原签名和到期时间。共享模式说明见 [渲染配置](../docs/agent-render-modes.md)。
+- 构建时间 `2026-11-17T16:15:47Z`，源码 `05be7b4`（`codex/conversation-journal`）。
+- 首次包含提交 `847dc2f` 的改动（管理式记录模式、Claude 原生翻页、URL 打开菜单）——0.2.79 产物早于该提交。
+- 构建清单 97 个源文件哈希与当前工作树逐字节一致（0 差异）。
+- 冻结产物包含 `managed_conversation`／`managed_codex`／`managed_claude`／`managed_process`／`conversation_store` 等模块；`journal-companion`、`journal-service`、`journal-hook` 三个冻结入口 `--help` 均退出 0。
 
-- [Windows 0.2.67 一键安装 ZIP](windows/SuperMonoAgent-0.2.67-Setup.zip)（通用无凭据版）。专用连接 Token 与文件 enrollment 不提交 Git；使用方法见 [一键安装说明](../docs/windows-oneclick-install.md)。
-- [Windows 0.2.67 完整目录](windows/0.2.67/)，运行 `02-Orca-Workspace.vbs`。
-- [Android 0.2.69 APK](android/0.2.69/SuperMonoAgent.apk)，支持保留应用数据的覆盖安装。
-- [Android 0.2.71 平板候选 APK](android/0.2.71/SuperMonoAgent.apk)，尚未完成本次设备安装与真机验收；[0.2.70 首轮候选](android/0.2.70/SuperMonoAgent.apk)保留归档。
-- [0.2.71 候选界面包](ui/0.2.71/)（桌面、Android、签名清单）；[0.2.70 Cursor 候选界面包](ui/0.2.70/)保留归档。
-- 历史版本位于各自目录，已存在的安装包和签名文件保持原始字节。
+## 含默认凭据的私人安装包
 
-所有公开 APK 均不再预填私人连接 Token，旧私人原包只在开发者本地私密备份。旧包重新生成了签名和校验文件，除去连接默认凭据外，其余程序负载逐字节保持。
+0.2.80 的**私人安装包**，内含默认中继 `wss://117.50.48.22/ws` 与本机 Token，安装即用：
+
+`.omx/worktrees/conversation-journal/.omx/private-installers/0.2.80/SuperMonoAgent-0.2.80-Setup.zip`
+
+SHA-256 `15d5e610f6c356841d7dad6be32f4a10d27d5d5581c765ecd57f6de68a68f0f9`，165 个条目，签名校验通过。它只在本地 `.omx`（已 gitignore）内保存。**含 Token，禁止提交 Git、上传公开更新频道或转发。**
+
+## Android 与签名界面
+
+| 平台 | 保留版本 | 位置 |
+| --- | --- | --- |
+| Android | 0.2.76 / 0.2.77 / **0.2.78** | `.omx/worktrees/conversation-journal/.omx/releases/android/` |
+| 签名界面 | 0.2.76 / 0.2.77 / **0.2.78** | `.omx/worktrees/conversation-journal/.omx/ui-releases/stable/releases/` |
+
+（0.2.79／0.2.80 只构建了 Windows 产物，没有对应的 Android APK 与签名界面快照。）
+
+机器可读路径与校验值见 [versions.json](versions.json)。
+
+## 边界
+
+- 保留的构建仅表示产物存在、可执行文件与其 `build-manifest.json` 校验一致；**不表示**已部署或已通过真机验收。
+- 在线更新频道仍指向 0.2.67；上述候选包均未提升到生产频道。
+- 公开 APK 不含私人 Token；私有原包只在开发者本地私密备份。
 
 `trial-state`、`.omx` 等本机运行数据、私钥和凭据不属于公开发布产物，不纳入 Git。`dist` 文件禁止 Git 换行转换，以保持签名资源和构建校验值。

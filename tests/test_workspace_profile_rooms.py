@@ -182,6 +182,43 @@ async def _check_profiles(playwright):
         assert not errors
 
 
+def test_switching_prefilled_token_replaces_old_credential_and_clears_its_rooms():
+    run(_check_switch)
+
+
+async def _check_switch(playwright):
+    async with fixture(playwright) as (browser, url, endpoint, _trap, _messages, daemons, _ops, _windows, sessions):
+        page = await browser.new_page(viewport={'width': 1200, 'height': 800})
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        await page.goto(url)
+        await page.wait_for_function('window.smaWorkspace?.connected')
+        await add_profile(page, endpoint, daemons[0].token)
+        await wait_room(page, 0)
+        host0 = await page.evaluate("code=>[...smaWorkspace.connections.values()].find(h=>h.config.code===code).id", 'profile-room-0')
+        await page.evaluate('([id,sid])=>smaWorkspace.openHostSession(id,sid,false)', [host0, sessions[0][0].id])
+        await page.wait_for_function("code=>[...smaWorkspace.panes.values()].some(p=>p.host&&p.host.config.code===code)", arg='profile-room-0')
+        await page.locator('#relay-profiles-close').click()
+        await page.locator('#connect-button').click()
+        await page.locator('#relay-profiles-dialog').wait_for(state='visible')
+        assert await page.locator('#relay-profile-token').input_value() == daemons[0].token
+        await page.locator('#relay-profile-token').fill(daemons[1].token)
+        await page.locator('#relay-profile-form button[type=submit]').click()
+        await page.wait_for_function("!document.querySelector('#relay-profile-connect').disabled")
+        await page.locator('#relay-profile-connect').click()
+        assert await page.locator('#relay-profile-error').inner_text() == ''
+        await page.wait_for_function("![...smaWorkspace.connections.values()].some(h=>h.config.code==='profile-room-0')", timeout=5000)
+        await page.wait_for_function("![...smaWorkspace.panes.values()].some(p=>p.host&&p.host.config.code==='profile-room-0')", timeout=5000)
+        await wait_room(page, 1)
+        assert await page.locator('.relay-profile-row').count() == 1
+        assert 'profile-room-0' not in await page.evaluate("[...document.querySelectorAll('#tree .computer-tree')].map(s=>s.dataset.host).join()")
+        profile_tokens = await page.evaluate("()=>[...new Set([...Object.keys(localStorage),...Object.keys(sessionStorage)])].filter(k=>k.startsWith('sma.workspace.profile-token.')&&!k.endsWith('.target')).map(k=>localStorage.getItem(k)||sessionStorage.getItem(k))")
+        assert profile_tokens == [daemons[1].token]
+        assert await page.evaluate("()=>JSON.parse(localStorage.getItem('sma.workspace.relay-profiles')||'[]').length") == 1
+        assert sessions[0][0].id in daemons[0].hub.sessions
+        assert not errors
+
+
 def test_profile_tokens_bound_to_endpoint_and_public_plaintext_refused():
     run(_check_binding)
 
