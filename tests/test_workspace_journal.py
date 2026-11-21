@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
+from unittest.mock import patch
 import pytest
 
 from supermonoagent.protocol import pack_json, unpack_json
@@ -270,16 +271,23 @@ async def check_isolated_cleanup():
 
 async def check_sizes(playwright):
     async with fixture(playwright) as (browser, url, _endpoint, _trap, _messages, daemons, _ops, _windows, sessions):
-        _manifest, calls, _body = install_journal(daemons[0], sessions[0][0])
+        daemon = daemons[0]
+        _manifest, calls, _body = install_journal(daemon, sessions[0][0])
         page = await browser.new_page(viewport={'width': 1100, 'height': 760})
-        await page.goto(url)
-        await page.wait_for_function('smaWorkspace?.activePane?.ready')
-        await page.evaluate('delete smaWorkspace.activeHost.capabilities.conversation_journal')
-        await page.locator('#journal-history').click()
-        await page.wait_for_function('document.querySelector("dialog.conversation-viewer").textContent.includes("无法读取记录")')
-        assert not calls
-        await page.locator('dialog.conversation-viewer').get_by_role('button', name='关闭', exact=True).click()
-        await page.evaluate('smaWorkspace.activeHost.capabilities.conversation_journal=1')
+        # Both the initial greeting and any intervening status/catalog updates
+        # must describe the same legacy host while the user opens history.
+        with patch.object(daemon.hub, 'journals', None):
+            await page.goto(url)
+            await page.wait_for_function('smaWorkspace?.activePane?.ready')
+            daemon.publish_status()
+            await server_barrier(page, 'local')
+            assert not await page.evaluate('!!smaWorkspace.activeHost.capabilities.conversation_journal')
+            await page.locator('#journal-history').click()
+            await page.wait_for_function('document.querySelector("dialog.conversation-viewer").textContent.includes("无法读取记录")')
+            assert not calls
+            await page.locator('dialog.conversation-viewer').get_by_role('button', name='关闭', exact=True).click()
+        daemon.publish_status()
+        await page.wait_for_function('smaWorkspace.activeHost.capabilities.conversation_journal===1')
         artifacts = Path('.omx/artifacts/desktop-journal')
         artifacts.mkdir(parents=True, exist_ok=True)
         for width, height in [(1100, 760), (390, 844), (844, 390), (768, 1200), (1200, 768)]:
