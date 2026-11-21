@@ -46,6 +46,7 @@ async def check_editor(playwright):
                     page.on('pageerror', lambda error: errors.append(str(error)))
                     await page.goto(origin+'/mobile/index.html#'+quote(json.dumps(config)))
                     await page.wait_for_function('MobileTerminal.ready')
+                    await page.locator('#tools-toggle').click()
                     await page.locator('#mode').click()
                     assert await page.locator('dialog#composer').evaluate('d=>d.open')
                     await page.locator('#draft').fill('saved draft')
@@ -98,7 +99,7 @@ async def check_editor(playwright):
                     # Missing echo leaves the draft and prevents an accidental repeat paste.
                     await page.locator('#draft').fill('no-echo-command')
                     await page.locator('#send').click()
-                    await page.wait_for_function("document.querySelector('#composer-status').textContent.includes('未收到')", timeout=7000)
+                    await page.wait_for_function("document.querySelector('#composer-status').textContent.includes('已停止自动回车')", timeout=7000)
                     assert await page.locator('#draft').input_value() == 'no-echo-command'
                     assert await page.locator('#send').is_disabled()
                     assert session.pty.written.count(b'no-echo-command') == 1

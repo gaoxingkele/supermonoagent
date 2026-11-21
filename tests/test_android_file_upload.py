@@ -71,6 +71,7 @@ async def check_upload(playwright, tmp_path):
                     await page.goto(document)
                     await page.wait_for_function('window.MobileTerminal?.ready && MobileTerminal.connected')
                     assert await page.evaluate('MobileTerminal.active') == 'session1'
+                    await page.locator('#tools-toggle').click()
                     await page.locator('#mode').click()
                     image = b'\x89PNG\r\nandroid owned image'
                     document_bytes = b'%PDF-1.4 android owned document'

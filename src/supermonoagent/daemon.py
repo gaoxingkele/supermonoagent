@@ -499,6 +499,8 @@ class Daemon:
                 'create_managed': {'session_id', 'process_generation', 'provider', 'nonce'},
                 'submit_managed': target_fields | {'nonce', 'text'},
                 'managed_status': target_fields | {'nonce'},
+                'submit_cockpit_feedback': target_fields | {'nonce', 'text', 'text_sha256', 'feedback', 'expires_at'},
+                'cockpit_feedback_status': target_fields | {'nonce', 'feedback'},
                 'interrupt_managed': target_fields | {'submission_id', 'provider_turn_id', 'nonce'},
                 'respond_managed_permission': target_fields | {'submission_id', 'provider_turn_id',
                     'permission_request_id', 'decision', 'nonce'},
@@ -524,18 +526,40 @@ class Daemon:
                 managed = getattr(self, 'managed', None)
                 if managed is None:
                     raise JournalError('unavailable')
+                assignment = None
+                expiry = params.get('expires_at')
+                if action in {'submit_cockpit_feedback', 'cockpit_feedback_status'}:
+                    from .cockpit_feedback import assignment_current, authorize_at_hub, feedback_request
+                    action, params, assignment = feedback_request(action, params)
                 def managed_current():
                     return (self.client_authorized(client) and not client.delegated
                         and client.token == token and client.channel == channel
                         and self.journals is manager and self.managed is managed
                         and client.conversation_journal and client.managed_conversation
-                        and manager.owner_scope(token, default_token=self.token, accounts=self.accounts) == owner)
+                        and manager.owner_scope(token, default_token=self.token, accounts=self.accounts) == owner
+                        and (assignment is None or assignment_current(
+                            self.log_state_dir / 'cockpit-feedback.json', manager.store.host_installation_id,
+                            owner, params, assignment, expiry)))
+                if assignment is not None:
+                    if not managed_current() or not await authorize_at_hub(
+                            self.log_state_dir / 'cockpit-feedback.json', assignment, params,
+                            action == 'managed_status') or not managed_current():
+                        raise JournalError('permission_denied')
                 result = await managed.handle(action, params, owner_scope=owner,
                     owner_token=token, rooms=rooms, authorize=managed_current)
                 if not self.client_authorized(client):
                     return [], 4001
                 if not managed_current():
                     raise JournalError('permission_denied')
+                if assignment is not None:
+                    receipt = result.get('receipt') if action == 'managed_status' else result
+                    observation = 'accepted' if receipt and receipt.get('state') == 'accepted' else 'absent'
+                    authorized = await authorize_at_hub(self.log_state_dir / 'cockpit-feedback.json',
+                        assignment, params, action == 'managed_status', observation=observation)
+                    if not authorized or not managed_current():
+                        raise JournalError('permission_denied')
+                    if action == 'managed_status':
+                        result = {'receipt': receipt}
                 return [self._journal_frame(request_id, result=result)], None
             source_action = action in {'list_sources', 'bind_source'}
             if source_action and token != self.token:
@@ -1171,6 +1195,12 @@ class Daemon:
         service["sessions"] = sum(len(item["sessions"]) for item in visible["windows"])
         body = {**visible, "selected": client.window_id or "", "session": client.session_id or "", "service": service,
                 "controls": self.hub.controls(client) if client.multiplex else {}}
+        installation = getattr(getattr(self.journals, 'store', None), 'host_installation_id', None)
+        if (installation and not client.delegated and getattr(client, 'conversation_journal', False)
+                and (self.log_state_dir / 'cockpit-feedback.json').is_file()):
+            body['host_installation_id'] = installation
+            if visible['capabilities'].get('managed_conversation'):
+                body['capabilities'] = {**visible['capabilities'], 'cockpit_feedback': 1}
         if error:
             body["error"] = error
         if resize_ack is not None:

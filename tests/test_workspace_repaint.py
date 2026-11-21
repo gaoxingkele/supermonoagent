@@ -1,9 +1,51 @@
 """Visible WebGL panes receive a full repaint when shown again (stale glyph overlay fix)."""
+import pytest
+
 from test_workspace_profile_rooms import fixture, run
 
 
 def test_switching_views_repaints_visible_webgl_pane():
     run(check_repaint)
+
+
+@pytest.mark.parametrize('renderer', ['dom', 'webgl'])
+def test_switching_tabs_restores_native_scroll_position(renderer):
+    run(lambda playwright: check_scroll_position(playwright, renderer))
+
+
+async def check_scroll_position(playwright, renderer):
+    scroll_state = '''() => {
+      const pane = smaWorkspace.activePane;
+      const buffer = pane.term.buffer.active;
+      const viewport = pane.screen.querySelector('.xterm-viewport');
+      return {top: viewport.scrollTop, row: buffer.viewportY, follow: pane.followOutput};
+    }'''
+    async with fixture(playwright) as (browser, url, _endpoint, _trap, _messages, _daemons, _ops, _windows, sessions):
+        first, second = sessions[0]
+        page = await browser.new_page(viewport={'width': 1100, 'height': 760})
+        await page.goto(url.replace('renderer=dom', f'renderer={renderer}'))
+        await page.wait_for_function('smaWorkspace.activePane?.ready')
+        await page.evaluate('id => smaWorkspace.openSession(id, false)', first.id)
+        first.pty.inbox.put(('\r\n' + ''.join(f'HISTORY_{i:04d}\r\n' for i in range(400))).encode())
+        await page.wait_for_function('smaWorkspace.terminal.buffer.active.baseY > 300 && smaWorkspace.activePane.ready')
+        await page.get_by_role('button', name='向上翻动一页历史', exact=True).click()
+        await page.wait_for_function('''() => {
+          const pane = smaWorkspace.activePane;
+          const buffer = pane.term.buffer.active;
+          return !pane.followOutput && buffer.viewportY < buffer.baseY
+            && pane.screen.querySelector('.xterm-viewport').scrollTop > 0;
+        }''')
+        await page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        before = await page.evaluate(scroll_state)
+        await page.evaluate('id => smaWorkspace.openSession(id, false)', second.id)
+        await page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        await page.evaluate('id => smaWorkspace.openSession(id, false)', first.id)
+        await page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        assert await page.evaluate(scroll_state) == before
+        await page.locator('.pane.active .terminal-screen').hover(timeout=3000)
+        await page.mouse.wheel(0, -120)
+        await page.wait_for_function('row => smaWorkspace.terminal.buffer.active.viewportY < row', arg=before['row'])
+        assert not first.pty.written
 
 
 async def check_repaint(playwright):

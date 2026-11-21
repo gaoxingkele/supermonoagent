@@ -255,7 +255,7 @@
   function journalError(code){const error=new Error('记录请求未完成');error.code=code;return error;}
   function journalTarget(){
     const c=selected(),session=c.inventory.find(s=>s.id===active);
-    return {host:c,endpoint:safeEndpoint(c.host),room:c.host.code||'',token:hostTokens.get(c.host.id)||'',generation:c.generation,session:session?.id||'',window:session?.window||'',process_generation:session?.process_generation||'',journalId:session?.journal_id||c.journalManifests?.get(active)?.journal_id||''};
+    return {host:c,endpoint:safeEndpoint(c.host),room:c.host.code||'',token:hostTokens.get(c.host.id)||'',generation:c.generation,session:session?.id||'',window:session?.window||'',windowTitle:session?.title||session?.shell||'',process_generation:session?.process_generation||'',journalId:session?.journal_id||c.journalManifests?.get(active)?.journal_id||''};
   }
   function journalTargetCurrent(t,archiveRead=false){
     if(!t||paused||selected()!==t.host||connections.get(t.host.host.id)!==t.host||!archiveRead&&t.host.generation!==t.generation||safeEndpoint(t.host.host)!==t.endpoint||(t.host.host.code||'')!==t.room||(hostTokens.get(t.host.host.id)||'')!==t.token)return false;
@@ -394,11 +394,12 @@
     finally{if(version===journalContextVersion){journalStatusPending=false;clearTimeout(journalRefreshTimer);journalRefreshTimer=setTimeout(()=>refreshJournalStatus(),2500);}}
   }
   async function openJournal(projection,archives=false){
-    const t=journalTarget();if(!t.token){notice('请先配置此电脑的访问令牌。');return;}
+    const t=journalTarget();if(!archives&&!t.session){notice('请先选择终端窗口。');return;}
+    if(!t.token){notice('请先配置此电脑的访问令牌。');return;}
     t.archive=!t.host.connected||!(t.host.capabilities?.conversation_journal===1||t.host.capabilities?.conversation_journal===true);
     const options=journalViewerOptions(t);
     if(!journalViewer)journalViewer=C.createConversationViewer(options);else journalViewer.setContext(options);
-    await journalViewer.open({projection,journalId:archives?undefined:t.journalId||undefined});
+    await journalViewer.open(archives?{projection}:{projection,journalId:t.journalId,sessionId:t.session,windowTitle:t.windowTitle});
   }
   async function loadJournalSources(){
     const t=journalSourceTarget;if(!journalTargetCurrent(t)||!t.session)return;
@@ -1705,6 +1706,11 @@
     restoreSelected();if(isManagedSession())syncManagedContext();
   }
   window.MobileTerminal={roomSelectionVersion:1,pause,resume,captureUIState,restoreUIState,prepareUIReload,cancelUIReload,openNotification,clipboardTarget,pasteClipboardText,reconnect:()=>{if(paused)resume();else{connect();refreshWatchers();}},chooseHost,get hosts(){return [...connections.values()].map(c=>({id:c.host.id,connected:c.connected,status:c.status,sessions:c.inventory.map(s=>s.id),subscription:c.subscription}));},get terminal(){return term;},get active(){return active;},get activeKey(){return sessionKey();},get connected(){return connected;},get ready(){return ready;},get controls(){return controls[active]||null;},revision:config.uiRevision||'bundled',metrics};
+  const cockpit=C.mountCockpit?.({
+    menu:$('settings-dialog'),headerBefore:$('options'),mobile:true,
+    beforeOpen:()=>{if($('settings-dialog').open)$('settings-dialog').close();}
+  });
+  if(cockpit)window.SuperMonoCockpit=cockpit;
   for(const h of [home,...hosts])connection(h);
   if(document.hidden){paused=true;state('Background UI paused');renderHosts();renderList();}
   else{startActivityTimer();for(const c of connections.values())connect(c);refreshWatchers();}

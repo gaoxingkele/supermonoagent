@@ -50,7 +50,8 @@ def fixture(tmp_path, signer, monkeypatch):
     static.mkdir(parents=True)
     (static / 'update-trust.json').write_text(json.dumps(signer[3]))
     auxiliary = ['file-client.js', 'file-upload.js', 'file-workspace-ui.js', 'clipboard-files.js', 'terminal-composer.js',
-                 'terminal-questions.js', 'clipboard-context-menu.js', 'mylib-assistant.js', 'assistant-chat.js']
+                 'terminal-questions.js', 'clipboard-context-menu.js', 'mylib-assistant.js', 'assistant-chat.js',
+                 'cockpit-feedback.js']
     for name in list(release.DESKTOP) + auxiliary:
         path = static / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,6 +92,17 @@ def build(fixture, **changes):
     args = {'root': fixture['root'], 'revision': '0.2.39', 'private_key': fixture['signer'][1],
             'openssl': fixture['signer'][0], 'reuse_android_from': fixture['baseline'], **changes}
     return release.package(fixture['out'], **args)
+
+
+def test_embedded_cockpit_feedback_and_upload_change_desktop_fingerprint(fixture):
+    root = fixture['root']
+    for name in ('cockpit-feedback.js', 'file-upload.js'):
+        source = root / 'src/supermonoagent/static' / name
+        key = str(source.relative_to(root))
+        before = release.source_fingerprint(root, include_android=False)
+        source.write_text('changed synthetic module', encoding='utf-8')
+        after = release.source_fingerprint(root, include_android=False)
+        assert after[key] != before[key]
 
 
 def test_reuse_preserves_exact_android_bytes_catalog_and_api_despite_dirty_sources(fixture):

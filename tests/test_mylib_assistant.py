@@ -71,17 +71,25 @@ def test_native_bridge_rejects_navigation_before_library_access(tmp_path):
     assert exposed == [assistant.recommend_skills, assistant.get_assistant_preferences, assistant.save_assistant_preferences,
         assistant.set_assistant_api_key, assistant.assistant_chat, assistant.cancel_assistant_chat, assistant.read_assistant_skill,
         assistant.library_status, assistant.pull_library, assistant.commit_library_preview, assistant.commit_library,
-        assistant.run_library_evolution, assistant.apply_library_evolution]
+        assistant.run_library_evolution, assistant.apply_library_evolution,
+        assistant.cockpit_library_search, assistant.cockpit_library_read]
     assert assistant.get_assistant_preferences()['status'] == 'default'
     assert not preferences_path.exists()
     assistant._loaded()
     assert len(scripts) == 1
 
     assert assistant.recommend_skills("patent")["indexed"] == 1
+    page = assistant.cockpit_library_search("patent")
+    assert page['root'] == str(tmp_path) and page['total'] == 1
+    assert '专利' in assistant.cockpit_library_read(page['skills'][0]['id'], page['revision'])['text']
     for unsafe in ["https://example.com/workspace", "http://127.0.0.1:6772/workspace", "http://127.0.0.1:6771/"]:
         current[0] = unsafe
         with pytest.raises(ValueError):
             assistant.recommend_skills("patent")
+        with pytest.raises(ValueError):
+            assistant.cockpit_library_search("patent")
+        with pytest.raises(ValueError):
+            assistant.cockpit_library_read(page['skills'][0]['id'], page['revision'])
         with pytest.raises(ValueError):
             assistant.get_assistant_preferences()
         with pytest.raises(ValueError):

@@ -178,6 +178,39 @@ def test_desktop_journal_responsive_and_legacy_capability_gate():
     run(check_sizes)
 
 
+def test_desktop_record_buttons_open_only_the_active_window_with_its_title():
+    run(check_record_buttons)
+
+
+async def check_record_buttons(playwright):
+    async with fixture(playwright) as (browser, url, _endpoint, _trap, _messages, daemons, _ops, _windows, sessions):
+        _, calls, _body = install_journal(daemons[0], sessions[0][0])
+        page = await browser.new_page(viewport={'width': 1100, 'height': 760})
+        await page.goto(url)
+        await page.wait_for_function('smaWorkspace?.activePane?.ready')
+        await page.evaluate('smaWorkspace.activeHost.capabilities.conversation_journal=1')
+        for record in ('history', 'conversation'):
+            calls.clear()
+            await page.locator('#journal-' + record).click()
+            viewer = page.locator('dialog.conversation-viewer[open]')
+            await viewer.locator('[data-event-id="owned-event"]').wait_for()
+            assert await viewer.locator('strong').first.inner_text() == 'Room 0 window 0'
+            assert calls == [
+                ('status', {'session_id': sessions[0][0].id}),
+                ('read_page', {'journal_id': 'owned-journal', 'projection': record, 'cursor': None, 'limit': 100}),
+            ]
+            await viewer.get_by_role('button', name='关闭', exact=True).click()
+
+        await page.get_by_role('tab', name='切换到 Room 0 window 1').click()
+        calls.clear()
+        await page.locator('#journal-history').click()
+        viewer = page.locator('dialog.conversation-viewer[open]')
+        await viewer.get_by_text('无法读取记录', exact=False).wait_for()
+        assert await viewer.locator('strong').first.inner_text() == 'Room 0 window 1'
+        assert await viewer.locator('article').count() == 0
+        assert calls == [('status', {'session_id': sessions[0][1].id})]
+
+
 def test_folded_journal_receives_new_final_without_toggling():
     run(check_live_refresh)
 

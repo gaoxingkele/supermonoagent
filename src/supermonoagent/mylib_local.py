@@ -165,6 +165,19 @@ class LocalCatalog:
                 'description': card['description'], 'available': True, 'sha256': card['sha256'],
                 'size': len(card['text']), 'text': card['text'].decode('utf-8'), 'truncated': False}
 
+    def search_skills(self, query):
+        if not isinstance(query, str) or len(query) > 256:
+            _fail('invalid_query')
+        words = query.casefold().split()
+        self._load()
+        matches = []
+        for card in self._cards:
+            haystack = ' '.join((card['name'], card['description'], card['path'])).casefold()
+            if all(word in haystack for word in words):
+                matches.append({key: card[key] for key in ('id', 'name', 'path', 'description')})
+        return {'root': str(self.root), 'revision': self._revision, 'total': len(matches),
+                'skills': matches[:30]}
+
 
 class LocalLibrary:
     def __init__(self, root, state_root, *, runner=None):

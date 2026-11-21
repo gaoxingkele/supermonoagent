@@ -346,6 +346,18 @@
       draft.text='';draft.revision++;draft.inserted=-1;saveManagedDraft(draft);draft.message='消息已被持久保存并接受 · #'+receipt.seq+'。';if(current?.draft===draft)textarea.value='';
     }if(editorVisible())render();
   }
-  window.SuperMonoTerminalComposer={open,close:dismiss,destroy,pasteClipboard,addFiles,appendQuote,acceptManaged,bindActive,focusDraft,rawEscape,submit,output,abortNativeInput,get isComposing(){return composing;},get busy(){return transfers.size>0||W.managed?.pending===true||drafts.some(draft=>draft.submitter?.pending);}};
+  function appendFeedbackDraft(text,expected){
+    let target;try{target=capture();}catch{return false;}
+    if(!active(target)||target.managed||target.pane!==expected.pane||target.generation!==expected.generation
+      ||typeof text!=='string'||!text.trim())return false;
+    remember();const draft=draftFor(target);
+    if(draft.submitter?.pending)return false;
+    const combined=draft.text?draft.text+'\n\n'+text:text;
+    if(new TextEncoder().encode(combined).length>65536)return false;
+    draft.text=combined;draft.revision++;draft.inserted=-1;
+    if(current?.draft===draft)textarea.value=combined;
+    open();return true;
+  }
+  window.SuperMonoTerminalComposer={open,close:dismiss,destroy,pasteClipboard,addFiles,appendQuote,appendFeedbackDraft,acceptManaged,bindActive,focusDraft,rawEscape,submit,output,abortNativeInput,get isComposing(){return composing;},get busy(){return transfers.size>0||W.managed?.pending===true||drafts.some(draft=>draft.submitter?.pending);}};
   window.addEventListener('beforeunload',destroy,{once:true});bindActive({focus:false});
 })();

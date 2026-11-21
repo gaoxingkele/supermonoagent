@@ -64,6 +64,7 @@ public final class MainActivity extends Activity {
     private byte[] downloadedArchive;
     private final android.os.Handler updateHandler=new android.os.Handler(android.os.Looper.getMainLooper());
     private volatile long documentGeneration;
+    private long pendingCockpitBack = -1;
     private final RendererRecovery rendererRecovery=new RendererRecovery();
     private long retirementRecoveryGeneration;
     private final java.util.Set<WebView> destroyedRendererViews=java.util.Collections.newSetFromMap(new java.util.WeakHashMap<WebView,Boolean>());
@@ -846,6 +847,41 @@ public final class MainActivity extends Activity {
             return;
         }
         if (connection == null) { finish(); return; }
+        final WebView view = terminal;
+        if (view != null && trustedDocument()) {
+            final long generation = documentGeneration;
+            if (pendingCockpitBack == generation) return;
+            pendingCockpitBack = generation;
+            final boolean[] settled = {false};
+            // Keep native Back reachable if the renderer is unresponsive.
+            Runnable fallback = () -> {
+                if (settled[0]) return;
+                settled[0] = true;
+                if (pendingCockpitBack == generation) pendingCockpitBack = -1;
+                if (view == terminal && generation == documentGeneration && !isFinishing() && !isDestroyed())
+                    confirmReturnToConnections();
+            };
+            view.postDelayed(fallback, 500);
+            try {
+                view.evaluateJavascript("Boolean(window.SuperMonoCockpit?.back?.())", handled -> {
+                    if (settled[0]) return;
+                    view.removeCallbacks(fallback);
+                    if ("true".equals(handled)) {
+                        settled[0] = true;
+                        if (pendingCockpitBack == generation) pendingCockpitBack = -1;
+                    }
+                    else fallback.run();
+                });
+            } catch (RuntimeException unavailable) {
+                view.removeCallbacks(fallback);
+                fallback.run();
+            }
+            return;
+        }
+        confirmReturnToConnections();
+    }
+
+    private void confirmReturnToConnections() {
         new AlertDialog.Builder(this).setMessage("返回连接设置？后台终端会话会继续运行。")
                 .setPositiveButton("连接设置", (dialog, which) -> showConnection()).setNegativeButton("留在终端", null).show();
     }

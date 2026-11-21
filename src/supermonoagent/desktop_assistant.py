@@ -1,11 +1,12 @@
 """Optional desktop-only assistant, isolated from terminal transport."""
 from pathlib import Path
+from socket import gethostname
 from urllib.parse import urlsplit
 
 from .mylib_assistant import SkillIndex
 from .assistant_preferences import AssistantPreferences, DEFAULT_LIBRARY_ROOT
 from .assistant_service import AssistantService
-from .mylib_local import LocalLibrary, readable_library_root
+from .mylib_local import LocalCatalog, LocalLibrary, readable_library_root
 
 
 class DesktopAssistant:
@@ -30,7 +31,8 @@ class DesktopAssistant:
         window.expose(self.recommend_skills, self.get_assistant_preferences, self.save_assistant_preferences,
             self.set_assistant_api_key, self.assistant_chat, self.cancel_assistant_chat, self.read_assistant_skill,
             self.library_status, self.pull_library, self.commit_library_preview, self.commit_library,
-            self.run_library_evolution, self.apply_library_evolution)
+            self.run_library_evolution, self.apply_library_evolution,
+            self.cockpit_library_search, self.cockpit_library_read)
         window.events.loaded += self._loaded
         window.events.closed += self._close
 
@@ -45,6 +47,24 @@ class DesktopAssistant:
         result['library'] = {'kind': 'local', 'root': self._library_root}
         if not self._allowed():
             raise ValueError("Assistant page changed")
+        return result
+
+    def cockpit_library_search(self, query):
+        if not self._allowed():
+            raise ValueError('Local library unavailable')
+        path = self._library_root
+        result = LocalCatalog(readable_library_root(path)).search_skills(query)
+        if path != self._library_root or not self._allowed():
+            raise ValueError('Local library changed')
+        return {**result, 'machine': gethostname()}
+
+    def cockpit_library_read(self, skill_id, revision):
+        if not self._allowed():
+            raise ValueError('Local library unavailable')
+        path = self._library_root
+        result = LocalCatalog(readable_library_root(path)).read_skill(skill_id, revision)
+        if path != self._library_root or not self._allowed():
+            raise ValueError('Local library changed')
         return result
 
     def read_assistant_skill(self, request):

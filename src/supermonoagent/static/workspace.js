@@ -246,11 +246,13 @@
     }catch{if(!target||journalCurrent(target)){restoreJournalTerminal(pane,false);notice('代码折叠不可用：当前主机未支持记录或记录服务不可用。');}}
   }
   function openPaneJournal(pane,projection){
-    if(!pane){notice('请先选择终端窗口。');return;}
+    const info=sessionInfo(pane?.sid);
+    if(!pane||!info){notice('请先选择终端窗口。');return;}
     try{const target=journalTarget(pane);
       if(!pane.journalDialog||!pane.journalDialogTarget||!journalCurrent(pane.journalDialogTarget)){pane.journalDialog?.dispose();pane.journalDialogTarget=target;pane.journalDialog=C.createConversationViewer(journalOptions(target));}
-      // The picker keeps archived generations selectable; no title/cwd matching.
-      pane.journalDialog.open({projection});
+      const liveJournal=target.host.connected&&target.host.supported&&[1,true].includes(target.host.capabilities.conversation_journal);
+      pane.journalDialog.open({projection,sessionId:pane.raw,journalId:liveJournal?undefined:info.session.journal_id||pane.journalManifest?.journal_id,
+        windowTitle:info.win.title||info.session.shell});
     }catch{notice('记录不可用；请检查当前目标连接。');}
   }
   async function bindJournalSource(pane){
@@ -292,7 +294,8 @@
     return managedSourceRequest(pane,action,values);
   }
   function managedSourceRequest(pane,action,values){
-    if(!['create_managed','submit_managed','managed_status','interrupt_managed','respond_managed_permission','close_managed'].includes(action))return Promise.reject(Error('managed_unavailable'));
+    if(!['create_managed','submit_managed','managed_status','interrupt_managed','respond_managed_permission','close_managed','submit_cockpit_feedback','cockpit_feedback_status'].includes(action))return Promise.reject(Error('managed_unavailable'));
+    if(['submit_cockpit_feedback','cockpit_feedback_status'].includes(action)&&pane.host.capabilities.cockpit_feedback!==1)return Promise.reject(Error('cockpit_feedback_unavailable'));
     let context;try{context=journalTarget(pane);}catch{return Promise.reject(Error('managed_target_changed'));}
     if(!journalCurrent(context))return Promise.reject(Error('managed_target_changed'));
     if(!pane.host.connected||!pane.host.supported||pane.host.capabilities.managed_conversation!==1)return Promise.reject(Error('managed_unavailable'));
@@ -546,6 +549,7 @@
     }
     if(info.error)host.error=String(info.error);
     if(info.capabilities)host.capabilities=info.capabilities;
+    host.cockpitInstallationId=typeof info.host_installation_id==='string'?info.host_installation_id:'';
     if(info.service&&typeof info.service==='object')updateDaemonInfo(host,info.service);
     for(const field of ['machine','project'])if(typeof info[field]==='string')host.identity[field]=info[field].slice(0,40);
     if(info.controls){host.controls=info.controls;for(const pane of panes.values())if(pane.host===host){acceptResize(pane,info,greeting);if(pane.resumeControl&&host.controls[pane.raw]){pane.resumeControl=false;pane.redrawAfterReplay=true;pane.wantControl=host.controls[pane.raw].owner===true||host.controls[pane.raw].busy===false;}}}
@@ -1042,7 +1046,12 @@
     };
     draw(mobile()||maximized?active:layout,$('stage'));
     scheduleVisibleFit();updateFooter();
-    for(const p of panes.values())if(!p.el.hidden)repaintPane(p);
+    for(const p of panes.values())if(!p.el.hidden){
+      // Showing or reparenting the pane can reset the browser scrollbar while
+      // xterm still holds the user's scrollback row. Sync before accepting input.
+      p.term._core?.viewport?.syncScrollArea(true);
+      repaintPane(p);
+    }
   }
   function subscribe(){
     for(const host of hosts.values()){
@@ -1914,6 +1923,10 @@
     save(sessionStorage,'sma.workspace.token',config.token);const clean=new URL(location.href);clean.searchParams.delete('token');launch.delete('token');clean.hash=launch.toString();history.replaceState(null,'',clean);
   }
   window.smaWorkspace={get activeSession(){return active;},get terminal(){return panes.get(active)?.term;},get panes(){return panes;},metrics,
+    cockpitFeedbackRequest:(capture,action,fields)=>{
+      if(!managedCaptureCurrent(capture)||!['submit_cockpit_feedback','cockpit_feedback_status'].includes(action))return Promise.reject(Error('cockpit_target_changed'));
+      return managedRequest(capture.pane,capture.target,action,{...fields,...capture.target});
+    },
     sendComposerEnter:(pane,generation)=>{if(panes.get(active)!==pane||!livePane(pane)||pane.host.generation!==generation||isManagedPane(pane))return false;pane.localDraftSubmitting=true;try{return input(pane.sid,'\r');}finally{pane.localDraftSubmitting=false;}},
     managed:{isPane:isManagedPane,captureTarget:managedCapture,isCurrent:managedCaptureCurrent,get pending(){return managedPending.size>0;},
       snapshot:value=>managedCaptureCurrent(value)?value.pane.managedController.snapshot():null,
@@ -1945,6 +1958,8 @@
     for(const host of hosts.values())connect(host);for(const account of relayAccounts.values())connectAccountDirectory(account);refreshDirectories();renderTree();updateFooter();
     if(!tokenlessLocal(config)&&!config.token&&!config.code)setTimeout(()=>{if(!userConnectedOnce)showRelayProfiles();},1500);
   }
+  const cockpit = C.mountCockpit?.({menu:$('app-menu'),headerBefore:$('connect-button')});
+  if (cockpit) window.SuperMonoCockpit = cockpit;
   bootstrap();
   window.NativeUpdates?.uiReady();
 })();

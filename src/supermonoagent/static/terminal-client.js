@@ -529,7 +529,7 @@
   }
   function createConversationViewer(options={}){
     let context={...options},generation=0,disposed=false,host=null,doc=null,ui=null;
-    let projection='history',layout='history',journal=null,journalId='',cursor=null,loading=false;
+    let projection='history',layout='history',journal=null,journalId='',windowTitle='',cursor=null,loading=false;
     let events=[],pendingCount=0,codeVisible=false,pageStarts=[null],pageIndex=-1,listCursor=null,readThrough=0,newerPending=false;
     const bodies=new Map(),preferences=new Map();
     const stale=version=>disposed||version!==generation;
@@ -555,6 +555,7 @@
       Object.assign(host.style,{background:'#151b23',color:'#e6edf3',padding:'12px',boxSizing:'border-box',font:'14px/1.6 system-ui, sans-serif',width:context.inline?'100%':'min(960px, 96vw)',maxHeight:context.inline?'100%':'90vh',border:'1px solid #465365',borderRadius:'8px',display:'flex',flexDirection:'column',gap:'8px',minHeight:'0'});
       const toolbar=node('div'),title=node('strong'),badges=node('div'),picker=node('div'),notice=node('div'),cards=node('div');
       Object.assign(toolbar.style,{display:'flex',flexWrap:'wrap',gap:'8px',alignItems:'center'});
+      Object.assign(title.style,{minWidth:'0',overflowWrap:'anywhere'});
       Object.assign(cards.style,{overflow:'auto',minHeight:'0',flex:'1',overscrollBehavior:'contain'});
       notice.setAttribute('role','status');notice.setAttribute('aria-live','polite');
       const mode=button('模式：历史',()=>{layout=layout==='history'?'dialog':'history';render();});
@@ -671,7 +672,10 @@
     }
     function render(){
       if(!ui)return;
-      ui.title.textContent=projection==='conversation'?'对话记录':'历史记录';ui.mode.textContent='模式：'+(layout==='dialog'?'对话':'历史');
+      const recordTitle=projection==='conversation'?'对话记录':'历史记录';
+      ui.title.textContent=windowTitle||recordTitle;
+      host.setAttribute('aria-label',windowTitle?windowTitle+' · '+recordTitle:'历史记录与对话记录');
+      ui.mode.textContent='模式：'+(layout==='dialog'?'对话':'历史');
       ui.codes.setAttribute('aria-pressed',String(codeVisible));ui.cards.dataset.layout=layout;
       ui.cards.replaceChildren();for(const event of events)ui.cards.append(makeCard(event));
       navigation();renderBadges();
@@ -767,15 +771,18 @@
     async function open(value={}){
       if(disposed)throw new Error('Conversation viewer is disposed');
       ensure();clear();projection=value.projection==='conversation'?'conversation':'history';layout=value.layout==='dialog'?'dialog':'history';
+      windowTitle=visibleJournalText(value.windowTitle||'');
       journalId=value.journalId||'';codeVisible=preferences.get(journalId)||false;show();render();
       const version=generation,request=context.request;message('正在读取记录…');
       try{
         if(typeof request!=='function')throw new Error('Unsupported');
-        if(!journalId){
+        if(!journalId&&!value.sessionId){
           await listJournals(value,version,request);return;
         }
-        const status=await request('status',{journal_id:journalId});if(stale(version))return;
-        if(!status||status.journal_id!==journalId)throw new Error('Invalid status');journal=status;renderBadges();
+        const status=await request('status',journalId?{journal_id:journalId}:{session_id:value.sessionId});if(stale(version))return;
+        if(!status?.journal_id||(journalId&&status.journal_id!==journalId)
+          ||(value.sessionId&&status.session_id!==value.sessionId))throw new Error('Invalid status');
+        journalId=status.journal_id;journal=status;codeVisible=preferences.get(journalId)||false;renderBadges();
         await loadPage();
       }catch{if(!stale(version))message('无法读取记录；当前来源可能未绑定、离线、不支持或无权限');}
     }
@@ -982,4 +989,662 @@
     rendererName: name => ['auto', 'dom', 'webgl'].includes(name) ? name : 'auto'};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.TerminalClient = api;
+})(typeof window === 'undefined' ? globalThis : window);
+
+/* Shared read-only cockpit. Mount explicitly from a terminal client after bootstrap. */
+(function(root) {
+  'use strict';
+  const shared = typeof module !== 'undefined' && module.exports ? module.exports : root.TerminalClient;
+  const readTools = new Set(['list_tasks', 'get_task_status', 'get_wiki_entry', 'search_task_events', 'get_usage_overview',
+    'search_skills', 'read_skill', 'list_evolution','get_evolution_status','chat']);
+  const aggregateTools = new Set(['list_tasks','search_task_events','get_usage_overview','list_evolution','chat']);
+
+  function cockpitEndpoint(value) {
+    if (typeof value !== 'string' || !/^wss?:\/\/[^\\\s]+$/i.test(value) || value.length > 1024) {
+      throw Error('请填写完整的 WSS 地址');
+    }
+    const url = new URL(value);
+    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    if ((url.protocol !== 'wss:' && !(loopback && url.protocol === 'ws:')) ||
+        url.username || url.password || url.search || url.hash || !['/', '/hub/view'].includes(url.pathname)) {
+      throw Error('使用 wss://主机/hub/view；本机可使用 ws://127.0.0.1');
+    }
+    url.pathname = '/hub/view';
+    return url.href;
+  }
+
+  function createCockpitReader({endpoint, project, token, onClose, Socket = root.WebSocket}) {
+    const address = cockpitEndpoint(endpoint);
+    if (typeof project !== 'string' || !project.trim() || project.length > 128 || /[\x00-\x1f\x7f]/.test(project)) throw Error('项目无效');
+    if (typeof token !== 'string' || !token || token.length > 8192 || /[\s\x00-\x1f\x7f]/.test(token)) throw Error('请输入只读访问凭据');
+    const ws = new Socket(address), pending = new Map();
+    let connected = false, closed = false, sequence = 0, resolveReady, rejectReady, projects=[project];
+    const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    const connectionTimer = setTimeout(() => close('连接超时'), 10000);
+    function close(reason = '连接已关闭') {
+      if (closed) return;
+      closed = true;
+      clearTimeout(connectionTimer);
+      token = '';
+      rejectReady(Error(reason));
+      for (const job of pending.values()) { clearTimeout(job.timer); job.reject(Error(reason)); }
+      pending.clear();
+      ws.close();
+      if (onClose) onClose(reason);
+    }
+    ws.onopen = () => {
+      if (closed) return;
+      try { ws.send(JSON.stringify({op:'hello', token, project})); }
+      catch { close('连接未能发送'); }
+      token = '';
+    };
+    ws.onmessage = event => {
+      if (closed) return;
+      try {
+        if (typeof event.data !== 'string' || event.data.length > 524288) throw Error();
+        const data = JSON.parse(event.data);
+        if (!connected) {
+          if (data.op !== 'ready' || data.project !== project) throw Error();
+          if (Array.isArray(data.projects)) {
+            if(!data.projects.length || data.projects.length>512 || (project!=='*'&&!data.projects.includes(project)) ||
+              data.projects.some(p=>typeof p!=='string'||!p||p==='*'||p.length>256)) throw Error();
+            projects=[...new Set(data.projects)];
+          }
+          connected = true;
+          clearTimeout(connectionTimer);
+          resolveReady();
+          return;
+        }
+        if (data.op !== 'response' || typeof data.id !== 'string') throw Error();
+        const job = pending.get(data.id);
+        if (!job) return;
+        pending.delete(data.id);
+        clearTimeout(job.timer);
+        if (data.ok === true && data.result && typeof data.result === 'object') job.resolve(data.result);
+        else job.reject(Error('查询失败，请核对项目权限和服务状态'));
+      } catch { close('无法验证驾驶舱连接'); }
+    };
+    ws.onclose = event => close(event?.code===1008?'项目授权或证据访问已变化，请重新连接核对':'连接已断开，数据已过期');
+    ws.onerror = () => close('驾驶舱服务不可用');
+    function request(tool, args = {}, scope = project) {
+      if (!readTools.has(tool) || closed || !connected || pending.size >= 8 ||
+          !(projects.includes(scope) || (scope==='*' && aggregateTools.has(tool)))) return Promise.reject(Error('当前查询不可用'));
+      const id = 'view-' + (++sequence);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(Error('查询超时，可重新查询'));
+        }, tool === 'chat' ? 45000 : 12000);
+        pending.set(id, {resolve, reject, timer});
+        try { ws.send(JSON.stringify({op:'request', id, tool, project:scope, arguments:args})); }
+        catch { close('连接未能发送'); }
+      });
+    }
+    return {ready, request, close, get projects(){return [...projects];}, get idle(){return !pending.size;}};
+  }
+
+  function mountCockpit({menu, headerBefore, mobile = false, beforeOpen}) {
+    if (!menu || !headerBefore || document.getElementById('cockpit-open')) return null;
+    const doc = menu.ownerDocument;
+    const key = 'sma.cockpit.read-settings';
+    const defaults = {endpoint:'', project:''};
+    let preferences = {...defaults};
+    try {
+      const saved = JSON.parse(root.localStorage.getItem(key) || '{}');
+      if (typeof saved.project === 'string' && saved.project.length <= 128 && saved.endpoint) {
+        preferences = {endpoint:cockpitEndpoint(saved.endpoint), project:saved.project};
+      }
+    } catch {}
+    const element = (tag, text, className) => {
+      const node = doc.createElement(tag);
+      if (text !== undefined) node.textContent = text;
+      if (className) node.className = className;
+      return node;
+    };
+    function button(label, click) {
+      const b = element('button', label);
+      b.type = 'button';
+      b.addEventListener('click', click);
+      return b;
+    }
+    let dialog, nav, main, message, projectLabel, scopePicker, sourceLabel, opener, reader = null, live = false;
+    let revision = 0, tab = 'chat', detail = false, configuration = false, refreshTimer = 0;
+    let taskId = '', taskProject = '', scopeProject = '', query = '', librarySource = '', chatHistory = [], chatDraft = '', backTo = null;
+    let taskFilter='attention', authorizationTimer=0;
+    const headings = {chat:'对话', tasks:'待处理', usage:'额度', library:'mylib'};
+    const menuEntry = button('驾驶舱', () => open(menuEntry));
+    menuEntry.id = 'cockpit-open';
+    menuEntry.setAttribute('aria-haspopup', 'dialog');
+    menu.append(menuEntry);
+    const shortcut = button('驾驶舱', () => open(shortcut));
+    shortcut.id = 'cockpit-shortcut';
+    shortcut.hidden = !preferences.endpoint;
+    shortcut.setAttribute('aria-haspopup', 'dialog');
+    headerBefore.before(shortcut);
+    const native = () => mobile ? null : root.pywebview?.api;
+    const printable = value => typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+    function info(text) { if (message) message.textContent = text; }
+    function valid(version) { return dialog?.open && revision === version; }
+    function refreshTitle() {
+      projectLabel.textContent = live && reader.projects.length>1 ? '' : live ? reader.projects[0] : '未连接';
+      projectLabel.title = live ? preferences.endpoint : '';
+      scopePicker.hidden=!live || reader.projects.length<2;
+      if(!live)scopePicker.replaceChildren();
+      if(!scopePicker.hidden){
+        scopePicker.replaceChildren(new Option('全部授权项目','*'),...reader.projects.map(p=>new Option(p,p)));
+        scopePicker.value=scopeProject;
+      }
+    }
+    function field(label, value = '', type = 'text') {
+      const el = element('label', label);
+      const input = element('input');
+      input.type = type;
+      input.value = value;
+      input.autocomplete = 'off';
+      el.append(input);
+      return {el, input};
+    }
+    function clearContent() {
+      revision++;
+      clearTimeout(refreshTimer);
+      backTo = null;
+      if (main) main.replaceChildren();
+      info('');
+      detail = false;
+      configuration = false;
+    }
+    function wipeSession() {
+      chatHistory = [];
+      chatDraft = '';
+      taskId = '';
+      taskProject = '';
+      query = '';
+      root.dispatchEvent(new Event('sma-cockpit-context-invalidated'));
+      clearContent();
+    }
+    function disconnect(reason) {
+      const old = reader;
+      reader = null;
+      live = false;
+      scopeProject = '';
+      clearInterval(authorizationTimer);
+      old?.close();
+      wipeSession();
+      if (dialog?.open) { render(); info(reason); }
+    }
+    function style() {
+      const sheet = element('style');
+      sheet.textContent = [
+        '#sma-cockpit{position:fixed;inset:0 0 0 auto;margin:0;width:min(480px,100%);height:100%;height:100dvh;max-width:100vw;max-height:100dvh;box-sizing:border-box;border:0;border-left:1px solid #465365;border-radius:0;background:#141a21;color:#edf2f7;padding:14px;font:14px/1.5 system-ui,sans-serif;overflow:hidden}',
+        '#sma-cockpit[open]{display:flex;flex-direction:column;gap:10px}#sma-cockpit::backdrop{background:rgba(0,0,0,.2)}',
+        '#sma-cockpit .hub-top,#sma-cockpit .hub-tabs,#sma-cockpit .hub-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}',
+        '#sma-cockpit .hub-top h2{font-size:17px;margin:0}#sma-cockpit .hub-project{flex:1;min-width:0;overflow-wrap:anywhere;color:#b8c9d8}',
+        '#sma-cockpit .hub-body{overflow:auto;overscroll-behavior:contain;min-height:0;flex:1;display:flex;flex-direction:column;gap:10px}#sma-cockpit .hub-body>*{flex:none}',
+        '#sma-cockpit button{padding:5px 9px;min-height:32px;border:1px solid #465365;border-radius:4px;color:inherit;background:#232e38;font:inherit;cursor:pointer}',
+        '#sma-cockpit button[aria-current=true]{border-color:#7fbde9;color:#b7e0ff}#sma-cockpit button:disabled{opacity:.6}',
+        '#sma-cockpit input,#sma-cockpit textarea,#sma-cockpit select{box-sizing:border-box;display:block;width:100%;min-width:0;color:inherit;background:#0e141a;border:1px solid #465365;border-radius:4px;padding:7px;font:inherit}',
+        '#sma-cockpit label{display:block;margin:4px 0}#sma-cockpit textarea{min-height:64px;resize:vertical}#sma-cockpit p{margin:2px 0;white-space:pre-wrap;overflow-wrap:anywhere}',
+        '#sma-cockpit .hub-status{color:#ced9a9;font-size:12px;overflow-wrap:anywhere}#sma-cockpit .hub-card{border-top:1px solid #34414d;padding:8px 0;overflow-wrap:anywhere}#sma-cockpit .hub-meta{font-size:12px;color:#b2c2cf}#sma-cockpit .hub-chat{flex:1;overflow:auto;min-height:65px}',
+        '#sma-cockpit [hidden]{display:none!important}#sma-cockpit .hub-skill{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;font:inherit;margin:0}',
+        '#sma-cockpit.hub-phone{width:100%;padding:12px}#sma-cockpit.hub-mobile button,#sma-cockpit.hub-mobile select{min-height:44px}#sma-cockpit.hub-mobile .hub-tabs button{flex:1}',
+        '@media(max-width:650px){#sma-cockpit{width:100%;padding:12px}#sma-cockpit button{min-height:40px}#sma-cockpit .hub-tabs button{flex:1}}'
+      ].join('\n');
+      doc.head.append(sheet);
+    }
+    function build() {
+      style();
+      dialog = element('dialog');
+      dialog.id = 'sma-cockpit';
+      if(mobile){
+        dialog.classList.add('hub-mobile');
+        if(Math.min(root.screen.width,root.screen.height)<600)dialog.classList.add('hub-phone');
+      }
+      dialog.setAttribute('aria-label', '驾驶舱');
+      const top = element('div', undefined, 'hub-top');
+      projectLabel = element('span', '', 'hub-project');
+      scopePicker=element('select');
+      scopePicker.setAttribute('aria-label','选择授权项目');
+      scopePicker.style.width='auto';scopePicker.style.maxWidth='55%';
+      scopePicker.onchange=()=>{scopeProject=scopePicker.value;wipeSession();render();};
+      top.append(element('h2', '驾驶舱'), projectLabel, scopePicker, button('连接设置', settings), button('关闭', close));
+      nav = element('nav', undefined, 'hub-tabs');
+      nav.setAttribute('aria-label', '驾驶舱视图');
+      for (const [id, label] of Object.entries(headings)) {
+        const item = button(label, () => { tab = id; render(); });
+        item.dataset.tab = id;
+        nav.append(item);
+      }
+      main = element('div', undefined, 'hub-body');
+      message = element('p', '', 'hub-status');
+      message.setAttribute('role','status');
+      dialog.append(top, nav, message, main);
+      doc.body.append(dialog);
+      dialog.addEventListener('cancel', event => { event.preventDefault(); back(); });
+      dialog.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && !e.isComposing) {e.preventDefault(); back();}
+        e.stopPropagation();
+      });
+      dialog.addEventListener('close', () => {
+        clearContent();
+        root.dispatchEvent(new Event('sma-cockpit-context-invalidated'));
+        const fallback=mobile?headerBefore:doc.getElementById('app-menu-toggle');
+        (opener?.getClientRects().length?opener:fallback)?.focus();
+      });
+    }
+    function open(trigger) {
+      if (!dialog) build();
+      if (dialog.open) return;
+      if (beforeOpen) beforeOpen();
+      opener = trigger;
+      dialog.showModal();
+      render();
+    }
+    function close() { if (dialog?.open) dialog.close(); }
+    function back() {
+      if (!dialog?.open) return false;
+      if (backTo) backTo();
+      else if (detail || (configuration && live)) render();
+      else close();
+      return true;
+    }
+    function settings() {
+      clearContent();
+      configuration = true;
+      refreshTitle();
+      const form = element('form');
+      const endpoint = field('驾驶舱服务地址', preferences.endpoint);
+      endpoint.input.placeholder = 'wss://host/hub/view';
+      const project = field('项目', preferences.project||'*');
+      project.input.title='项目 ID 或 *（全部获准项目）';
+      const secret = field('只读访问凭据', '', 'password');
+      secret.input.maxLength = 8192;
+      project.input.maxLength = 128;
+      endpoint.input.maxLength = 1024;
+      for (const f of [endpoint,project,secret]) f.input.required = true;
+      const connect = element('button', '连接项目');
+      connect.type = 'submit';
+      form.append(endpoint.el, project.el, secret.el, connect);
+      const forget = button('清除连接设置', () => {
+        preferences = {...defaults};
+        try { root.localStorage.removeItem(key); } catch {}
+        shortcut.hidden = true;
+        disconnect('已清除驾驶舱连接设置');
+      });
+      if (preferences.endpoint) form.append(forget);
+      form.onsubmit = async event => {
+        event.preventDefault();
+        let address;
+        try { address = cockpitEndpoint(endpoint.input.value.trim()); }
+        catch (error) { info(error.message); return; }
+        const selectedProject = project.input.value.trim(), credential = secret.input.value;
+        secret.input.value = '';
+        const previous = reader;
+        reader = null;
+        previous?.close();
+        live = false;
+        wipeSession();
+        const version = revision;
+        info('正在连接…');
+        try {
+          const next = createCockpitReader({endpoint:address,project:selectedProject,token:credential,
+            onClose:reason => {if (reader===next) disconnect(reason);}});
+          reader = next;
+          await next.ready;
+          if (reader !== next) return;
+          preferences = {endpoint:address, project:selectedProject};
+          live = true;
+          scopeProject=next.projects.length>1?'*':next.projects[0];
+          clearInterval(authorizationTimer);
+          authorizationTimer=setInterval(()=>{
+            if (next===reader && next.idle && dialog.open && !doc.hidden)
+              next.request('list_tasks',{limit:1},scopeProject).catch(()=>{
+                if(next===reader)disconnect('访问状态已变化，请重新连接');
+              });
+          },15000);
+          try { root.localStorage.setItem(key, JSON.stringify(preferences)); } catch {}
+          shortcut.hidden = false;
+          if (dialog.open) render();
+        } catch (error) {
+          if (valid(version)) { settings(); info(error.message); }
+        }
+      };
+      main.append(form);
+    }
+    async function load(version, operation, view, keepControls=false) {
+      try {
+        const result = await operation();
+        if (valid(version)) view(result);
+      } catch (err) {
+        if (valid(version)) {
+          if (!keepControls) main.replaceChildren();
+          main.append(button('重新查询',render));
+          info(err.message || '读取失败');
+        }
+      }
+    }
+    function card(title, body, meta) {
+      const el = element('article', undefined, 'hub-card');
+      el.append(element('strong', printable(title)));
+      if (body) el.append(element('p',printable(body)));
+      if (meta) el.append(element('p',printable(meta),'hub-meta'));
+      return el;
+    }
+    function statusLabel(value) {
+      const labels = {running:'执行中',completed:'已完成',blocked:'遇到阻塞',failed:'失败',
+        passed:'验证通过',none:'',conflict:'结论冲突',pending:'待处理',awaiting_verification:'待验证',
+        needs_review:'待裁决',baseline_unaligned:'待对齐基线',ok:'已更新',unsupported:'来源不支持',
+        unavailable:'采集不可用',rate_limited:'受限，待重试',auth_required:'需要重新授权'};
+      return Object.hasOwn(labels,value) ? labels[value] : printable(value);
+    }
+    function showWiki(ref,id,project) {
+      clearContent();detail=true;backTo=()=>showTask(id,project);
+      const version=revision;
+      main.append(button('返回任务',backTo));
+      info('正在读取来源记录…');
+      load(version,()=>reader.request('get_wiki_entry',{entry_id:ref.entry_id,version:ref.version},project),result=>{
+        main.append(card(result.path || ref.entry_id,'',result.version),element('pre',printable(result.body),'hub-skill'));
+        info('');
+      });
+    }
+    function showTask(id,project) {
+      clearContent();
+      detail = true;
+      const version = revision;
+      main.append(button('返回', render));
+      info('正在读取任务…');
+      load(version, () => reader.request('get_task_status', {task_id:id},project), result => {
+        const task=result.task || result;
+        main.append(card(id, task.summary, [statusLabel(task.status),statusLabel(task.verification_status)].filter(Boolean).join(' · ')));
+        const scope = button('围绕此任务提问', () => {
+          if(taskId!==id||taskProject!==project){chatHistory=[];chatDraft='';}taskId=id;taskProject=project;tab='chat';render();
+        });
+        main.append(scope);
+        for (const item of (Array.isArray(result.attempts)?result.attempts:[])) {
+          const row=card(item.window||item.attempt_id,item.summary,
+            [item.host,item.tool,item.role==='verify'?'验证执行':'主执行',statusLabel(item.status),item.attempt_id].filter(Boolean).join(' · '));
+          if(item.wiki?.entry_id && item.wiki.version)row.append(button('查看 wiki 证据',()=>showWiki(item.wiki,id,project)));
+          if(item.tool_version && item.generation)row.append(button('此执行的 mylib 版本',()=>evolution({
+            taskId:id,project,attempt:item
+          })));
+          if(!mobile && root.SuperMonoCockpitFeedback?.open)row.append(button('反馈到此执行',()=>{
+            const boundReader=reader;
+            root.SuperMonoCockpitFeedback.open({endpoint:preferences.endpoint,project,taskId:id,attempt:item,
+              refreshTask:()=>boundReader.request('get_task_status',{task_id:id},project),
+              isCurrent:()=>valid(version)&&live&&reader===boundReader,dismiss:close});
+          }));
+          main.append(row);
+        }
+        for (const event of (Array.isArray(result.events)?result.events:[])) {
+          main.append(card(event.summary||event.event_id, '', [event.event_id,event.status].filter(Boolean).join(' · ')));
+        }
+        info('');
+      });
+    }
+    function evolution(target=null) {
+      clearContent();detail=true;backTo=target?()=>showTask(target.taskId,target.project):render;
+      const version=revision;
+      main.append(button(target?'返回任务':'返回 mylib',backTo));
+      info('正在读取获准查看的进化记录…');
+      load(version,()=>reader.request('list_evolution',{limit:50},target?target.project:scopeProject),result=>{
+        const items=(Array.isArray(result.items)?result.items:[]).filter(item=>
+          !target || (item.tool===target.attempt.tool && item.tool_version===target.attempt.tool_version));
+        for(const item of items){
+          const project=target?.project||item.project || (scopeProject==='*'?'':scopeProject);
+          const row=card(item.skill_id, item.published_version?'发布版本 '+item.published_version:'待评估',
+            [project,item.tool,item.tool_version].filter(Boolean).join(' · '));
+          if(project)row.append(button('查看版本证据',()=>showEvolution({...item,project},()=>evolution(target),target)));
+          main.append(row);
+        }
+        info(items.length?'':'暂无可查看的进化记录');
+      });
+    }
+    function showEvolution(item,previous,target=null) {
+      clearContent();detail=true;backTo=previous;
+      const version=revision;
+      main.append(button('返回',previous));
+      const params={tool:item.tool,tool_version:item.tool_version,skill_id:item.skill_id};
+      if(item.candidate_id)params.candidate_id=item.candidate_id;
+      if(target)Object.assign(params,{task_id:target.taskId,attempt_id:target.attempt.attempt_id,generation:target.attempt.generation});
+      load(version,()=>reader.request('get_evolution_status',params,item.project),result=>{
+        const state={unknown:'加载状态未知',confirmed:'已确认',dispatched:'已提交',pending_restart:'待重启',
+          loaded:'已加载',failed:'加载失败',expired:'请求过期'}[result.loading_state]||'加载状态未知';
+        const row=card(item.skill_id,'发布版本 '+(result.published_version||'尚无'),[item.tool,item.tool_version].join(' · '));
+        if(target){
+          row.append(element('p','执行 '+target.attempt.attempt_id+' · '+state));
+          if(result.loaded_version)row.append(element('p','实际版本 '+result.loaded_version));
+          if(!mobile && result.has_update && root.SuperMonoCockpitFeedback?.openEvolution){
+            row.append(button('申请应用到此执行',()=>{
+              const boundReader=reader;
+              root.SuperMonoCockpitFeedback.openEvolution({endpoint:preferences.endpoint,project:target.project,
+                taskId:target.taskId,attempt:target.attempt,skillId:item.skill_id,
+                readStatus:()=>boundReader.request('get_evolution_status',params,target.project),
+                refreshTask:()=>boundReader.request('get_task_status',{task_id:target.taskId},target.project),
+                isCurrent:()=>valid(version)&&live&&reader===boundReader,dismiss:close});
+            }));
+          }
+        }
+        if(result.assessment){
+          row.append(element('p','评估器 '+printable(result.assessment.evaluator),'hub-meta'));
+          for(const [group,entry] of Object.entries(result.assessment.splits||{})){
+            const verdict={passed:'通过',insufficient_evidence:'证据不足',rejected:'未通过'}[entry?.verdict]||'评估待核对';
+            row.append(element('p',group+' · '+(entry?.evidence_revoked?'证据已撤回':verdict),'hub-meta'));
+          }
+        }
+        main.append(row);info('');
+      });
+    }
+    function tasks(version) {
+      info('正在读取任务…');
+      let before = null, pages = 0, signature='';
+      const filter=element('select');filter.setAttribute('aria-label','任务筛选');
+      filter.append(new Option('需处理','attention'),new Option('全部任务','all'));filter.value=taskFilter;
+      filter.onchange=()=>{taskFilter=filter.value;render();};
+      const list = element('div');
+      const more = button('加载更多任务', () => fetchPage(false));
+      main.append(filter,list,more);
+      function scheduleRefresh(){
+        refreshTimer=setTimeout(()=>{
+          if(!valid(version))return;
+          if(doc.hidden)scheduleRefresh();else fetchPage(true);
+        },1500);
+      }
+      async function fetchPage(refresh) {
+        more.disabled = true;
+        clearTimeout(refreshTimer);
+        await load(version, () => reader.request('list_tasks', {limit:40, ...(taskFilter==='attention'?{status:'attention'}:{}), ...(!refresh && before ? {before}: {})},scopeProject), result => {
+          const rows = Array.isArray(result.tasks)?result.tasks:[];
+          const nextSignature=JSON.stringify(rows);
+          if(!refresh || signature!==nextSignature){
+            if(refresh)list.replaceChildren();
+            for (const item of rows) {
+              const project=item.project||(scopeProject==='*'?'':scopeProject);
+              const row = card(item.summary || item.task_id, '', [project,item.task_id,statusLabel(item.status),statusLabel(item.verification_status)].filter(Boolean).join(' · '));
+              if(project)row.append(button('查看任务', () => showTask(item.task_id,project)));
+              list.append(row);
+            }
+          }
+          signature=nextSignature;
+          if(!refresh)pages++;
+          before = result.next_before;
+          more.disabled = false;
+          more.hidden = before == null;
+          info(result.partial?'已显示部分结果，选择具体项目可继续分页':list.childElementCount?(scopeProject==='*'?'按项目汇总最近任务':''):(taskFilter==='attention'?'暂无待处理任务':'暂无任务'));
+          if(pages<=1)scheduleRefresh();
+        });
+      }
+      fetchPage(false);
+    }
+    function quota(version) {
+      info('正在查询额度…');
+      load(version, () => reader.request('get_usage_overview',{},scopeProject), result => {
+        main.replaceChildren(button('刷新额度', render));
+        const accounts=Array.isArray(result.accounts)?result.accounts:[];
+        const periods={weekly:'本周',short:'短周期',daily:'每日',monthly:'每月',balance:'余额'};
+        const formatAmount=(value,unit)=>value==null?'余量未知':'剩余 '+value+' '+(unit==='percent'?'%':unit||'');
+        const freshness={fresh:'已更新',stale:'数据过期',period_ended:'周期已结束',missing:'待查询',query_failed:'查询失败'};
+        const eligibility={available:'可用',blocked:'额度已受限',unknown:'可用状态未知'};
+        for(const group of (Array.isArray(result.recommendations)?result.recommendations:[])){
+          const ranked=Array.isArray(group.accounts)?group.accounts:[];
+          if(ranked.length<2)continue;
+          const row=card('可优先使用',[group.provider,group.pool_class,periods[group.period]||group.period,group.unit].filter(Boolean).join(' · '));
+          for(const item of ranked.slice(0,5))row.append(element('p',[item.account,item.pool,formatAmount(item.remaining,group.unit)].filter(Boolean).join(' · ')));
+          main.append(row);
+        }
+        for (const rec of accounts) {
+          const latest=rec.latest||{}, good=rec.last_success;
+          const capacity=rec.capacity||{};
+          const projects=Array.isArray(rec.projects)?rec.projects.join(' / '):rec.project;
+          const row=card(rec.account || '未知账号','',[projects,rec.pool,statusLabel(latest.status||'pending'),
+            freshness[capacity.freshness],eligibility[capacity.eligibility]].filter(Boolean).join(' · '));
+          const windows=Array.isArray(capacity.windows)?capacity.windows.slice():[];
+          windows.sort((a,b)=>Number(b.period==='weekly')-Number(a.period==='weekly'));
+          if(!windows.length)row.append(element('p','当前余量未知'));
+          for(const item of windows){
+            const period=periods[item.period]||item.period;
+            row.append(element('p',period+' · '+formatAmount(item.state==='current'?item.remaining:null,item.unit)),
+              element('p',(item.state==='period_ended'?'上期重置 ':'下次重置 ')+time(item.reset_at),'hub-meta'));
+          }
+          if(capacity.earliest_possible_at)row.append(element('p','预计最早可用 '+time(capacity.earliest_possible_at)));
+          if(good && (!windows.length||windows.some(w=>w.state!=='current'))){
+            const history=element('details');
+            history.append(element('summary','历史快照 · '+time(good.observed_at)));
+            for(const item of (Array.isArray(good.windows)?good.windows:[])){
+              history.append(element('p',(periods[item.period]||item.period)+' · '+formatAmount(item.remaining,item.unit)+' · 重置 '+time(item.reset_at)));
+            }
+            row.append(history);
+          }
+          row.append(element('p','最近采集 '+time(latest.observed_at),'hub-meta'));
+          main.append(row);
+        }
+        info(accounts.length?'':'尚无额度快照');
+        refreshTimer=setTimeout(()=>{if(valid(version))render();},15000);
+      });
+    }
+    function time(value) {
+      if (!value) return '未知';
+      const date=new Date(value);
+      return Number.isFinite(date.getTime()) ? date.toLocaleString() : '未知';
+    }
+    function chat(version) {
+      const history=element('div',undefined,'hub-chat');
+      history.setAttribute('role','log');
+      const scope=element('div',undefined,'hub-row');
+      scope.append(element('span',taskId?taskProject+' · '+taskId:scopeProject==='*'?'所有授权项目':'当前项目 · 全部任务','hub-meta'));
+      if (taskId) scope.append(button('切回项目',()=>{taskId='';taskProject='';chatHistory=[];render();}));
+      const form=element('form');
+      const label=element('label','向总管提问');
+      const question=element('textarea');
+      question.maxLength=2000;
+      question.required=true;
+      question.value=chatDraft;
+      question.oninput=()=>{chatDraft=question.value;};
+      label.append(question);
+      const ask=element('button','发送给总管');
+      ask.type='submit';
+      form.append(label,ask);
+      function draw() {
+        history.replaceChildren();
+        for (const item of chatHistory) {
+          history.append(card('你',item.question));
+          const refs=(Array.isArray(item.evidence)?item.evidence:[]).slice(0,10).map(ref=>
+            typeof ref==='string'?ref:[ref.project,ref.event_id].filter(Boolean).join('/'));
+          history.append(card(item.mode==='model'?'总管':'项目查询',item.answer,refs.join(' · ')));
+        }
+        history.scrollTop=history.scrollHeight;
+      }
+      form.onsubmit=async e=>{
+        e.preventDefault();
+        const content=question.value.trim();
+        if (!content || ask.disabled) return;
+        ask.disabled=true;info('正在查询项目证据…');
+        try {
+          const result=await reader.request('chat',{question:content,...(taskId?{task_id:taskId}:{})},taskId?taskProject:scopeProject);
+          if (!valid(version)) return;
+          chatHistory.push({question:content,answer:printable(result.answer),evidence:result.evidence,mode:result.mode});
+          chatHistory=chatHistory.slice(-15);
+          if (question.value.trim()===content){question.value='';chatDraft='';}
+          draw();info('');
+        } catch(error){if(valid(version))info(error.message);}
+        finally {if(valid(version))ask.disabled=false;}
+      };
+      main.append(scope,history,form);
+      draw();
+    }
+    function library(version) {
+      const localApi=native(), hasLocal=!!localApi?.cockpit_library_search;
+      if (!librarySource) librarySource=hasLocal?'local':'central';
+      const isLocal=librarySource==='local' && hasLocal;
+      const sourceBar=element('div',undefined,'hub-row');
+      sourceLabel=element('span',isLocal?'此桌面电脑':'中央 mylib','hub-meta');
+      sourceBar.append(sourceLabel);
+      if (hasLocal) sourceBar.append(button(isLocal?'查看中央库':'查看本机库',()=>{
+        librarySource=isLocal?'central':'local';query='';render();
+      }));
+      if (isLocal) sourceBar.append(button('目录设置',()=>directory(localApi)));
+      if(live)sourceBar.append(button('进化记录',()=>evolution()));
+      const form=element('form'), search=field('检索技能',query), submit=element('button','查询技能');
+      submit.type='submit';search.input.maxLength=256;
+      form.append(search.el,submit);form.onsubmit=e=>{e.preventDefault();query=search.input.value.trim();render();};
+      main.append(sourceBar,form);
+      if (!isLocal&&!live){main.append(button('连接中央服务',settings));return;}
+      info('正在读取技能目录…');
+      const project=scopeProject==='*'?reader?.projects[0]:scopeProject;
+      load(version,()=>isLocal?localApi.cockpit_library_search(query):reader.request('search_skills',{query,limit:30},project),result=>{
+        if (isLocal) sourceLabel.textContent=[result.machine||'此桌面电脑',result.root].filter(Boolean).join(' · ');
+        for(const item of (Array.isArray(result.skills)?result.skills:[])){
+          const itemRevision=item.revision||result.revision;
+          const row=card(item.title||item.name||item.id,item.description,item.path||itemRevision);
+          row.append(button('阅读技能',()=>skill(item.id,itemRevision,isLocal,project)));
+          main.append(row);
+        }
+        info(result.skills?.length?'':'没有匹配的技能');
+      },true);
+    }
+    function skill(id,rev,isLocal,project) {
+      clearContent();detail=true;
+      const version=revision;
+      main.append(button('返回 mylib',render));
+      load(version,()=>isLocal?native().cockpit_library_read(id,rev):reader.request('read_skill',{skill_id:id,revision:rev},project),result=>{
+        main.append(card(result.name||id,'',result.revision||rev),element('pre',printable(result.text),'hub-skill'));
+        info('');
+      });
+    }
+    function directory(api) {
+      clearContent(); detail=true;
+      const version=revision;
+      main.append(button('返回 mylib',render));
+      load(version,()=>api.get_assistant_preferences(),result=>{
+        const input=field('此桌面电脑的 mylib 目录',result.preferences.library_root);
+        const reset=button('恢复默认路径',()=>{input.input.value='D:/aicoding/mylib';});
+        const save=button('保存本机目录',async()=>{
+          save.disabled=true;
+          try {
+            const current=await api.get_assistant_preferences();
+            if (!valid(version))return;
+            await api.save_assistant_preferences({...current.preferences,library_root:input.input.value.trim()});
+            root.dispatchEvent(new Event('mylib-preferences-changed'));
+            if(valid(version)){render();info('本机目录已保存');}
+          } catch { if(valid(version))info('目录无法读取或设置已变更，请检查本机文件夹'); }
+          finally{if(valid(version))save.disabled=false;}
+        });
+        main.append(input.el,reset,save);
+      });
+    }
+    function render() {
+      if (!dialog?.open)return;
+      clearContent();
+      refreshTitle();
+      nav.querySelectorAll('button').forEach(b=>b.setAttribute('aria-current',String(b.dataset.tab===tab)));
+      if (tab==='library'){library(revision);return;}
+      if (!live){settings();return;}
+      if(tab==='chat')chat(revision);
+      else if(tab==='tasks')tasks(revision);
+      else quota(revision);
+    }
+    root.addEventListener('pagehide',()=>disconnect('页面连接已关闭'));
+    return {open:()=>open(shortcut.hidden?menuEntry:shortcut), back, close, disconnect};
+  }
+  shared.mountCockpit = mountCockpit;
+  shared.createCockpitReader = createCockpitReader;
+  shared.cockpitEndpoint = cockpitEndpoint;
 })(typeof window === 'undefined' ? globalThis : window);

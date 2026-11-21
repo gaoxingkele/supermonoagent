@@ -209,9 +209,12 @@ async def _check_menu_and_profiles(tmp_path,signer,playwright):
                         assert await page.locator('#relay-profiles-dialog').evaluate('dialog=>dialog.scrollWidth<=dialog.clientWidth&&dialog.getBoundingClientRect().right<=innerWidth')
                         await page.evaluate("""() => {const row=document.createElement('div');row.className='relay-profile-row';const address=document.createElement('span');address.textContent='wss://'+ 'long-address.'.repeat(30)+'example/ws';const status=document.createElement('small');status.textContent='Credential '+ 'long-label'.repeat(30);const remove=document.createElement('button');remove.textContent='Remove';row.append(address,status,remove);document.querySelector('#relay-profile-list').append(row);} """)
                         assert await page.locator('#relay-profile-list').evaluate('list=>list.scrollWidth<=list.clientWidth')
-                        assert await page.locator('#agent-mode').evaluate('select=>select.getBoundingClientRect().right<=innerWidth')
                         await page.screenshot(path=str(artifacts/f'profiles-{width}.png'))
                         await page.locator('#relay-profiles-close').click()
+                        # On narrow screens the single-row footer scrolls to the focused control.
+                        await page.locator('#agent-mode').focus()
+                        await page.wait_for_function("document.querySelector('#agent-mode').getBoundingClientRect().right<=innerWidth")
+                        assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
                     await page.locator('#app-menu-toggle').click()
                     before=checks.call_count
                     await page.locator('#check-updates').click()
