@@ -49,6 +49,7 @@ import java.io.InputStreamReader;
 public final class MainActivity extends Activity {
     private SharedPreferences preferences;
     private JSONObject defaults = new JSONObject();
+    private JSONObject cockpitFeedbackQa;
     private LinearLayout root;
     private WebView terminal;
     private JSONObject connection;
@@ -94,6 +95,13 @@ public final class MainActivity extends Activity {
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         if (Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
         preferences = getSharedPreferences("connection", MODE_PRIVATE);
+        if ("dev.supermonoagent.mobile.feedbackqa".equals(getPackageName())) {
+            try (java.io.InputStream policy = getAssets().open("cockpit-feedback-qa.json")) {
+                cockpitFeedbackQa = new JSONObject(new String(RemoteUpdates.read(policy, 4096), "UTF-8"));
+            } catch (IOException | JSONException invalid) {
+                cockpitFeedbackQa = null;
+            }
+        }
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                 getAssets().open("connection-defaults.json"), "UTF-8"))) {
             StringBuilder json = new StringBuilder();
@@ -495,6 +503,8 @@ public final class MainActivity extends Activity {
             final RemoteUpdates.Boot boot=updateBoot;
             JSONObject pageConnection=connection==null?new JSONObject():new JSONObject(connection.toString());
             if(connection==null){String endpoint=preferences.getString("url","https://ui.supermono.local");try{ConnectionEndpoint.validate(endpoint);}catch(Exception invalid){endpoint="https://ui.supermono.local";}pageConnection.put("endpoint",endpoint);pageConnection.put("code",preferences.getString("code",""));pageConnection.put("token","");pageConnection.put("renderer","dom");}
+            pageConnection.remove("cockpitFeedbackQA");
+            if (cockpitFeedbackQa != null && "bundled".equals(revision)) pageConnection.put("cockpitFeedbackQA",cockpitFeedbackQa);
             pageConnection.put("uiRevision",revision);localBase=LocalAssets.originForEndpoint(pageConnection.getString("endpoint"));
             navigationState=getFilesDir().toPath().resolve("remote-ui").resolve("navigation-"+RemoteUpdates.hash((pageConnection.optString("endpoint")+"\n"+pageConnection.optString("code")).getBytes("UTF-8"))+".json");
             if(!updating||terminal==null){destroyTerminal();root.removeAllViews();terminal=new WebView(this);root.addView(terminal,new LinearLayout.LayoutParams(-1,-1));}

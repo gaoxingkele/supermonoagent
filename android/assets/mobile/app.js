@@ -4,6 +4,7 @@
   const $=id=>document.getElementById(id),C=TerminalClient,M=MobileCore;
   const encoder=new TextEncoder(),decoder=new TextDecoder();
   let config;
+  let mobileFeedbackQa=null;
   try{config=JSON.parse(decodeURIComponent(location.hash.slice(1)));history.replaceState(null,'',location.pathname+location.search);}
   catch{ $('status').textContent='连接配置缺失，请返回连接设置';$('notice').hidden=false;$('notice').textContent='请从安卓应用打开此页面';return; }
   $('ui-revision').textContent='界面版本：'+(config.uiRevision||'bundled');
@@ -121,7 +122,7 @@
     for(const key of [...uncertainDrafts.keys(),...uncertainModelCommands]){try{if(JSON.parse(key)[0]===host)forgetNativeScope(key);}catch{}}
   }
   function setHostToken(host,token){
-    if(hostTokens.has(host)&&hostTokens.get(host)!==token){if(selected().host.id===host)composerSubmit.cancel('authorization_changed');clearNativeUncertainty(host);}
+    if(hostTokens.has(host)&&hostTokens.get(host)!==token){if(selected().host.id===host){composerSubmit.cancel('authorization_changed');if(typeof mobileFeedbackQa!=='undefined')mobileFeedbackQa?.invalidate();}clearNativeUncertainty(host);}
     hostTokens.set(host,token);
   }
   function captureNativeScope(c,current,key){
@@ -236,6 +237,7 @@
   function chooseHost(id,restoring=false){
     if(!restoring)restoringUI=null;
     const h=[home,...hosts].find(x=>x.id===id);if(!h||id===hostId)return;
+    mobileFeedbackQa?.invalidate();
     if(active)drafts.set(sessionKey(),$('draft').value);
     const previous=selected();sendHost(previous,16,{sessions:[]});previous.subscription='';
     disposeTerminal();active='';hostId=id;loadSelected();$('draft').value='';$('quick-draft').value='';notice('');
@@ -481,7 +483,9 @@
   }
   function managedRPC(t,action,params){
     const creating=action==='create_managed';
-    if(!managedActions.has(action)||!managedCurrent(t,!creating)||creating&&t.interaction_mode==='managed')return Promise.reject(journalError('stale_target'));
+    const feedback=action==='submit_cockpit_feedback'||action==='cockpit_feedback_status';
+    if((feedback?typeof mobileFeedbackQa==='undefined'||!mobileFeedbackQa?.allowsTarget(t):!managedActions.has(action))||
+      !managedCurrent(t,!creating)||creating&&t.interaction_mode==='managed')return Promise.reject(journalError('stale_target'));
     if(!creating&&!managedTargetFields.every(key=>params[key]===t[key]))return Promise.reject(journalError('stale_target'));
     return new Promise((resolve,reject)=>{
       const c=t.host,request_id='mobile-managed-'+(++journalRequestSequence),pending=c.journalPending||(c.journalPending=new Map());
@@ -649,6 +653,8 @@
   $('managed-interrupt').onclick=()=>managedController?.interrupt();$('managed-close').onclick=()=>managedController?.closeSession();
   // MANAGED_INTEGRATION_END
   function stopSocket(c=selected(),preserveArchive=preserveJournalArchive(c)){
+    if(c===selected())mobileFeedbackQa?.invalidate();
+    c.cockpitInstallationId='';
     if(pendingRefresh?.host===c)cancelRefresh();
     if(c===selected())releaseManagedContext();
     for(const entry of c.journalPending?.values()||[])entry.finish(journalError('disconnected'));if(!preserveArchive){closeJournalArchive(c);if(c===selected())resetJournalContext();}
@@ -819,11 +825,13 @@
     if(!info.capabilities?.multiplex){stopSocket(c);hostState(c,'后台版本不兼容');return;}
     if(!c.connected){c.connected=true;c.retry=0;c.status='已连接';c.pingTimer=setInterval(()=>{if(c.lastPing&&performance.now()-c.lastPing>30000){M.closeForRecovery(c.socket,'连接探测超时');return;}if(!c.lastPing)c.lastPing=performance.now();sendHost(c,10,encoder.encode('mobile'));},15000);}
     if(info.error)c.status=String(info.error);c.capabilities=info.capabilities||c.capabilities;
+    if(info.windows||Object.hasOwn(info,'host_installation_id'))c.cockpitInstallationId=typeof info.host_installation_id==='string'?info.host_installation_id:'';
     if(info.controls)c.controls=info.controls;
     if(info.machine!==undefined)c.machine=String(info.machine||'');if(info.project!==undefined)c.project=String(info.project||'');
     if(info.groups)c.groups=info.groups;
     if(typeof info.selected==='string')c.serverWindow=info.selected;if(typeof info.session==='string')c.serverSession=info.session;
     if(info.windows){const receivedAt=performance.now();c.inventory=mergeManagedCatalog(c,info.windows.flatMap(w=>(w.sessions||[]).map(s=>({...s,reportedOutputAt:Number.isSafeInteger(s.output_age_ms)&&s.output_age_ms>=0?receivedAt-s.output_age_ms:undefined,learnedAgent:c.agents.get(s.id)||'',title:w.title,window:w.id,windowFocused:w.focused,group:w.group}))));}
+    if(c===selected())mobileFeedbackQa?.checkBinding();
     if(info.windows){const ids=new Set(c.inventory.map(s=>s.id));for(const cache of [c.activity,c.agents])for(const sid of cache.keys())if(!ids.has(sid))cache.delete(sid);for(const [key,draft] of attachmentDrafts)if(draft.target.host===c&&!ids.has(draft.target.session)){if(uploadJob?.target.key===key)cancelAttachmentUpload();attachmentDrafts.delete(key);}}
     if(c!==selected()){renderHosts();renderList();return;}
     loadSelected();renderHosts();renderList();
@@ -1117,6 +1125,7 @@
     if(attachmentReturnKey&&attachmentReturnKey!==sessionKey(sid))attachmentReturnKey=null;
     cancelTouchMomentum();if(scrollFrame!==null)cancelAnimationFrame(scrollFrame);scrollFrame=null;scrollRows=0;gesture=M.createGesture();
     if(sid===active&&term)return;
+    mobileFeedbackQa?.invalidate();
     if(active)drafts.set(sessionKey(),$('draft').value);disposeTerminal();active=sid;selected().subscription='';
     const s=inventory.find(x=>x.id===sid);if(!s)return;updateHistoryQuality();$('title').textContent=s.title+'（'+M.agentType(s,s.title)+'）';
     if(s.interaction_mode==='managed')notice('');
@@ -1660,7 +1669,7 @@
   $('copy').onclick=()=>openTextSelection(true);$('copy-close').onclick=()=>$('copy-dialog').close();
   new ResizeObserver(()=>{scheduleFit();updateTerminalStatus();}).observe($('screen'));window.visualViewport?.addEventListener('resize',scheduleFit);
   new ResizeObserver(sizeHistoryRenderer).observe($('screen-history'));
-  function pause(){if(paused)return;paused=true;cancelTerminalPress();cancelTouchMomentum();cancelAttachmentUpload();pauseDebugGrid();clearInterval(activityTimer);activityTimer=null;if(active)drafts.set(sessionKey(),$('draft').value);for(const c of connections.values())stopSocket(c);refreshWatchers();writer?.dispose();if(fitFrame!==null)cancelAnimationFrame(fitFrame);fitFrame=null;if(scrollFrame!==null)cancelAnimationFrame(scrollFrame);scrollFrame=null;state('后台已暂停连接；服务器终端继续运行');}
+  function pause(){if(paused)return;mobileFeedbackQa?.disable();paused=true;cancelTerminalPress();cancelTouchMomentum();cancelAttachmentUpload();pauseDebugGrid();clearInterval(activityTimer);activityTimer=null;if(active)drafts.set(sessionKey(),$('draft').value);for(const c of connections.values())stopSocket(c);refreshWatchers();writer?.dispose();if(fitFrame!==null)cancelAnimationFrame(fitFrame);fitFrame=null;if(scrollFrame!==null)cancelAnimationFrame(scrollFrame);scrollFrame=null;state('后台已暂停连接；服务器终端继续运行');}
   function resume(){if(!paused)return;paused=false;startActivityTimer();for(const c of connections.values())connect(c);refreshWatchers();resumeDebugGrid();if(webgl&&term)term.refresh(0,term.rows-1);}
   document.addEventListener('visibilitychange',()=>document.hidden?pause():resume());
   // WebGL incremental redraw can leave stale glyph overlays over time; a
@@ -1706,8 +1715,93 @@
     restoreSelected();if(isManagedSession())syncManagedContext();
   }
   window.MobileTerminal={roomSelectionVersion:1,pause,resume,captureUIState,restoreUIState,prepareUIReload,cancelUIReload,openNotification,clipboardTarget,pasteClipboardText,reconnect:()=>{if(paused)resume();else{connect();refreshWatchers();}},chooseHost,get hosts(){return [...connections.values()].map(c=>({id:c.host.id,connected:c.connected,status:c.status,sessions:c.inventory.map(s=>s.id),subscription:c.subscription}));},get terminal(){return term;},get active(){return active;},get activeKey(){return sessionKey();},get connected(){return connected;},get ready(){return ready;},get controls(){return controls[active]||null;},revision:config.uiRevision||'bundled',metrics};
+  // MOBILE_FEEDBACK_QA_START
+  function createMobileFeedbackQa(profile){
+    if(!profile||typeof profile!=='object'||Array.isArray(profile)||!window.SuperMonoCockpitFeedback?.open)return null;
+    const fields=Object.keys(profile).sort().join(',');
+    if(fields!=='endpoint,host_installation_id,project,room'||!managedID(profile.project)||profile.project==='*'||
+      !managedID(profile.host_installation_id)||typeof profile.room!=='string'||profile.room.length>128)return null;
+    let endpoint;
+    try{endpoint=C.cockpitEndpoint(profile.endpoint);}catch{return null;}
+    const checkbox=document.createElement('input');
+    checkbox.type='checkbox';checkbox.id='cockpit-enable-qa';checkbox.checked=false;
+    const label=document.createElement('label');
+    label.htmlFor=checkbox.id;
+    label.append(checkbox,document.createTextNode(' 本次开启驾驶舱反馈测试 · '+profile.project));
+    $('settings-dialog').append(label);
+    let epoch={},capture=null;
+    const issued=new WeakSet();
+    function invalidate(){
+      capture=null;epoch={};
+      window.dispatchEvent(new Event('sma-cockpit-context-invalidated'));
+    }
+    function disable(){checkbox.checked=false;invalidate();}
+    checkbox.onchange=()=>{if(!checkbox.checked)invalidate();};
+    function eligible(){return checkbox.checked&&!paused&&!document.hidden;}
+    function allowsTarget(t){
+      return eligible()&&t?.host===selected()&&t.host.connected&&t.host.socket?.readyState===1&&
+        t.host.cockpitInstallationId===profile.host_installation_id&&t.room===profile.room&&
+        t.host.capabilities?.cockpit_feedback===1&&managedCurrent(t);
+    }
+    function describe(attempt){
+      if(!eligible()||attempt?.host_installation_id!==profile.host_installation_id||!term||
+        !['window_id','terminal_session_id','generation','attempt_id','tool'].every(key=>managedID(attempt[key])))return null;
+      const t=managedTarget(),source=managedSession();
+      if(!source||!journalTargetCurrent(t)||!t.host.connected||t.host.socket?.readyState!==1||!t.token||
+        t.room!==profile.room||t.host.cockpitInstallationId!==profile.host_installation_id||
+        t.window_id!==attempt.window_id||t.session_id!==attempt.terminal_session_id||t.process_generation!==attempt.generation)return null;
+      const managed=t.interaction_mode==='managed';
+      if(managed&&(source.provider!==attempt.tool||!attempt.journal_id||t.journal_id!==attempt.journal_id))return null;
+      const tuple=Object.fromEntries(managedTargetFields.map(k=>[k,t[k]]));
+      const ref=Object.freeze({host:t.host,ws:t.host.socket,hostGeneration:t.generation,pane:epoch,
+        sessionId:t.session_id,title:source.title||t.window_id,managed,canSend:managed&&allowsTarget(t),
+        token:t.token,room:t.room,relay:t.endpoint,terminal:term,source:t,attempt:{...attempt},
+        capture:managed?{target:Object.freeze(tuple),targetKey:journalContextKey(t)}:null});
+      capture=ref;issued.add(ref);
+      return ref;
+    }
+    function current(ref){
+      if(!ref||!issued.has(ref)||!eligible()||ref.pane!==epoch||ref.terminal!==term||!journalTargetCurrent(ref.source)||
+        ref.ws!==ref.host.socket||ref.ws.readyState!==1||!ref.host.connected||
+        ref.host.cockpitInstallationId!==profile.host_installation_id)return false;
+      const s=managedSession();
+      if(!s||s.window!==ref.attempt.window_id||s.process_generation!==ref.attempt.generation||
+        (s.title||s.window)!==ref.title||(s.interaction_mode==='managed')!==ref.managed)return false;
+      return !ref.managed||(s.provider===ref.attempt.tool&&s.journal_id===ref.attempt.journal_id&&
+        ref.canSend===allowsTarget(ref.source));
+    }
+    function request(ref,action,fields){
+      const allowed=action==='submit_cockpit_feedback'||action==='cockpit_feedback_status';
+      const f=fields?.feedback;
+      if(!allowed||!current(ref)||!ref.canSend||f?.project!==profile.project||
+        f.host_installation_id!==profile.host_installation_id||f.attempt_id!==ref.attempt.attempt_id||
+        f.tool!==ref.attempt.tool||f.role!==ref.attempt.role||f.account!==ref.attempt.account)
+        return Promise.reject(journalError('stale_target'));
+      return managedRPC(ref.source,action,{...fields,...ref.capture.target});
+    }
+    function prepareDraft(ref,text){
+      if(!current(ref)||ref.managed||typeof text!=='string'||!text.trim()||composing||submissionPending()||
+        uploadJob||attachmentsPending()||uncertainDrafts.has(sessionKey())||uncertainModelCommands.has(sessionKey()))return false;
+      const previous=$('draft').value;
+      const next=previous+(previous&&!previous.endsWith('\n')?'\n':'')+text;
+      if(encoder.encode(next).length>65536)return false;
+      syncDraftFields(next);modes.set(sessionKey(),'buffered');setMode(true,true);
+      return true;
+    }
+    const hostInterface=Object.freeze({describe,request,prepareDraft});
+    function select(project,viewerEndpoint){
+      return eligible()&&project===profile.project&&viewerEndpoint===endpoint?hostInterface:null;
+    }
+    const checkBinding=()=>{if(capture&&!current(capture))invalidate();};
+    window.addEventListener('orientationchange',invalidate);
+    window.screen?.orientation?.addEventListener?.('change',invalidate);
+    return {select,allowsTarget,disable,invalidate,checkBinding};
+  }
+  // MOBILE_FEEDBACK_QA_END
+  mobileFeedbackQa=createMobileFeedbackQa(config.cockpitFeedbackQA);
   const cockpit=C.mountCockpit?.({
     menu:$('settings-dialog'),headerBefore:$('options'),mobile:true,
+    mobileFeedbackHost:(project,endpoint)=>mobileFeedbackQa?.select(project,endpoint),
     beforeOpen:()=>{if($('settings-dialog').open)$('settings-dialog').close();}
   });
   if(cockpit)window.SuperMonoCockpit=cockpit;

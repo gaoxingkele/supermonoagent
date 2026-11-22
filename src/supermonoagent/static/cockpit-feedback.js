@@ -68,10 +68,22 @@
     const bytes=await root.crypto.subtle.digest('SHA-256',textBytes.encode(text));
     return Array.from(new Uint8Array(bytes),x=>x.toString(16).padStart(2,'0')).join('');
   }
-  function open({project,taskId,attempt,endpoint,refreshTask,isCurrent,dismiss}){
+  function desktopHost(w){
+    return {
+      describe:attempt=>describeTarget(w,attempt),
+      request:(target,action,fields)=>w.cockpitFeedbackRequest(target.capture,action,fields),
+      prepareDraft:(target,text,stillCurrent)=>{
+        w.openHostSession(target.host.id,target.sessionId,false);
+        return stillCurrent()&&w.activePane===target.pane&&root.SuperMonoTerminalComposer?.appendFeedbackDraft(
+          text,{pane:target.pane,generation:target.hostGeneration})===true;
+      }
+    };
+  }
+  function open({project,taskId,attempt,endpoint,refreshTask,isCurrent,dismiss,hostInterface}){
     if(!isCurrent()||!valid(project)||!valid(taskId)||!attempt)return;
-    const w=root.smaWorkspace,doc=root.document;
-    const candidate={...attempt},initial=describeTarget(w,candidate);
+    const host=hostInterface||(root.smaWorkspace&&desktopHost(root.smaWorkspace)),doc=root.document;
+    if(!host)return;
+    const candidate={...attempt},initial=host.describe(candidate);
     const dialog=doc.createElement('dialog');
     dialog.className='cockpit-feedback-dialog';dialog.setAttribute('aria-label','核对目标窗口与反馈正文');
     Object.assign(dialog.style,{maxWidth:'min(560px,94vw)',maxHeight:'90vh',overflow:'auto'});
@@ -91,7 +103,7 @@
     for(const button of [primary,check,cancel])button.type='button';
     dialog.append(heading,targetLine,body,credential,state,primary,check,cancel);
     let live=true,busy=false,request=null;
-    const guards=()=>live&&isCurrent()&&sameSource(initial,describeTarget(w,candidate));
+    const guards=()=>live&&isCurrent()&&sameSource(initial,host.describe(candidate));
     const cleanup=()=>{if(!live)return;live=false;body.value='';credential.value='';dialog.remove();
       root.removeEventListener('sma-cockpit-context-invalidated',invalidate);};
     function invalidate(){cleanup();}
@@ -121,7 +133,7 @@
         request=await ledger(endpoint,credential.value,'pending',{target:destination});
         if(!guards()){invalidateSelection();return;}
         if(!request.nonce){request=null;state.textContent='当前执行没有已登记的反馈。';return;}
-        const result=await w.cockpitFeedbackRequest(initial.capture,'cockpit_feedback_status',{feedback,nonce:request.nonce});
+        const result=await host.request(initial,'cockpit_feedback_status',{feedback,nonce:request.nonce});
         if(!guards()){invalidateSelection();return;}
         if(matchesReceipt(result?.receipt,request.nonce,initial.capture.target)){
           check.hidden=true;state.textContent='目标已持久接收反馈。';
@@ -140,9 +152,7 @@
       try{
         if(!await authorized()){invalidateSelection();return;}
         if(!initial.managed){
-          w.openHostSession(initial.host.id,initial.sessionId,false);
-          if(!guards()||w.activePane!==initial.pane)throw Error();
-          if(!root.SuperMonoTerminalComposer?.appendFeedbackDraft(text,{pane:initial.pane,generation:initial.hostGeneration})){
+          if(!host.prepareDraft(initial,text,guards)){
             primary.disabled=false;body.readOnly=false;state.textContent='草稿忙或长度超限，反馈正文已保留。';return;
           }
           dialog.close();dismiss();
@@ -153,7 +163,7 @@
         request=await ledger(endpoint,credential.value,'confirm',{target:destination,text_sha256:sha,baseline_seq:candidate.seq});
         if(!guards()){invalidateSelection();return;}
         if(request.may_send!==true){state.textContent='已有反馈登记，请核对原请求。';return;}
-        const result=await w.cockpitFeedbackRequest(initial.capture,'submit_cockpit_feedback',
+        const result=await host.request(initial,'submit_cockpit_feedback',
           {feedback,nonce:request.nonce,expires_at:request.expires_at,text,text_sha256:sha});
         if(!guards()){invalidateSelection();return;}
         if(!matchesReceipt(result,request.nonce,initial.capture.target))throw Error('receipt_unknown');
@@ -164,8 +174,10 @@
     };
     if(!request)body.focus();
   }
-  function openEvolution({endpoint,project,taskId,attempt,skillId,isCurrent,refreshTask,readStatus}){
+  function openEvolution({endpoint,project,taskId,attempt,skillId,isCurrent,refreshTask,readStatus,hostInterface}){
     if(!isCurrent()||!valid(skillId)||!valid(project)||!valid(taskId)||!valid(attempt?.attempt_id))return;
+    const initial=hostInterface?.describe(attempt);
+    if(hostInterface&&!initial)return;
     const doc=root.document,dialog=doc.createElement('dialog');
     dialog.className='cockpit-evolution-confirm';dialog.setAttribute('aria-label','核对版本与目标执行');
     Object.assign(dialog.style,{maxWidth:'min(620px,94vw)',maxHeight:'90vh',overflow:'auto'});
@@ -182,7 +194,7 @@
     doc.body.append(dialog);dialog.showModal();
     const target={project,task_id:taskId,attempt_id:attempt.attempt_id,generation:attempt.generation};
     let live=true,busy=false,frozen=null,submitted=false;
-    const current=()=>live&&isCurrent();
+    const current=()=>live&&isCurrent()&&(!hostInterface||sameSource(initial,hostInterface.describe(attempt)));
     const remove=()=>{if(!live)return;live=false;token.value='';asset.textContent='';dialog.remove();
       root.removeEventListener('sma-cockpit-context-invalidated',remove);};
     root.addEventListener('sma-cockpit-context-invalidated',remove);

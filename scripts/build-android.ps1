@@ -1,4 +1,5 @@
-param([string]$ToolsRoot = "", [switch]$Bootstrap, [string]$ConnectionDefaults = "", [string]$OutputDir = "")
+param([string]$ToolsRoot = "", [switch]$Bootstrap, [string]$ConnectionDefaults = "", [string]$OutputDir = "",
+      [string]$CockpitFeedbackQaProfile = "", [string]$QaVersion = "", [int]$QaVersionCode = 0)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
 New-Item -ItemType Directory -Force (Join-Path $repoRoot '.omx') | Out-Null
@@ -18,7 +19,29 @@ $androidJar = Join-Path $sdk 'platforms/android-35/android.jar'
 if (!(Test-Path $androidJar)) { throw 'Android SDK missing; run with -Bootstrap' }
 $work = Join-Path $repoRoot '.omx/android-build'
 $work = Join-Path $work ([guid]::NewGuid().ToString('N'))
-$dist = if ($OutputDir) { [IO.Path]::GetFullPath($OutputDir) } else { Join-Path $repoRoot 'dist/android' }
+$qaProfile = $null
+if ($CockpitFeedbackQaProfile) {
+    if ($ConnectionDefaults) { throw 'Use interactive connection settings for a feedback QA APK.' }
+    $inputProfile = Get-Content -Raw -Encoding UTF8 -LiteralPath $CockpitFeedbackQaProfile | ConvertFrom-Json
+    if ((@($inputProfile.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'endpoint,host_installation_id,project,room') { throw 'Expected only endpoint, project, host_installation_id and room in the QA profile.' }
+    foreach ($key in @('endpoint','host_installation_id','project','room')) {
+        if ($inputProfile.$key -isnot [string] -or $inputProfile.$key.Length -gt 1024 -or $inputProfile.$key -match '[\x00-\x1f\x7f]') { throw "Invalid QA profile field $key" }
+    }
+    if (!$inputProfile.project.Trim() -or $inputProfile.project -eq '*' -or !$inputProfile.host_installation_id.Trim()) { throw 'QA profile needs one project and one installed host.' }
+    $qaEndpoint = [uri]$inputProfile.endpoint
+    if (!$qaEndpoint.IsAbsoluteUri -or $qaEndpoint.AbsolutePath -cne '/hub/view' -or $qaEndpoint.Query -or $qaEndpoint.Fragment -or $qaEndpoint.UserInfo -or
+        !($qaEndpoint.Scheme -eq 'wss' -or ($qaEndpoint.Scheme -eq 'ws' -and $qaEndpoint.IsLoopback))) { throw 'Invalid dedicated feedback QA viewer endpoint.' }
+    $qaProfile = [ordered]@{endpoint=$qaEndpoint.AbsoluteUri;project=$inputProfile.project;host_installation_id=$inputProfile.host_installation_id;room=$inputProfile.room}
+}
+$dist = if ($OutputDir) { [IO.Path]::GetFullPath($OutputDir) } elseif ($qaProfile) { Join-Path $work 'qa-candidate' } else { Join-Path $repoRoot 'dist/android' }
+if ($qaProfile) {
+    $publicRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'dist')).TrimEnd('\','/')
+    if ($dist.Equals($publicRoot,[StringComparison]::OrdinalIgnoreCase) -or
+        $dist.StartsWith($publicRoot + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase) -or
+        ((Test-Path -LiteralPath $dist) -and (Get-ChildItem -LiteralPath $dist -Force | Select-Object -First 1))) {
+        throw 'Choose a fresh private directory for the feedback QA APK.'
+    }
+}
 New-Item -ItemType Directory -Force "$work/classes", "$work/dex", $dist | Out-Null
 function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
     & $Executable @Arguments
@@ -32,10 +55,24 @@ $androidNamespace = 'http://schemas.android.com/apk/res/android'
 $nextCode = [int]$manifestXml.manifest.GetAttribute('versionCode', $androidNamespace) + 1
 $currentVersion = [version]$manifestXml.manifest.GetAttribute('versionName', $androidNamespace)
 $nextVersion = '{0}.{1}.{2}' -f $currentVersion.Major, $currentVersion.Minor, ($currentVersion.Build + 1)
+if ($QaVersion -or $QaVersionCode) {
+    if (!$qaProfile -or $QaVersion -notmatch '^\d+\.\d+\.\d+$' -or $QaVersionCode -lt 1) {
+        throw 'An explicit QA version requires a feedback QA profile, a numeric A.B.C version, and a positive code.'
+    }
+    $nextVersion = $QaVersion
+    $nextCode = $QaVersionCode
+}
 $outputVersion = Split-Path $dist -Leaf
 if ($outputVersion -match '^\d+\.\d+\.\d+$' -and $outputVersion -ne $nextVersion) { throw "Output directory version $outputVersion does not match APK version $nextVersion." }
 $manifestText = $manifestText -replace 'android:versionCode="\d+"', ('android:versionCode="{0}"' -f $nextCode)
 $manifestText = $manifestText -replace 'android:versionName="[^"]+"', ('android:versionName="{0}"' -f $nextVersion)
+if ($qaProfile) {
+    $manifest = Join-Path $work 'AndroidManifest.xml'
+    $manifestText = $manifestText.Replace('package="dev.supermonoagent.mobile"', 'package="dev.supermonoagent.mobile.feedbackqa"')
+    $manifestText = $manifestText.Replace('android:name=".MainActivity"', 'android:name="dev.supermonoagent.mobile.MainActivity"')
+    $manifestText = $manifestText.Replace('android:name=".TaskNotifications"', 'android:name="dev.supermonoagent.mobile.TaskNotifications"')
+    $manifestText = $manifestText.Replace('android:label="SuperMonoAgent"', 'android:label="SuperMonoAgent Feedback QA"')
+}
 [IO.File]::WriteAllText($manifest, $manifestText, (New-Object Text.UTF8Encoding($false)))
 Write-Host "Building version $nextVersion ($nextCode)"
 $stagedAssets = Join-Path $work 'assets'
@@ -52,6 +89,13 @@ if ($ConnectionDefaults) {
 [IO.File]::WriteAllText((Join-Path $stagedAssets 'connection-defaults.json'), $defaultsJson, (New-Object Text.UTF8Encoding($false)))
 foreach ($name in @('index.html', 'app.js', 'app.css', 'mobile-core.js')) {
     Copy-Item -LiteralPath "$repoRoot/android/assets/mobile/$name" -Destination $mobileAssets
+}
+if ($qaProfile) {
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText((Join-Path $stagedAssets 'cockpit-feedback-qa.json'), ($qaProfile | ConvertTo-Json -Compress), $utf8)
+    $controller = [IO.File]::ReadAllText((Join-Path $repoRoot 'src/supermonoagent/static/cockpit-feedback.js'))
+    $app = Join-Path $mobileAssets 'app.js'
+    [IO.File]::WriteAllText($app, $controller + [Environment]::NewLine + ';' + [Environment]::NewLine + [IO.File]::ReadAllText($app), $utf8)
 }
 New-Item -ItemType Directory -Force "$mobileAssets/agent-modes" | Out-Null
 foreach ($name in @('codex', 'claude-code', 'grok', 'kimi', 'pi-dev', 'cursor-cli')) {
@@ -73,21 +117,23 @@ Invoke-Checked "$buildTools/aapt2.exe" @('compile', '--dir', "$repoRoot/android/
 Invoke-Checked "$buildTools/aapt2.exe" @('link', '-o', "$work/unsigned.apk", '-I', $androidJar, '--manifest', $manifest, '-A', $stagedAssets, "$work/resources.zip")
 $sources = @(Get-ChildItem "$repoRoot/android/src" -Filter '*.java' -Recurse | ForEach-Object { $_.FullName })
 Invoke-Checked "$env:JAVA_HOME/bin/javac.exe" (@('-encoding', 'UTF-8', '-source', '8', '-target', '8', '-Xlint:-options', '-classpath', $androidJar, '-d', "$work/classes") + $sources)
-$classes = @(Get-ChildItem "$work/classes" -Filter '*.class' -Recurse | ForEach-Object { $_.FullName })
-Invoke-Checked "$buildTools/d8.bat" (@('--lib', $androidJar, '--min-api', '26', '--output', "$work/dex") + $classes)
+# A single JAR avoids the Windows batch-file command line limit for D8.
+Invoke-Checked "$env:JAVA_HOME/bin/jar.exe" @('--create','--file',"$work/classes.jar",'-C',"$work/classes",'.')
+Invoke-Checked "$buildTools/d8.bat" @('--lib', $androidJar, '--min-api', '26', '--output', "$work/dex","$work/classes.jar")
 # Append DEX without rewriting AAPT2 asset local headers. jar uf rewrites deflated
 # assets with data descriptors, which some Android AssetManagers cannot read.
 $python = Join-Path $repoRoot '.venv/Scripts/python.exe'
 if (!(Test-Path -LiteralPath $python)) { $python = (Get-Command python -ErrorAction Stop).Source }
 Invoke-Checked $python @("$PSScriptRoot/append-apk-dex.py", "$work/unsigned.apk", "$work/dex/classes.dex")
 Invoke-Checked "$buildTools/zipalign.exe" @('-f', '-p', '4', "$work/unsigned.apk", "$work/aligned.apk")
-$keystore = Join-Path $ToolsRoot 'android-debug.keystore'
+$keystore = if ($qaProfile) { Join-Path $repoRoot '.omx/android-feedbackqa-debug.keystore' } else { Join-Path $ToolsRoot 'android-debug.keystore' }
 if (!(Test-Path $keystore)) {
     Invoke-Checked "$env:JAVA_HOME/bin/keytool.exe" @('-genkeypair', '-keystore', $keystore, '-storepass', 'android', '-keypass', 'android', '-alias', 'androiddebugkey', '-dname', 'CN=Android Debug,O=Android,C=US', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000')
 }
-$apk = Join-Path $dist 'SuperMonoAgent.apk'
+$apkName = if ($qaProfile) { 'SuperMonoAgent-FeedbackQA.apk' } else { 'SuperMonoAgent.apk' }
+$apk = Join-Path $dist $apkName
 $previous = Join-Path $repoRoot '.omx/android-v1'
-if ((Test-Path -LiteralPath $apk) -and !(Test-Path -LiteralPath "$previous/SuperMonoAgent.apk")) {
+if (!$qaProfile -and (Test-Path -LiteralPath $apk) -and !(Test-Path -LiteralPath "$previous/SuperMonoAgent.apk")) {
     New-Item -ItemType Directory -Force $previous | Out-Null
     Copy-Item -LiteralPath $apk -Destination "$previous/SuperMonoAgent.apk"
 }
@@ -96,7 +142,7 @@ $verification = & "$buildTools/apksigner.bat" verify --verbose --print-certs $ap
 if ($LASTEXITCODE -ne 0) { throw 'APK signature verification failed' }
 $verification | Tee-Object -FilePath "$dist/apksigner-verification.txt"
 $sha = (Get-FileHash $apk -Algorithm SHA256).Hash.ToLower()
-"$sha  SuperMonoAgent.apk" | Set-Content "$dist/SuperMonoAgent.apk.sha256" -Encoding ascii
+"$sha  $apkName" | Set-Content "$apk.sha256" -Encoding ascii
 $assetHashes | ConvertTo-Json | Set-Content "$dist/packaged-assets.json" -Encoding utf8
 & "$env:JAVA_HOME/bin/java.exe" --version | Out-File "$dist/toolchain.txt"
 Get-Content "$sdk/build-tools/35.0.0/source.properties", "$sdk/platforms/android-35/source.properties", "$sdk/platform-tools/source.properties", "$sdk/cmdline-tools/latest/source.properties" | Out-File "$dist/toolchain.txt" -Append

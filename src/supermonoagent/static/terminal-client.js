@@ -1083,7 +1083,7 @@
     return {ready, request, close, get projects(){return [...projects];}, get idle(){return !pending.size;}};
   }
 
-  function mountCockpit({menu, headerBefore, mobile = false, beforeOpen}) {
+  function mountCockpit({menu, headerBefore, mobile = false, beforeOpen, mobileFeedbackHost}) {
     if (!menu || !headerBefore || document.getElementById('cockpit-open')) return null;
     const doc = menu.ownerDocument;
     const key = 'sma.cockpit.read-settings';
@@ -1242,6 +1242,8 @@
     function close() { if (dialog?.open) dialog.close(); }
     function back() {
       if (!dialog?.open) return false;
+      const confirmation=doc.querySelector('dialog.cockpit-feedback-dialog[open],dialog.cockpit-evolution-confirm[open]');
+      if(confirmation){confirmation.close();return true;}
       if (backTo) backTo();
       else if (detail || (configuration && live)) render();
       else close();
@@ -1366,9 +1368,11 @@
           if(item.tool_version && item.generation)row.append(button('此执行的 mylib 版本',()=>evolution({
             taskId:id,project,attempt:item
           })));
-          if(!mobile && root.SuperMonoCockpitFeedback?.open)row.append(button('反馈到此执行',()=>{
+          const feedbackHost=mobile?mobileFeedbackHost?.(project,preferences.endpoint):null;
+          if((!mobile||feedbackHost) && root.SuperMonoCockpitFeedback?.open)row.append(button('反馈到此执行',()=>{
+            if(mobile&&mobileFeedbackHost?.(project,preferences.endpoint)!==feedbackHost)return;
             const boundReader=reader;
-            root.SuperMonoCockpitFeedback.open({endpoint:preferences.endpoint,project,taskId:id,attempt:item,
+            root.SuperMonoCockpitFeedback.open({endpoint:preferences.endpoint,project,taskId:id,attempt:item,hostInterface:feedbackHost,
               refreshTask:()=>boundReader.request('get_task_status',{task_id:id},project),
               isCurrent:()=>valid(version)&&live&&reader===boundReader,dismiss:close});
           }));
@@ -1412,11 +1416,13 @@
         if(target){
           row.append(element('p','执行 '+target.attempt.attempt_id+' · '+state));
           if(result.loaded_version)row.append(element('p','实际版本 '+result.loaded_version));
-          if(!mobile && result.has_update && root.SuperMonoCockpitFeedback?.openEvolution){
+          const feedbackHost=mobile?mobileFeedbackHost?.(target.project,preferences.endpoint):null;
+          if((!mobile||feedbackHost) && result.has_update && root.SuperMonoCockpitFeedback?.openEvolution){
             row.append(button('申请应用到此执行',()=>{
+              if(mobile&&mobileFeedbackHost?.(target.project,preferences.endpoint)!==feedbackHost)return;
               const boundReader=reader;
               root.SuperMonoCockpitFeedback.openEvolution({endpoint:preferences.endpoint,project:target.project,
-                taskId:target.taskId,attempt:target.attempt,skillId:item.skill_id,
+                taskId:target.taskId,attempt:target.attempt,skillId:item.skill_id,hostInterface:feedbackHost,
                 readStatus:()=>boundReader.request('get_evolution_status',params,target.project),
                 refreshTask:()=>boundReader.request('get_task_status',{task_id:target.taskId},target.project),
                 isCurrent:()=>valid(version)&&live&&reader===boundReader,dismiss:close});

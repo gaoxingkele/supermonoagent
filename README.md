@@ -38,6 +38,12 @@ D:\Python314\python.exe -m venv .venv
 
 桌面在任务详情中选中具体执行后可进入反馈预览。确认凭据与驾驶舱只读凭据独立，支持的投递或草稿操作由目标宿主实际能力决定。终端窗口绑定不完整时请先在来源机补齐绑定。返回或取消会保留原终端会话。
 
+### Android 反馈 QA
+
+用于隔离验收的 APK 使用独立包名 `dev.supermonoagent.mobile.feedbackqa` 和本地测试签名。在隔离工作树执行 `scripts/build-android.ps1 -ToolsRoot <已安装的构建工具目录> -CockpitFeedbackQaProfile <测试配置.json> -QaVersion 0.2.81 -QaVersionCode 83 -OutputDir <空的测试产物目录>`。测试配置只含 `endpoint`（完整的 Hub `/hub/view` 地址）、`project`、`host_installation_id`、`room`；分别绑定单个授权测试项目和一个来源主机。当前验收包绑定 loopback 合成夹具。
+
+在 QA APK 进入对应来源终端，打开终端设置，显式勾选「本次开启驾驶舱反馈测试」。选择驾驶舱中的匹配执行，核对窗口与全文后确认。普通终端只准备草稿；支持持久受理回执的管理式会话可使用独立确认凭据。返回键逐层关闭，旋转或来源变化清除正在确认的操作，进入后台会关闭本次开关。标准 APK 和签名界面更新继续提供只读驾驶舱。
+
 ## 和 Orca Mobile 的关系
 
 连通方式相同：主机是主人，手机是客户端，NAT 后面用向外的 WebSocket。线协议不同，官方 Orca App 连不上这个主机。官方协议绑着 E2EE 握手和一整份桌面 RPC，留着它就留着那套 CPU。
