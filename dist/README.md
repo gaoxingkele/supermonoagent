@@ -1,5 +1,16 @@
 # 发布产物
 
+## 0.2.82 · 2026-11-23
+
+| 平台 | 下载 | 版本与校验 |
+| --- | --- | --- |
+| Android 标准版 | [SuperMonoAgent.apk](android/0.2.82/SuperMonoAgent.apk) | 原包名、原签名、code84，可覆盖升级 0.2.78。[SHA-256](android/0.2.82/SuperMonoAgent.apk.sha256) |
+| Windows 通用便携版 | [SuperMonoAgent-0.2.82-Portable.zip](windows/SuperMonoAgent-0.2.82-Portable.zip) | 包含新版进程退出确认及房间计数。[SHA-256](windows/SuperMonoAgent-0.2.82-Portable.zip.sha256) |
+
+安卓从「☰ → 工作空间 → 管理当前终端」改名或结束会话。[0.2.82 修改说明](../docs/release-0.2.82.md) · [构建索引](versions.json)
+
+## 早期发布记录
+
 完整版本索引：[VERSIONS.md](VERSIONS.md)；机器可读路径、文件大小与 SHA-256：[versions.json](versions.json)。仓库保留 33 个 Android 数字版本、42 个 Windows 数字／hotfix 版本、28 个完整签名界面快照，以及原有旧命名构建目录。
 
 最新 Android APK：**0.2.69（构建 71）**，修复链接脚本遗漏原生白名单导致终端页面无法打开，以及 Update 指向旧频道的问题；已在荣耀 FLC-AN00 保留数据覆盖安装并完成窗口切换、在线检查与草稿保留验证。0.2.67／0.2.68 原包作为历史版本保留，建议安装 0.2.69。详细证据与范围见 [Android 验收记录](../omx_wiki/android-live-updates.md)。
