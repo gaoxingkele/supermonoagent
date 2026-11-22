@@ -1182,6 +1182,19 @@ async def log_daemon_status(daemon: Daemon, interval: float = 15) -> None:
         await asyncio.sleep(interval)
 
 
+def next_listen_port(host: str, start: int, limit: int = 64) -> int | None:
+    """First bindable port from start (inclusive); None when the range is exhausted."""
+    family = socket.AF_INET6 if ':' in host else socket.AF_INET
+    for candidate in range(start, min(start + limit, 65536)):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.bind((host, candidate))
+            return candidate
+        except OSError:
+            continue
+    return None
+
+
 def main() -> None:
     global STATE
     parser = argparse.ArgumentParser(description="SuperMonoAgent host")
@@ -1231,12 +1244,13 @@ def main() -> None:
     if effective_token is not None and not metadata_operation:
         # A second host must not replace the running host's saved credential
         # before discovering that its listening port is already occupied.
-        family = socket.AF_INET6 if ':' in args.host else socket.AF_INET
-        try:
-            with socket.socket(family, socket.SOCK_STREAM) as probe:
-                probe.bind((args.host, args.port))
-        except OSError:
+        # An occupied port shifts to the next free one instead of aborting.
+        chosen = next_listen_port(args.host, args.port)
+        if chosen is None:
             parser.error('Host address/port is unavailable; the saved token was not changed')
+        if chosen != args.port:
+            print(f"Port {args.port} is occupied; listening on {chosen} instead.", flush=True)
+            args.port = chosen
     try:
         token = load_token(effective_token)
     except ValueError as exc:

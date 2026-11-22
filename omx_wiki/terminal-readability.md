@@ -76,4 +76,14 @@ these successful display checks do not certify that separate scenario.
 
 手机该终端原先为自动／其他，现已显式保存 Cursor CLI 模式。独立只读中继探针确认后台仅上报 PowerShell，且只提供 26 字节空的 `resize_boundary` 快照；8 秒无实时输出，实际 xterm 解析为 0 个非空字格。未保存论文正文，未发送终端输入或尺寸帧。原始数值证据：`.omx/artifacts/cursor-timesjev-20261108/probe-relay.json`。因此没有把候选样例验证等同于真实 TimesJEV 正文效果，也没有通过覆盖原生 ANSI 来人为增色。
 
+## 2026-11-23：Ewan 终端数与结束进程
+
+实时目录显示 12 个窗口容器，3 个为空，另 9 个各有一个终端会话。0.2.82 将非空窗口、终端和空窗口分别计数。桌面和安卓均在确认后结束特定会话；新版后台确认根 PowerShell 的 OS 句柄已退出才移除目录项。失败保留会话；普通命名窗口可以继续作为空容器保留。 [签名升级包和验证范围](../docs/release-0.2.82.md)
+
+## 2026-11-20：TimesJEV 切回页签后滚动位置丢失
+
+在本机 0.2.80 的 `JINLONG3090 / TimesJEV` 中，点「上翻屏」后切换页签再切回，画面跳到了更早历史。只读中继订阅收到一个 261,965 字节的 `resize_boundary` 快照，0.2.80 的 xterm 以正常滚动配置解析出 1,283 行滚动历史。远端协商了 `history_context` 和 `history_resume`，该次未协商 `history_chunks`。证据只保存诊断数字和结论。
+
+隔离 Edge 使用两个人工测试窗口，在 DOM 和 WebGL 中均观察到 xterm 保留原 `viewportY`，同时浏览器滚动条的 `scrollTop` 由 5,360 降至 0。独立修复已在 `codex/conversation-journal` 源码的 `renderLayout` 中加入可见视口同步。用实际 TimesJEV 复测修复需要加载新版前端。此次现场复现覆盖切页跳位，实时输出冻结与残影是否还有独立原因仍待核对。 [源码](../.omx/worktrees/conversation-journal/src/supermonoagent/static/workspace.js#L1047) · [回归](../.omx/worktrees/conversation-journal/tests/test_workspace_repaint.py#L11)
+
 0.2.70 候选签名 UI 包已准备，但服务器 SSH 握手前断开，尚未发布；在线 UI 仍为 0.2.67。手机选择已生效，前缀规则仍需交付新 UI 后才生效。详见 `docs/agent-render-modes.md`。桌面原生检查通道当前报 native pipe 缺失，未控制或重启桌面终端。

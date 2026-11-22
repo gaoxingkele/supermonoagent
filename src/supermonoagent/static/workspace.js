@@ -312,11 +312,11 @@
     term.attachCustomKeyEventHandler(event=>{
       if(event.type!=='keydown'||!/Win/i.test(navigator.platform)||!event.ctrlKey||event.altKey||event.metaKey||event.shiftKey)return true;
       const key=event.key.toLowerCase();
-      return key!=='v'&&!(key==='c'&&term.hasSelection());
+      return key!=='v'&&!(key==='c'&&!pane.rawInput&&term.hasSelection());
     });
     // Preserve readable history when a full-screen tool clears saved lines.
     term.parser.registerCsiHandler({final:'J'},params=>params[0]===3);
-    const pane={sid,host:data.win.host,raw:data.session.raw,generation:data.win.host.generation,el,screen,term,fit,history,historyView,title,own,ready:data.win.host.connected,replayPending:0,lastSize:'',renderer:'dom',webgl:null,observer:null,frames:[],writing:false,wantControl:false,redrawAfterReplay:false,redrawTimer:0,resizeRequest:null,lastAttempt:'',lastInputAt:0,repaintAt:0,composing:false,historyCursor:null,historyInitialized:false,recoveryGeneration:-1,historyMode:false,historyCapturedAt:0,screenArchive:C.createScreenHistory({maxFrames:128,maxBytes:4*1024*1024})};
+    const pane={sid,host:data.win.host,raw:data.session.raw,generation:data.win.host.generation,el,screen,term,fit,history,historyView,title,own,ready:data.win.host.connected,rawInput:true,replayPending:0,lastSize:'',renderer:'dom',webgl:null,observer:null,frames:[],writing:false,wantControl:false,redrawAfterReplay:false,redrawTimer:0,resizeRequest:null,lastAttempt:'',lastInputAt:0,repaintAt:0,composing:false,historyCursor:null,historyInitialized:false,recoveryGeneration:-1,historyMode:false,historyCapturedAt:0,screenArchive:C.createScreenHistory({maxFrames:128,maxBytes:4*1024*1024})};
     term.parser.registerOscHandler(7501,data=>{
       if(!livePane(pane))return false;
       const session=pane.host.catalog.flatMap(win=>win.sessions||[]).find(item=>item.id===pane.raw);if(!session||session.agent)return false;
@@ -346,6 +346,7 @@
     screen.addEventListener('touchmove',scrollIntent,{capture:true,passive:true});
     screen.addEventListener('pointerdown',event=>{if(event.target.classList?.contains('xterm-viewport'))scrollIntent(event);},true);
     screen.addEventListener('keydown',event=>{if(['PageUp','PageDown','Home','End'].includes(event.key)&&event.shiftKey)scrollIntent(event);},true);
+    screen.addEventListener('dblclick',()=>{if(!livePane(pane)||term.hasSelection())return;pane.rawInput=true;term.clearSelection();term.focus();});
     term.onScroll(()=>{
       if(!livePane(pane)||pane.followingProgrammatically)return;
       const explicit=performance.now()<pane.userScrollUntil&&pane.userScrollGeometry===viewportGeometry(pane);
@@ -382,7 +383,7 @@
     pane.bindInput=()=>{
       pane.inputSubscription?.dispose();const context=owner(pane.host);
       pane.questions?.reset();
-      pane.inputSubscription=term.onData(text=>{if(!validOwner(context)||!livePane(pane))return;text=C.terminalInput(text,pane.replayPending>0);if(!text)return;if(ctrl&&text.length===1){text=String.fromCharCode(text.toUpperCase().charCodeAt(0)&31);setCtrl(false);}input(sid,text);});
+      pane.inputSubscription=term.onData(text=>{if(!validOwner(context)||!livePane(pane))return;text=C.terminalInput(text,pane.replayPending>0);if(!text)return;if(ctrl){setCtrl(false);if(!pane.rawInput&&text.length===1)text=String.fromCharCode(text.toUpperCase().charCodeAt(0)&31);}input(sid,text);});
     };
     pane.bindInput();
     term.textarea.addEventListener('compositionstart',()=>{pane.composing=true;});term.textarea.addEventListener('compositionend',()=>{pane.composing=false;pane.lastInputAt=performance.now();});
@@ -1100,6 +1101,8 @@
   $('tabs').addEventListener('scroll',updateTabNavigation,{passive:true});addEventListener('resize',updateTabNavigation);
   const titlebarObserver=new ResizeObserver(()=>{document.documentElement.style.setProperty('--workspace-titlebar-height',titlebar.getBoundingClientRect().height+'px');updateTabNavigation();});titlebarObserver.observe(titlebar);addEventListener('beforeunload',()=>titlebarObserver.disconnect(),{once:true});
   $('app-menu-toggle').onclick=()=>{closeTabPicker();closeRoomMenu();const menu=$('app-menu');menu.hidden=!menu.hidden;$('app-menu-toggle').setAttribute('aria-expanded',String(!menu.hidden));if(!menu.hidden)menu.querySelector('button')?.focus();};
+  // Double-clicking blank workspace space re-enters raw input for the active terminal.
+  $('stage').addEventListener('dblclick',event=>{if(event.target.closest('.pane'))return;const pane=panes.get(active);if(pane&&livePane(pane)){pane.rawInput=true;pane.term.clearSelection();pane.term.focus();}});
   $('menu-connect').onclick=()=>showRelayProfiles();
   $('menu-daemon-monitor').onclick=showDaemonMonitor;
   $('daemon-monitor-close').onclick=()=>$('daemon-monitor-dialog').close();

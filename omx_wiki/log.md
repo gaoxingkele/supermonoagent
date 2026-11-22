@@ -46,3 +46,19 @@
 ## [2026-10-27T07:38:10.363Z] lint
 - **Pages:** none
 - **Summary:** Lint: 0 issues (0 orphan, 0 stale, 0 broken, 0 contradictions)
+
+## [2026-11-19] add
+- **Pages:** windows-release-0.2.80.md
+- **Summary:** 汇总 0.2.80 相比 0.2.79 的改动、构建核验及各平台上线状态。
+
+## [2026-11-19] add
+- **Pages:** multi-agent-hub.md
+- **Summary:** 记录驾驶舱架构、试点计划与 0.2.80 冻结里程碑入口。
+
+## [2026-11-19] update
+- **Pages:** multi-agent-hub.md
+- **Summary:** 改用独立设计的驾驶舱侧栏，由中继提供跨房间的 Agent 字节流。
+
+## [2026-11-21] update
+- **Pages:** multi-agent-hub.md
+- **Summary:** 改用中央 MCP 存储关键步骤，在每次提交后刷新对应账号的周期额度，记录 mylib 的检索与经验回流流程。

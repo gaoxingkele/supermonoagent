@@ -989,7 +989,7 @@
     if(remaining<0&&buffer.type==='normal')historyPixels(remaining);
     view.bottom=screen.scrollTop>=screen.scrollHeight-screen.clientHeight-2&&(buffer.type!=='normal'||buffer.viewportY>=buffer.baseY);historyStatus();
   }
-  let gesture=M.createGesture(),scrollRows=0,scrollFrame=null,panTouch=null,terminalPress=null,terminalPressTimer=null,touchMomentumFrame=null;
+  let gesture=M.createGesture(),scrollRows=0,scrollFrame=null,panTouch=null,terminalPress=null,terminalPressTimer=null,touchMomentumFrame=null,lastTap={};
   function cancelTouchMomentum(){if(touchMomentumFrame!==null)cancelAnimationFrame(touchMomentumFrame);touchMomentumFrame=null;}
   function cancelTerminalPress(){clearTimeout(terminalPressTimer);terminalPressTimer=null;terminalPress=null;}
   function beginTerminalPress(event){
@@ -1018,7 +1018,12 @@
     if(move.drag){if(dt>0)panTouch.velocity=panTouch.velocity*.65+dy/dt*.35;panTouch.dragged=true;panTouch.travel+=dy;panTouch.horizontal+=dx;
       if($('screen').dataset.viewportMode==='readable'){$('screen').scrollLeft+=dx;if(!panTouch.remote)localScroll(dy);}else if(!panTouch.remote)scroll(move.rows);
     }panTouch.x=touch.clientX;panTouch.y=touch.clientY;panTouch.at=now;e.preventDefault();},{passive:false});
-  $('screen').addEventListener('touchend',e=>{cancelTerminalPress();const touch=panTouch;gesture.end();panTouch=null;if(touch?.remote&&Math.abs(touch.travel)>48&&Math.abs(touch.travel)>Math.abs(touch.horizontal)*1.2)remoteHistoryPage(touch.travel<0?'page-up':'page-down');else beginTouchMomentum(touch);e.preventDefault();},{passive:false});
+  $('screen').addEventListener('touchend',e=>{cancelTerminalPress();const touch=panTouch;gesture.end();panTouch=null;if(touch?.remote&&Math.abs(touch.travel)>48&&Math.abs(touch.travel)>Math.abs(touch.horizontal)*1.2)remoteHistoryPage(touch.travel<0?'page-up':'page-down');else beginTouchMomentum(touch);
+    // Double-tap on the terminal returns input to raw/direct mode.
+    const now=performance.now();
+    if(touch&&!touch.dragged&&Math.abs(touch.travel)<12&&now-lastTap.at<320&&Math.hypot(touch.x-lastTap.x,touch.y-lastTap.y)<48){lastTap={};if(composerSubmit.pending)notice('正在验证输入回显，暂不能切回直接输入。');else if($('composer').open||modes.get(sessionKey())==='buffered')closeComposer();else modes.set(sessionKey(),'direct');}
+    else lastTap={at:now,x:touch?.x??0,y:touch?.y??0};
+    e.preventDefault();},{passive:false});
   $('screen').addEventListener('touchcancel',()=>{cancelTerminalPress();panTouch=null;});
   $('screen-history').addEventListener('touchstart',beginTerminalPress,{passive:true});$('screen-history').addEventListener('touchmove',moveTerminalPress,{passive:true});
   for(const type of ['touchend','touchcancel'])$('screen-history').addEventListener(type,cancelTerminalPress,{passive:true});
@@ -1181,7 +1186,7 @@
     if(active)syncDraftFields(drafts.get(sessionKey())||'');
     restoreSelected();
   }
-  window.MobileTerminal={roomSelectionVersion:1,pause,resume,captureUIState,restoreUIState,prepareUIReload,cancelUIReload,openNotification,clipboardTarget,pasteClipboardText,reconnect:()=>{if(paused)resume();else{connect();refreshWatchers();}},chooseHost,get hosts(){return [...connections.values()].map(c=>({id:c.host.id,connected:c.connected,status:c.status,sessions:c.inventory.map(s=>s.id),subscription:c.subscription}));},get terminal(){return term;},get active(){return active;},get activeKey(){return sessionKey();},get connected(){return connected;},get ready(){return ready;},get controls(){return controls[active]||null;},revision:config.uiRevision||'bundled',metrics};
+  window.MobileTerminal={roomSelectionVersion:1,pause,resume,captureUIState,restoreUIState,prepareUIReload,cancelUIReload,openNotification,clipboardTarget,pasteClipboardText,reconnect:()=>{if(paused)resume();else{connect();refreshWatchers();}},chooseHost,get hosts(){return [...connections.values()].map(c=>({id:c.host.id,connected:c.connected,status:c.status,sessions:c.inventory.map(s=>s.id),subscription:c.subscription}));},get terminal(){return term;},get active(){return active;},get activeKey(){return sessionKey();},get inputMode(){return modes.get(sessionKey())||'direct';},get connected(){return connected;},get ready(){return ready;},get controls(){return controls[active]||null;},revision:config.uiRevision||'bundled',metrics};
   for(const h of [home,...hosts])connection(h);
   if(document.hidden){paused=true;state('Background UI paused');renderHosts();renderList();}
   else{startActivityTimer();for(const c of connections.values())connect(c);refreshWatchers();}

@@ -1,8 +1,10 @@
 # Wiki Index
 
-> 11 pages | Last updated: 2026-11-12
+> 13 pages | Last updated: 2026-11-21
 
 ## reference
+
+- [Windows 0.2.80 修改日志与发布状态](windows-release-0.2.80.md) — Windows 候选安装包、稳定频道、Android 版本和验收状态
 
 - [会话记录功能交接 2026-11-11](session-handoff-2026-11-11.md) — 工作树、未提交代码、候选包、验证证据、接入与部署待办
 
@@ -11,6 +13,8 @@
 - [Windows 0.2.52 发布与交接](windows-release-0.2.52.md) — 同版本源码／安装包、验证证据、运维边界和暂停后的恢复条件
 
 ## decision
+
+- [Multi-Agent Hub 驾驶舱](multi-agent-hub.md) — 0.2.80 冻结基线、美国电脑试点和桌面接入
 
 - [文件粘贴与 mylib 助理](clipboard-and-mylib-assistant.md) — 后台任务隔离、原生桥接、证据账本及真实剪贴板验收边界
 

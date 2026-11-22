@@ -47,3 +47,9 @@
 2026-10-14：子窗口改为叠放。拖标题移动，拖边缘改大小，可最大化、最小化到下方任务条。只有当前窗口收键盘，被挡住的窗口继续刷新自己的输出。终端黑底，PowerShell 回显按语法上色，报错和重点为红色。打开的窗口都会把输出转发到中转，远程切换能看到最新记录。键盘仍只进当前 CLI。
 
 2026-11-18：连接工作区对话框预填已保存凭据；在此基础上改 Token 并「测试连接」「连接所选房间」时按切换处理：替换旧凭据（含 localStorage/sessionStorage 键），旧 Token 的房间、主机和已开页签从侧栏清空，再按新 Token 重新列出。对话框未预填时仍可对同一中继添加多个 Token。测试 test_workspace_profile_rooms.py::test_switching_prefilled_token_replaces_old_credential_and_clears_its_rooms。
+
+2026-11-18：主机启动端口被占时自动换下一个空闲口（最多 +63，daemon.next_listen_port，打印提示）；desktop 启动器用 /health 在端口区间内识别本机主机（6769 被陌生进程占用也能找到偏移后的主机）。测试在 test_machine_room_startup.py。
+
+2026-11-18：终端默认原始输入（workspace pane.rawInput）：有选区时 Ctrl+C 也直接发 \x03（复制走右键菜单），Ctrl 粘滞键不再重映射；双击终端空白或工作区空白清除选区并回到原始输入。手机端双击终端屏幕切回 direct 输入模式（Esc/关闭本来就退出 buffered，双击是保底）。测试 test_raw_input_mode.py。
+
+2026-11-18（待续）：JINLONG3090 的 cursor-cli 窗口（TimesJev）切换后滚屏异常（滚轮无效/残影/位置守不住/看不到新输出，桌面版每次必现）。排查结论：症状合并指向该会话历史回放卡死（replayPending 不归零：ready=false → repaintPane 跳过=WebGL 残影；keepFollowing 每帧 scrollToBottom=位置守不住、滚轮被拉回；frames 队列堵住=新输出不显示）。下一步：在用户桌面确认该窗口 pane.replayPending>0，再查 daemon 端 history resume 分块为何不完成。

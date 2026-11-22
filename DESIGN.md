@@ -29,3 +29,17 @@ Android tablets: use the available width and height for terminal cells after the
 Tablet presentation uses the physical CSS screen's shorter edge (at least 600px), so the keyboard reducing the visual viewport does not change device identity. Large-screen controls retain at least 44px touch height, single-row auxiliary keys where width allows, and wider bounded selection/settings/editor dialogs. Screen-size calculations use measured viewport and actual font cells, not fixed counts or device model strings. Target device: Honor ROD2-W09, 1920×3000 physical pixels at 400dpi; exercise portrait 768×1200 and landscape 1200×768 at DPR 2.5, then verify actual Android insets and keyboard geometry on-device. Acceptance includes both DOM/WebGL, numbered long history, drafts, dialog bounds and preserving the desktop grid until explicit adaptation.
 
 Windows same-token discovery: subscribe to configured relay directories with endpoint-bound in-memory tokens; automatically connect matching terminal rooms for catalogs only. Do not change active pane, resize ownership or persist discovered secrets. Remove stale discovered views on room loss/revocation. Keep manual and account modes independent. Local daemon relay targets can seed discovery without re-entering a room; frozen hosts use token-only discovery and authenticated full-inventory deduplication. Notifications announce a separate service type and never appear as computers.
+
+## Multi-Agent Hub 驾驶舱（设计稿）
+
+**双端交互决议（2026-11-22）。** Windows 使用覆盖式右栏，手机使用全屏单列，平板按可用宽度选择同一单列或覆盖侧栏。两端均有「对话／待处理／额度／mylib」。安卓返回键依次退出确认、详情、驾驶舱并恢复原终端草稿。手机先交付只读查看，通过真机和宿主回执验收后开放反馈。普通终端仅准备草稿；可验证受理的宿主在驾驶舱提供一次用户确认，再由宿主自动校验。 [跨端场景与放行条件](/D:/aicoding/mylib/tools/agent-hub/rollout-design.md)
+
+首版面向通过 Windows 或 Android 查看多台电脑和多个编程代理的用户。冻结基线与数据边界见 [驾驶舱架构](docs/multi-agent-hub.md)。
+
+- **布局。** 驾驶舱有独立的布局和组件。标题栏入口打开右侧覆盖面板，默认收起。由上到下是轻量顶栏、可滚动主区、固定底部输入框。常规宽度先以 420–520px 做原型，窄窗按可用宽度适配。开合保持终端舞台尺寸、活动窗口与共享 PTY 租约。用户点「定位窗口」才切换终端。
+- **信息结构。** 主视图默认显示总管对话。顶栏提供「对话」「待处理」「额度」，连线状态只显示异常或数据过期。待处理和对话基于中央 MCP 的任务事件，证据可定位到原窗口。输入框可选择全部授权窗口或当前窗口。「额度」按供应商、计费账号及共享额度池聚合，展示周余量、下次周重置和最近采集时间。采集失败时标出过期或待重试。mylib 在对话中提供带来源及版本的技能卡。
+- **交互状态。** 首次无数据时引导选择来源。离线时保留最后更新时间和最后一份已授权快照。区分无输出、需确认、状态未知和推断结论。通知采用状态文字和颜色，重要变化以适度的 `aria-live` 播报。沿用中性表面、细边框、Segoe UI 和既有主题。
+- **mylib 入口。** 顶栏固定显示「mylib」。进入后先看当前任务使用的 skill 或 harness 及实际版本，可展开「进化记录」查看候选、验证差异、发布版本和窗口采用情况。候选更新留在该视图内，需人裁决时汇总到待处理。
+- **本机目录。** Windows 的「mylib → 目录设置」显示运行桌面端的电脑名、当前目录和更改入口。默认 `D:\aicoding\mylib`，优先使用该机已保存的自定义目录。切换远程窗口时保留桌面端所选目录；目录不可读时提示原因并可重新选择。
+- **反馈到窗口。** 驾驶舱聊天的发送键只发给总管。向 Coding 工具回馈使用独立操作，每次由用户选择目标、预览正文或版本变更、确认发送。目标列表沿用原窗口标题，同名时并列显示机器、工具和执行角色。目标变化或离线时保留草稿。确认状态绑定所选执行与正文。
+- **键盘与兼容性。** 打开后焦点进入抽屉，Esc 关闭并回到原触发点，聊天输入不透传到 PTY。面板卸载时释放本身的订阅和定时器。驾驶舱使用独立组件及窄 WebView 接口。旧后台、服务关闭、功能开关关闭时，用现有路径进入终端和 mylib。DOM/WebGL、窄宽窗、键盘操作、草稿保留和共享尺寸均须验收。

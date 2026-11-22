@@ -160,12 +160,28 @@ def start_host(host: str = HOST, port: int = PORT, state_dir: str | None = None,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
     )
     for _ in range(75):
-        if port_open(host, port):
+        # The daemon shifts to the next free port when the requested one is occupied.
+        if any(port_open(host, candidate) for candidate in range(port, min(port + 64, 65536))):
             return
         if process.poll() is not None:
             break
         time.sleep(0.2)
-    raise SystemExit(f"The local daemon did not start at {host}:{port}. Run the host command in a console to inspect the error.")
+    raise SystemExit(f"The local daemon did not start near {host}:{port}. Run the host command in a console to inspect the error.")
+
+
+def local_daemon_base(host: str, start_port: int, span: int = 64) -> str | None:
+    """Base URL of a healthy local daemon; it may have shifted past a squatter."""
+    authority = f"[{host}]" if ":" in host else host
+    for port in range(start_port, min(start_port + span, 65536)):
+        if not port_open(host, port):
+            continue
+        base = f"http://{authority}:{port}"
+        try:
+            health(base)
+        except Exception:
+            continue
+        return base
+    return None
 
 
 def page_url(base: str, *, legacy: bool = False, renderer: str = "auto", token: str = "", browser: bool = False, workspace: bool = False) -> str:
@@ -236,7 +252,8 @@ def connection_url(args: argparse.Namespace, *, browser: bool = False) -> str:
         return page_url(args.url, legacy=args.legacy, renderer=args.renderer, token=token, browser=browser, workspace=args.workspace)
     if args.host not in {"127.0.0.1", "localhost", "::1"} or not 1 <= args.port <= 65535:
         raise ValueError("Automatic startup requires a loopback host and a valid port; use --url for remote servers")
-    if not port_open(args.host, args.port):
+    base = local_daemon_base(args.host, args.port)
+    if base is None:
         if args.no_start:
             raise ValueError("No daemon is listening; start the host or omit --no-start")
         startup = {}
@@ -245,8 +262,13 @@ def connection_url(args: argparse.Namespace, *, browser: bool = False) -> str:
             if value is not None and (name in {"token", "token_file"} or value != ""):
                 startup[name] = value
         start_host(args.host, args.port, args.state_dir, **startup)
-    authority = f"[{args.host}]" if ":" in args.host else args.host
-    base = f"http://{authority}:{args.port}"
+        deadline = time.monotonic() + 15
+        while base is None and time.monotonic() < deadline:
+            base = local_daemon_base(args.host, args.port)
+            if base is None:
+                time.sleep(0.2)
+    if base is None:
+        raise SystemExit(f"No healthy SuperMonoAgent daemon appeared near {args.host}:{args.port}. Run the host command in a console to inspect the error.")
     status = health(base)
     if args.state_dir or os.environ.get("SUPERMONO_STATE_DIR") or args.port == PORT:
         from .relay_bridge import ensure_running

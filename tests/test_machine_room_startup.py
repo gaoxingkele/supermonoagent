@@ -73,7 +73,7 @@ def test_desktop_arguments_forward_only_to_new_host(tmp_path):
     (tmp_path/'token').write_text('new-owner-fixture')
     args=desktop.argument_parser().parse_args(['--relay','wss://fixture.invalid/ws','--token','new-owner-fixture',
                                               '--code','requested-room','--state-dir',str(tmp_path)])
-    with patch.object(desktop,'port_open',return_value=False),patch.object(desktop,'start_host') as start,patch.object(desktop,'health',return_value={'ok':True}),patch('supermonoagent.relay_bridge.ensure_running'):
+    with patch.object(desktop,'local_daemon_base',side_effect=[None,'http://127.0.0.1:6769']),patch.object(desktop,'start_host') as start,patch.object(desktop,'health',return_value={'ok':True}),patch('supermonoagent.relay_bridge.ensure_running'):
         url=desktop.connection_url(args)
     start.assert_called_once_with('127.0.0.1',6769,str(tmp_path),relay='wss://fixture.invalid/ws',token='new-owner-fixture',code='requested-room')
     assert parse_qs(urlsplit(url).fragment)=={'token':['new-owner-fixture']}
@@ -82,7 +82,7 @@ def test_desktop_arguments_forward_only_to_new_host(tmp_path):
 def test_running_host_credentials_are_preserved_despite_new_startup_options(tmp_path):
     (tmp_path/'token').write_text('saved-running-owner-fixture')
     args=desktop.argument_parser().parse_args(['--relay','wss://new.invalid/ws','--token','requested-new-owner-fixture','--state-dir',str(tmp_path)])
-    with patch.object(desktop,'port_open',return_value=True),patch.object(desktop,'start_host') as start,patch.object(desktop,'health',return_value={'ok':True,'default_token':'live-running-owner-fixture'}),patch('supermonoagent.relay_bridge.ensure_running'):
+    with patch.object(desktop,'local_daemon_base',return_value='http://127.0.0.1:6769'),patch.object(desktop,'start_host') as start,patch.object(desktop,'health',return_value={'ok':True,'default_token':'live-running-owner-fixture'}),patch('supermonoagent.relay_bridge.ensure_running'):
         url=desktop.connection_url(args)
     start.assert_not_called()
     assert parse_qs(urlsplit(url).fragment)=={'token':['live-running-owner-fixture']}
@@ -156,3 +156,55 @@ async def check_actual_start(tmp_path):
         finally:
             if process.poll() is None:process.terminate()
             process.communicate(timeout=5)
+
+
+def test_next_listen_port_skips_occupied_and_reports_exhaustion():
+    blocker = socket.socket()
+    blocker.bind(('127.0.0.1', 0))
+    blocker.listen(1)
+    port = blocker.getsockname()[1]
+    try:
+        assert daemon.next_listen_port('127.0.0.1', port) == port + 1
+        assert daemon.next_listen_port('127.0.0.1', port, limit=1) is None
+    finally:
+        blocker.close()
+
+
+def test_occupied_listen_port_shifts_to_next_free_port(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(daemon, 'STATE', tmp_path)
+    (tmp_path / 'token').write_text('saved-owner-fixture')
+    blocker = socket.socket()
+    blocker.bind(('127.0.0.1', 0))
+    blocker.listen(1)
+    port = blocker.getsockname()[1]
+    monkeypatch.setattr(daemon, 'Daemon', lambda token: SimpleNamespace())
+    monkeypatch.setattr(daemon.asyncio, 'run', lambda coroutine: coroutine.close())
+    monkeypatch.setattr(sys, 'argv', ['supermono', '--token', 'shift-owner-fixture', '--host', '127.0.0.1', '--port', str(port)])
+    try:
+        daemon.main()
+    finally:
+        blocker.close()
+    assert f'Port {port} is occupied; listening on {port + 1} instead.' in capsys.readouterr().out
+
+
+def test_desktop_attaches_to_shifted_daemon_when_default_port_has_a_foreign_squatter():
+    args = desktop.argument_parser().parse_args([])
+    state = {'started': False}
+
+    def fake_port_open(host, port, timeout=0.4):
+        return port == 6769 or (state['started'] and port == 6770)
+
+    def fake_health(base):
+        if base.endswith(':6770'):
+            return {'ok': True, 'default_token': 'shifted-owner-fixture'}
+        raise OSError('not a SuperMonoAgent daemon')
+
+    with patch.object(desktop, 'port_open', side_effect=fake_port_open), \
+            patch.object(desktop, 'health', side_effect=fake_health), \
+            patch.object(desktop, 'start_host', side_effect=lambda *a, **k: state.__setitem__('started', True)) as start, \
+            patch('supermonoagent.relay_bridge.ensure_running') as bridge:
+        url = desktop.connection_url(args)
+    start.assert_called_once_with('127.0.0.1', 6769, None)
+    assert ':6770' in url
+    assert parse_qs(urlsplit(url).fragment) == {'token': ['shifted-owner-fixture']}
+    bridge.assert_called_once()
