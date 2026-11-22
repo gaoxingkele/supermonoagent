@@ -246,11 +246,13 @@
     }catch{if(!target||journalCurrent(target)){restoreJournalTerminal(pane,false);notice('代码折叠不可用：当前主机未支持记录或记录服务不可用。');}}
   }
   function openPaneJournal(pane,projection){
-    if(!pane){notice('请先选择终端窗口。');return;}
+    const info=sessionInfo(pane?.sid);
+    if(!pane||!info){notice('请先选择终端窗口。');return;}
     try{const target=journalTarget(pane);
       if(!pane.journalDialog||!pane.journalDialogTarget||!journalCurrent(pane.journalDialogTarget)){pane.journalDialog?.dispose();pane.journalDialogTarget=target;pane.journalDialog=C.createConversationViewer(journalOptions(target));}
-      // The picker keeps archived generations selectable; no title/cwd matching.
-      pane.journalDialog.open({projection});
+      const liveJournal=target.host.connected&&target.host.supported&&[1,true].includes(target.host.capabilities.conversation_journal);
+      pane.journalDialog.open({projection,sessionId:pane.raw,journalId:liveJournal?undefined:info.session.journal_id||pane.journalManifest?.journal_id,
+        windowTitle:info.win.title||info.session.shell});
     }catch{notice('记录不可用；请检查当前目标连接。');}
   }
   async function bindJournalSource(pane){
@@ -1042,7 +1044,12 @@
     };
     draw(mobile()||maximized?active:layout,$('stage'));
     scheduleVisibleFit();updateFooter();
-    for(const p of panes.values())if(!p.el.hidden)repaintPane(p);
+    for(const p of panes.values())if(!p.el.hidden){
+      // Showing or reparenting the pane can reset the browser scrollbar while
+      // xterm still holds the user's scrollback row. Sync before accepting input.
+      p.term._core?.viewport?.syncScrollArea(true);
+      repaintPane(p);
+    }
   }
   function subscribe(){
     for(const host of hosts.values()){

@@ -529,7 +529,7 @@
   }
   function createConversationViewer(options={}){
     let context={...options},generation=0,disposed=false,host=null,doc=null,ui=null;
-    let projection='history',layout='history',journal=null,journalId='',cursor=null,loading=false;
+    let projection='history',layout='history',journal=null,journalId='',windowTitle='',cursor=null,loading=false;
     let events=[],pendingCount=0,codeVisible=false,pageStarts=[null],pageIndex=-1,listCursor=null,readThrough=0,newerPending=false;
     const bodies=new Map(),preferences=new Map();
     const stale=version=>disposed||version!==generation;
@@ -555,6 +555,7 @@
       Object.assign(host.style,{background:'#151b23',color:'#e6edf3',padding:'12px',boxSizing:'border-box',font:'14px/1.6 system-ui, sans-serif',width:context.inline?'100%':'min(960px, 96vw)',maxHeight:context.inline?'100%':'90vh',border:'1px solid #465365',borderRadius:'8px',display:'flex',flexDirection:'column',gap:'8px',minHeight:'0'});
       const toolbar=node('div'),title=node('strong'),badges=node('div'),picker=node('div'),notice=node('div'),cards=node('div');
       Object.assign(toolbar.style,{display:'flex',flexWrap:'wrap',gap:'8px',alignItems:'center'});
+      Object.assign(title.style,{minWidth:'0',overflowWrap:'anywhere'});
       Object.assign(cards.style,{overflow:'auto',minHeight:'0',flex:'1',overscrollBehavior:'contain'});
       notice.setAttribute('role','status');notice.setAttribute('aria-live','polite');
       const mode=button('模式：历史',()=>{layout=layout==='history'?'dialog':'history';render();});
@@ -671,7 +672,10 @@
     }
     function render(){
       if(!ui)return;
-      ui.title.textContent=projection==='conversation'?'对话记录':'历史记录';ui.mode.textContent='模式：'+(layout==='dialog'?'对话':'历史');
+      const recordTitle=projection==='conversation'?'对话记录':'历史记录';
+      ui.title.textContent=windowTitle||recordTitle;
+      host.setAttribute('aria-label',windowTitle?windowTitle+' · '+recordTitle:'历史记录与对话记录');
+      ui.mode.textContent='模式：'+(layout==='dialog'?'对话':'历史');
       ui.codes.setAttribute('aria-pressed',String(codeVisible));ui.cards.dataset.layout=layout;
       ui.cards.replaceChildren();for(const event of events)ui.cards.append(makeCard(event));
       navigation();renderBadges();
@@ -767,15 +771,18 @@
     async function open(value={}){
       if(disposed)throw new Error('Conversation viewer is disposed');
       ensure();clear();projection=value.projection==='conversation'?'conversation':'history';layout=value.layout==='dialog'?'dialog':'history';
+      windowTitle=visibleJournalText(value.windowTitle||'');
       journalId=value.journalId||'';codeVisible=preferences.get(journalId)||false;show();render();
       const version=generation,request=context.request;message('正在读取记录…');
       try{
         if(typeof request!=='function')throw new Error('Unsupported');
-        if(!journalId){
+        if(!journalId&&!value.sessionId){
           await listJournals(value,version,request);return;
         }
-        const status=await request('status',{journal_id:journalId});if(stale(version))return;
-        if(!status||status.journal_id!==journalId)throw new Error('Invalid status');journal=status;renderBadges();
+        const status=await request('status',journalId?{journal_id:journalId}:{session_id:value.sessionId});if(stale(version))return;
+        if(!status?.journal_id||(journalId&&status.journal_id!==journalId)
+          ||(value.sessionId&&status.session_id!==value.sessionId))throw new Error('Invalid status');
+        journalId=status.journal_id;journal=status;codeVisible=preferences.get(journalId)||false;renderBadges();
         await loadPage();
       }catch{if(!stale(version))message('无法读取记录；当前来源可能未绑定、离线、不支持或无权限');}
     }

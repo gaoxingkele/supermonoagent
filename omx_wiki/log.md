@@ -50,3 +50,7 @@
 ## [2026-11-16] ingest | Claude 窗口滚屏归还智能体
 - **Pages:** claude-wheel-native-paging.md
 - **Summary:** 根因：alternate 屏滚轮被本地纯文本存档截胡，Claude 自身的鼠标跟踪滚动从未收到事件。修复：SGR 鼠标放行 + Page 键 native 路由（Codex 维持原状）。真实抓包→重放 e2e 的诊断套路。
+
+## [2026-11-17] ingest | 多 Token 桌面共享现状
+- **Pages:** multi-token-desktop-sharing.md
+- **Summary:** 实测确认异机多 token 隔离已支持（账号/分组/中继三层）；缺口在本机环回免 token 路径，双桌面小改方案待确认。

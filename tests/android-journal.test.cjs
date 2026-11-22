@@ -82,6 +82,18 @@ test('settings archive chooser lists closed records without borrowing the active
   const f=fixture();f.$('settings-dialog').children.find(button=>button.id==='journal-archives').onclick();await f.tick();
   assert.equal(f.viewers[0].opens[0].journalId,undefined);assert.equal(f.viewers[0].opens[0].projection,'history');
 });
+test('window record buttons pass the current session and its title without a cached journal ID',async()=>{
+  const f=fixture();
+  delete f.c.inventory[0].journal_id;
+  f.c.inventory[0].title='第一个窗口';
+  f.c.inventory[1].title='第二个窗口';
+  await f.$('journal-history').onclick();
+  f.context.active='s2';
+  await f.$('journal-conversation').onclick();
+  const [history,conversation]=f.viewers[0].opens;
+  assert.deepEqual({...history},{projection:'history',journalId:'',sessionId:'s1',windowTitle:'第一个窗口'});
+  assert.deepEqual({...conversation},{projection:'conversation',journalId:'j2',sessionId:'s2',windowTitle:'第二个窗口'});
+});
 test('archive disconnect and authentication failure reject pending reads without exposing errors',async()=>{
   for(const deny of [false,true]){
     const f=fixture();f.c.connected=false;
