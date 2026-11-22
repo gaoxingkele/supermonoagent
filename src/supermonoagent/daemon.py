@@ -258,6 +258,7 @@ class Daemon:
         self._sidecar_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='sma-files')
         self.accounts = Accounts(STATE / "accounts.json")
         self.hub = Hub()
+        self.hub.decorate_catalog = self._add_cockpit_identity
         self.hub.task_events = TaskEventStore(STATE / "task-events.json")
         self.hub.default_owner = token
         self.journals = None
@@ -984,24 +985,51 @@ class Daemon:
             await asyncio.to_thread(self.hub.resize, client, cols, rows)
             return [], None
         if op == OP_CLOSE:
+            from .pty import PtyCloseError
             body = unpack_json(payload) if payload else {}
             wid = str(body.get('window') or '')
             requested = self.hub.sessions.get(str(body.get('session') or ''))
+            req = body.get('request')
+            ack = None
+            if req is not None:
+                if wid or not isinstance(req, str) or not 1 <= len(req) <= 64:
+                    raise ProtocolError('Invalid session close request')
+                fields = ('session', 'window_id', 'process_generation')
+                if any(not isinstance(body.get(key), str) or not 1 <= len(body[key]) <= 128 for key in fields):
+                    raise ProtocolError('Invalid session close target')
+                ack = {key: body[key] for key in fields}
+                ack.update(request=req, closed=False)
+                if requested is None or not self.hub.owns(client.token, requested.window_id) or not self.hub._channel_ok(client,requested):
+                    return [self._state(client,close_ack=dict(ack,error='target_unavailable'))],None
+                if requested.window_id != ack['window_id'] or requested.process_generation != ack['process_generation']:
+                    return [self._state(client,close_ack=dict(ack,error='target_changed'))],None
             if (wid and self.hub.owns(client.token, wid) and self._window_has_managed(wid)
                     or not wid and requested is not None and requested.interaction_mode == 'managed'
                     and self.hub.owns(client.token, requested.window_id)):
-                return [self._state(client, error='请使用对话记录模式的关闭会话按钮。')], None
+                return [self._state(client, error='请使用对话记录模式的关闭会话按钮。',
+                    close_ack=dict(ack,error='managed_requires_own_close') if ack else None)], None
             before = len(self.hub.windows), len(self.hub.sessions)
-            if body.get("window"):
-                if self.hub.owns(client.token, str(body["window"])):
-                    self.hub.close_window(str(body["window"]))
-            elif body.get("session"):
-                session = self.hub.sessions.get(str(body["session"]))
-                if session is not None and self.hub.owns(client.token, session.window_id):
-                    self.hub.close_session(str(body["session"]))
+            try:
+                if wid:
+                    if self.hub.owns(client.token, wid):
+                        window = self.hub.windows[wid]
+                        for session in list(window.sessions.values()):
+                            if not self.client_authorized(client):
+                                return [], 4001
+                            if self.hub.sessions.get(session.id) is session and self.hub.owns(client.token, wid):
+                                await self.hub.end_native_session(session)
+                        if self.hub.windows.get(wid) is window and not window.sessions and self.hub.owns(client.token, wid):
+                            self.hub.close_window(wid)
+                elif requested is not None and self.hub.owns(client.token, requested.window_id):
+                    await self.hub.end_native_session(requested)
+            except PtyCloseError:
+                return [self._state(client,error='无法确认后台进程已退出，请检查并重试。',
+                    close_ack=dict(ack,error='process_still_alive') if ack else None)],None
+            if not self.client_authorized(client):
+                return [],4001
             if before != (len(self.hub.windows), len(self.hub.sessions)):
                 LOGGER.info('terminal_closed windows=%d terminals=%d', len(self.hub.windows), len(self.hub.sessions))
-            return [], None
+            return ([self._state(client,close_ack=dict(ack,closed=True))] if ack else []),None
         if op == OP_PING:
             return [pack(OP_PONG, payload)], None
         if op == OP_GROUP:
@@ -1178,7 +1206,7 @@ class Daemon:
                 continue
             self.hub._send(client, self._state(client))
 
-    def _state(self, client, error: str | None = None, resize_ack: dict | None = None) -> bytes:
+    def _state(self, client, error: str | None = None, resize_ack: dict | None = None, close_ack: dict | None = None) -> bytes:
         visible = self.hub.summary(client.token, history_context=True) if client.history_context else self.hub.summary(client.token)
         if not getattr(client, 'conversation_journal', False) or client.delegated or self.journals is None:
             visible = {**visible, 'capabilities': {key: value for key, value in visible['capabilities'].items()
@@ -1195,17 +1223,23 @@ class Daemon:
         service["sessions"] = sum(len(item["sessions"]) for item in visible["windows"])
         body = {**visible, "selected": client.window_id or "", "session": client.session_id or "", "service": service,
                 "controls": self.hub.controls(client) if client.multiplex else {}}
-        installation = getattr(getattr(self.journals, 'store', None), 'host_installation_id', None)
-        if (installation and not client.delegated and getattr(client, 'conversation_journal', False)
-                and (self.log_state_dir / 'cockpit-feedback.json').is_file()):
-            body['host_installation_id'] = installation
-            if visible['capabilities'].get('managed_conversation'):
-                body['capabilities'] = {**visible['capabilities'], 'cockpit_feedback': 1}
+        self._add_cockpit_identity(client, body)
         if error:
             body["error"] = error
         if resize_ack is not None:
             body["resize_ack"] = resize_ack
+        if close_ack is not None:
+            body["close_ack"] = close_ack
         return pack_json(OP_HELLO_OK, body)
+
+    def _add_cockpit_identity(self, client, body):
+        # OP2 and OP7 both carry complete, freshly negotiated capabilities.
+        installation = getattr(getattr(self.journals, 'store', None), 'host_installation_id', None)
+        if (installation and not client.delegated and client.conversation_journal
+                and (self.log_state_dir / 'cockpit-feedback.json').is_file()):
+            body['host_installation_id'] = installation
+            if client.managed_conversation and self.managed is not None and body['capabilities'].get('managed_conversation'):
+                body['capabilities'] = {**body['capabilities'], 'cockpit_feedback': 1}
 
     async def serve_http(self, connection, request):
         page = importlib.reload(web)

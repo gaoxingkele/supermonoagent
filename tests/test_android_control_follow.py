@@ -73,6 +73,8 @@ async def exercise(playwright, renderer):
                         deferred = []
                         refresh = daemon.hub.refresh_subscriptions
                         daemon.hub.refresh_subscriptions = lambda client, ids: deferred.append((client, ids))
+                        if await mobile.locator('#tools-toggle').get_attribute('aria-expanded') != 'true':
+                            await mobile.locator('#tools-toggle').tap()
                         await mobile.locator('#refresh-screen').tap()
                         await mobile.wait_for_function('document.getElementById("refresh-screen").getAttribute("aria-busy")==="true"')
                         assert await mobile.locator('#control').is_disabled()

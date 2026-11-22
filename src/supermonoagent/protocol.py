@@ -34,6 +34,7 @@ OP_JOURNAL = 24
 OP_URL_OPEN = 25
 
 CAPABILITIES = {
+    "close_ack": 1,
     "history_context": 1,
     "history_resume": 1,
     "history_chunks": 1,

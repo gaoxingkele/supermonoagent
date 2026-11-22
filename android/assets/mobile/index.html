@@ -22,8 +22,20 @@
 <div id="debug-board"><div id="debug-grid" data-density="16" aria-label="中继终端方块列表"></div><p id="debug-empty" class="empty-state" hidden>暂无中继终端，请检查连接或返回连接设置测试。</p></div>
 <div class="debug-pagination"><button id="debug-prev" aria-label="上一页终端">上一页</button><span id="debug-page" class="hint"></span><button id="debug-next" aria-label="下一页终端">下一页</button></div>
 </dialog>
+<dialog id="terminal-action-dialog" aria-labelledby="terminal-action-heading">
+<form id="terminal-action-form">
+<h2 id="terminal-action-heading"></h2><p id="terminal-action-target"></p>
+<label id="terminal-action-name-label" hidden>新窗口名称<input id="terminal-action-name" maxlength="40" autocomplete="off"></label>
+<p id="terminal-action-status" role="status"></p>
+<div class="form-actions"><button id="terminal-action-cancel" type="button" autofocus>取消</button><button id="terminal-action-confirm" type="submit"></button></div>
+</form></dialog>
 <dialog id="session-dialog" aria-labelledby="workspace-heading">
 <div class="dialog-heading"><div><h2 id="workspace-heading">工作空间</h2><p id="host-identity" class="hint">选择电脑和终端</p></div><button id="sessions-close" aria-label="关闭工作空间">关闭</button></div>
+<section class="current-terminal-actions" aria-label="管理当前终端">
+<p id="current-terminal-target" class="hint"></p>
+<button id="rename-current-window" type="button" aria-haspopup="dialog" disabled>修改窗口名称</button>
+<button id="close-current-process" type="button" aria-haspopup="dialog" disabled>结束终端进程</button>
+</section>
 <section aria-labelledby="computers-heading"><div class="section-heading"><h3 id="computers-heading">电脑</h3><button id="host-add">＋ 添加电脑</button></div><div id="host-list"></div></section>
 <section aria-labelledby="windows-heading"><div class="section-heading"><h3 id="windows-heading">窗口 / 终端</h3><span id="session-count" class="hint"></span></div><label class="search-label" for="session-search">搜索当前电脑的终端</label><input id="session-search" type="search" placeholder="搜索窗口、智能体或路径" autocomplete="off"><div id="session-list"></div></section>
 <div class="new"><select id="new-interaction-mode" aria-label="新建会话模式"><option value="native">原始 CLI</option><option value="managed">独立对话记录</option></select><select id="shell" aria-label="新终端类型"><option value="powershell">PowerShell</option><option value="pwsh">PowerShell 7</option><option value="cmd">CMD</option><option value="claude">Claude</option><option value="codex">Codex</option></select><select id="managed-provider" aria-label="独立对话提供方" hidden><option value="claude">Claude</option><option value="codex">Codex</option></select><button id="new">＋ 新建终端</button></div><p id="managed-create-hint" class="hint" role="status" hidden>以当前原始 CLI 的启动目录新建独立窗口；不会恢复或修改原会话。</p></dialog>

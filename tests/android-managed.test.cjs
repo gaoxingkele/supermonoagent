@@ -151,11 +151,14 @@ test('disconnected managed pane never labels cached ready status as sendable',as
   assert.ok(f.$('managed-state').textContent.includes('待核对'));assert.ok(f.$('managed-message').textContent.includes('连接已断开'));
 });
 test('managed close handler uses exact target and nonce through OP24, never legacy OP9',async()=>{
-  const f=fixture();await f.mount();const closing=f.$('managed-close').onclick(),request=f.sent.at(-1);
+  const f=fixture();await f.mount();let confirmation=null;
+  f.context.openTerminalAction=kind=>{confirmation=kind;};
+  const before=f.sent.length;f.$('managed-close').onclick();assert.equal(confirmation,'close');assert.equal(f.sent.length,before);
+  const closing=f.api.controller.closeSession(),request=f.sent.at(-1);
   assert.equal(request.op,24);assert.equal(request.value.action,'close_managed');assert.match(request.value.params.nonce,/^[A-Za-z0-9_-]{1,64}$/);
   for(const field of ['window_id','session_id','process_generation','journal_id'])assert.equal(request.value.params[field],f.status()[field]);
   assert.ok(f.sent.every(frame=>frame.op!==9));f.reply({...f.status(),state:'closing'});await closing;
-  assert.equal(f.api.snapshot.state,'closing');assert.ok(!/\b(?:send|sendHost|targetFrame)\(\s*(?:\w+,\s*)?9\b/.test(app));
+  assert.equal(f.api.snapshot.state,'closing');assert.ok(!/\b(?:send|sendHost|targetFrame)\(\s*(?:\w+,\s*)?9\b/.test(block));
 });
 test('native creation cannot issue OP6 from a managed window but original native path stays OP6',()=>{
   for(const native of [false,true]){

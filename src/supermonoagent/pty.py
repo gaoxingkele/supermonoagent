@@ -10,10 +10,15 @@ import shutil
 import subprocess
 import threading
 import time
+import weakref
 
 
 class PtyClosed(Exception):
     pass
+
+
+class PtyCloseError(RuntimeError):
+    """The source could not confirm that its terminal process exited."""
 
 
 class ConptyInputFilter:
@@ -87,6 +92,18 @@ class WinPty:
         self._footer_identity = _process_identity(self._footer_pid)
         self._footer_lock = threading.Lock()
         self._footer_cache = None
+        self._close_lock = threading.Lock()
+        self._closed = False
+        self._process_handle = None
+        if os.name == 'nt' and type(self._footer_pid) is int:
+            import _winapi
+            try:
+                # Pin the spawned process object, including through PID reuse.
+                self._process_handle = _winapi.OpenProcess(_winapi.SYNCHRONIZE | 0x0001, False, self._footer_pid)
+            except OSError:
+                pass
+            else:
+                self._release_handle = weakref.finalize(self, _winapi.CloseHandle, self._process_handle)
 
     def footer_patch(self, cols: int, rows: int) -> bytes:
         """Read current status cells in a hidden helper; never write to the PTY."""
@@ -148,14 +165,40 @@ class WinPty:
         return bool(self._proc.isalive())
 
     def close(self) -> None:
-        with self._lock:
-            if self._escape_timer is not None:
-                self._escape_timer.cancel()
-                self._escape_timer = None
-        try:
-            self._proc.terminate(force=True)
-        except Exception:
-            pass
+        with self._close_lock:
+            if self._closed:
+                return
+            with self._lock:
+                if self._escape_timer is not None:
+                    self._escape_timer.cancel()
+                    self._escape_timer = None
+            try:
+                if self._process_handle is not None:
+                    import _winapi
+                    handle = self._process_handle
+                    if _winapi.WaitForSingleObject(handle, 0) == _winapi.WAIT_TIMEOUT:
+                        try:
+                            _winapi.TerminateProcess(handle, 1)
+                        except OSError:
+                            if _winapi.WaitForSingleObject(handle, 0) != _winapi.WAIT_OBJECT_0:
+                                raise
+                    if _winapi.WaitForSingleObject(handle, 2000) != _winapi.WAIT_OBJECT_0:
+                        raise PtyCloseError("process_still_alive")
+                    self._release_handle()
+                    self._process_handle = None
+                else:
+                    if self._proc.isalive():
+                        self._proc.terminate(force=True)
+                    if self._proc.isalive():
+                        raise PtyCloseError("process_still_alive")
+            except (OSError, RuntimeError) as exc:
+                raise PtyCloseError("process_still_alive") from exc
+            self._closed = True
+            # Wake pywinpty's reader so the journal can drain/record EOF.
+            try:
+                self._proc.pty.cancel_io()
+            except (OSError, RuntimeError):
+                pass
 
 
 def _powershell_color_command() -> str:

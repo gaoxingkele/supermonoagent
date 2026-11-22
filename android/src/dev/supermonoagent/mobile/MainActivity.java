@@ -873,7 +873,7 @@ public final class MainActivity extends Activity {
             };
             view.postDelayed(fallback, 500);
             try {
-                view.evaluateJavascript("Boolean(window.SuperMonoCockpit?.back?.())", handled -> {
+                view.evaluateJavascript("Boolean(window.MobileTerminal?.closeWindowAction?.() || window.SuperMonoCockpit?.back?.())", handled -> {
                     if (settled[0]) return;
                     view.removeCallbacks(fallback);
                     if ("true".equals(handled)) {

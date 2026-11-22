@@ -19,7 +19,7 @@
   let catalog = [], panes = new Map(), openTabs = [], active = '', layout = null;
   let userConnectedOnce = false, maximized = false, ctrl = false;
   let windowOrder=read(localStorage,'sma.workspace.window-order')==='hot'?'hot':'grouped';
-  let renameWindow = null, terminateSession = null, connectionOwner = null;
+  let renameWindow = null, terminateSession = null, terminateSequence = 0, connectionOwner = null;
   let homeConfig={...config}, savedHosts=loadHosts(), selectedHost='local', editingHost='', homeRelays=[];
   let relayProfiles=loadRelayProfiles(),profileLegacy='connection',roomMenu=null;
   let runtimeDefaultToken='',prefilledTokenTarget='',defaultTokenEdited=false;
@@ -63,6 +63,11 @@
   function aggregateCatalog(){
     catalog=[...hosts.values()].flatMap(host=>host.catalog.map(win=>({...win,host,raw:win.id,id:key(host,win.id),
       group:key(host,win.group||'default'),sessions:(win.sessions||[]).map(session=>({...session,raw:session.id,id:key(host,session.id)}))})));
+  }
+  function catalogCounts(windows){
+    let terminals=0,occupied=0;
+    for(const win of windows){const count=win.sessions?.length||0;terminals+=count;if(count)occupied++;}
+    return {terminals,occupied,empty:windows.length-occupied};
   }
   const presets = [ ['powershell','PowerShell'], ['pwsh','PowerShell 7'], ['cmd','CMD'], ['claude','Claude'], ['codex','Codex'] ];
   const node = (tag, className, text) => { const el = document.createElement(tag); if(className)el.className=className;if(text!==undefined)el.textContent=text;return el; };
@@ -534,6 +539,9 @@
     };
   }
   function sync(host,info,greeting){
+    const pending=terminateSession,ack=info.close_ack;
+    if(ack&&pending?.request&&pending.host===host&&validOwner(pending)&&ack.request===pending.request&&
+       ack.session===pending.id&&ack.window_id===pending.windowId&&ack.process_generation===pending.processGeneration)pending.ack=ack;
     if(greeting&&!host.connected){
       if(!info.capabilities?.multiplex){host.error='此电脑后台尚不支持多终端工作区，请更新后台。';host.phase='unsupported';host.ws.onclose=null;host.ws.close();updateConnection();renderHosts();return;}
       host.supported=true;host.connected=true;host.retry=0;host.initialCatalog=true;host.phase='connected';host.error='';userConnectedOnce=true;
@@ -1084,7 +1092,7 @@
   function renderTabPicker(){
     const menu=$('tabs-overflow-menu');if(!menu)return;menu.replaceChildren();
     const groups=new Map();for(const id of openTabs){const info=sessionInfo(id);if(!info)continue;const host=info.win.host;if(!groups.has(host))groups.set(host,[]);groups.get(host).push({id,info});}
-    $('tabs-overflow-toggle').textContent='全部窗口 ('+[...groups.values()].reduce((n,items)=>n+items.length,0)+') ▾';
+    $('tabs-overflow-toggle').textContent='已开页签 ('+[...groups.values()].reduce((n,items)=>n+items.length,0)+') ▾';
     for(const [host,items] of groups){
       menu.append(node('div','tab-picker-heading',(host.identity.machine||host.name)+(host.config.code?' · '+host.config.code:'')));
       for(const {id,info} of items){
@@ -1145,7 +1153,7 @@
       for(const win of catalog.filter(win=>win.host===host))for(const session of win.sessions)appendEntry(windows,host,win,session);
       tree.append(computer);
     }
-    if(!catalog.length)tree.append(node('p','muted small','暂无会话。新建终端开始工作。'));
+    if(count===0)tree.append(node('p','muted small','暂无会话。新建终端开始工作。'));
     $('session-count').textContent=count+' 个终端';
     updateWindowOrderButton();updateSessionDots();
   }
@@ -1171,7 +1179,14 @@
     const win=catalog.find(win=>win.id===id);if(!win)return;context=context||owner(win.host);if(!validOwner(context))return;
     renameWindow={...context,id:win.raw};$('rename-value').value=win.title;$('rename-dialog').showModal();$('rename-value').focus();$('rename-value').select();
   }
-  function terminate(sid){const pane=panes.get(sid);if(!livePane(pane))return;if(isManagedPane(pane)){pane.managedController?.closeSession();return;}terminateSession={...owner(pane.host),id:pane.raw};$('terminate-dialog').querySelector('p').textContent='这将终止当前终端中的进程。其他客户端也会断开此会话。';$('terminate-dialog').showModal();}
+  function terminate(sid){
+    const pane=panes.get(sid),info=sessionInfo(sid);if(!livePane(pane)||!info)return;
+    if(isManagedPane(pane)){pane.managedController?.closeSession();return;}
+    terminateSession={...owner(pane.host),id:pane.raw,windowId:info.win.raw,title:info.win.title,processGeneration:info.session.process_generation};
+    $('terminate-form').querySelector('.danger').disabled=false;
+    $('terminate-dialog').querySelector('p').textContent='结束 '+(pane.host.identity.machine||pane.host.name)+' 上「'+info.win.title+'」的 '+(info.session.shell||'终端')+' 进程（会话 '+pane.raw+'）？所有连接此会话的客户端都会断开。';
+    $('terminate-dialog').showModal();
+  }
   function setCtrl(value){ctrl=value;$('ctrl-key').setAttribute('aria-pressed',String(value));}
   function endpoint(settings){
     const url=new URL(C.socketURL(settings.relay,location.origin));url.searchParams.delete('token');url.hash='';
@@ -1292,7 +1307,9 @@
       const label=host.identity.machine||host.name,room=host.config.code||'本机直连';
       const phase=host.connected?'已连接':({'auth-failed':'验证失败',connecting:'连接中',reconnecting:'重连中',offline:'已断开',invalid:'连接无效',unsupported:'后台版本不兼容'}[host.phase]||'未连接');
       const row=node('div','daemon-monitor-row');row.setAttribute('role','listitem');row.dataset.host=host.id;row.dataset.current=String(host.id===daemonMonitor.hostID);
-      row.append(node('strong','',label+' · '+room),node('span','',phase+' · '+host.catalog.length+' 个窗口 / '+host.catalog.reduce((count,win)=>count+(win.sessions||[]).length,0)+' 个终端'),node('span','',(host.daemonInfo?.pid?'PID '+host.daemonInfo.pid:'PID 未知')+' · '+daemonUptime(host)));
+      const counts=catalogCounts(host.catalog);
+      const inventory=counts.occupied+' 个窗口 / '+counts.terminals+' 个终端'+(counts.empty?'（另有 '+counts.empty+' 个空窗口）':'');
+      row.append(node('strong','',label+' · '+room),node('span','',phase+' · '+inventory),node('span','',(host.daemonInfo?.pid?'PID '+host.daemonInfo.pid:'PID 未知')+' · '+daemonUptime(host)));
       list.append(row);const option=node('option','',label+' · '+room);option.value=host.id;options.push(option);
     }
     if(select.options.length!==options.length||options.some((option,index)=>select.options[index].value!==option.value||select.options[index].textContent!==option.textContent))select.replaceChildren(...options);
@@ -1403,7 +1420,8 @@
       updateToggle();row.append(toggle);
       const pick=button('','切换到'+(host.id==='local'?host.name:' '+host.name),()=>switchHost(host.id));pick.className='workspace-host-pick';pick.setAttribute('aria-current',String(host.id===selectedHost));
       const rooms=host.config.code?[host.config.code]:host.id==='local'?[...new Set(homeRelays.map(relay=>relay.code).filter(code=>typeof code==='string'&&code))]:[];
-      pick.append(node('span','workspace-host-name',host.identity.machine||host.name),node('small','muted',rooms.length?'房间号：'+rooms.join('、'):'未配置房间号'));
+      const roomLabel=rooms.length?'房间号：'+rooms.join('、'):'未配置房间号';
+      pick.append(node('span','workspace-host-name',host.identity.machine||host.name),node('small','muted',(host.connected?catalogCounts(host.catalog).terminals+' 个终端 · ':'')+roomLabel));
       pick.append(node('span','workspace-host-status',(host.connected?'已连接':host.phase)+' · '+(host.meter.rtt===null?'—':Math.round(host.meter.rtt)+' ms')),
         node('small','host-rates','↑ '+C.formatRate(host.rates.tx)+' ↓ '+C.formatRate(host.rates.rx)));row.append(pick);
       const actions=button('···','房间菜单 '+(host.identity.machine||host.name),event=>showRoomMenu(event,host));actions.className='workspace-host-edit';row.append(actions);return row;
@@ -1482,15 +1500,27 @@
   $('terminate-cancel').onclick=()=>$('terminate-dialog').close();$('terminate-form').onsubmit=async e=>{
     e.preventDefault();const context=terminateSession,host=context?.host,dialog=$('terminate-dialog'),message=dialog.querySelector('p'),submit=dialog.querySelector('.danger');
     if(!validOwner(context)){dialog.close();return;}
-    if(sessionInfo(key(host,context.id))?.session.interaction_mode==='managed'){message.textContent='目标已变为对话记录模式；请关闭此对话框并使用该窗口的结束记录操作。';return;}
-    if(!host.connected||!send(context,9,{session:context.id})){message.textContent='当前电脑未连接，结束指令未发送。请恢复连接后重试。';return;}
+    const info=sessionInfo(key(host,context.id));
+    if(!info||info.win.raw!==context.windowId||info.win.title!==context.title||info.session.process_generation!==context.processGeneration||info.session.interaction_mode==='managed'){
+      message.textContent='目标窗口已变更，请关闭此对话框并重新选择要结束的终端。';return;
+    }
+    if(submit.disabled)return;
+    const precise=host.capabilities.close_ack===1;
+    if(precise&&!context.processGeneration){message.textContent='缺少进程代次，请刷新目录后重新确认。';return;}
+    const payload={session:context.id};context.ack=null;
+    if(precise){context.request='end-'+(++terminateSequence);Object.assign(payload,{request:context.request,window_id:context.windowId,process_generation:context.processGeneration});}
+    if(!host.connected||!send(context,9,payload)){message.textContent='当前电脑未连接，结束指令未发送。请恢复连接后重试。';return;}
     submit.disabled=true;message.textContent='正在等待后台确认结束会话…';
     try{
       const exists=()=>host.catalog.some(win=>(win.sessions||[]).some(session=>session.id===context.id)),deadline=performance.now()+8000;
-      while(validOwner(context)&&host.connected&&exists()&&performance.now()<deadline)await new Promise(resolve=>setTimeout(resolve,40));
-      if(validOwner(context)&&host.connected&&!exists())dialog.close();
+      while(terminateSession===context&&dialog.open&&validOwner(context)&&host.connected&&
+            (precise?!context.ack:exists())&&performance.now()<deadline)await new Promise(resolve=>setTimeout(resolve,40));
+      if(terminateSession!==context||!dialog.open)return;
+      if(context.ack?.error==='process_still_alive')message.textContent='后台尚未确认进程退出，会话仍保留。';
+      else if(context.ack?.closed===false)message.textContent='后台拒绝结束该会话，请重新核对目标。';
+      else if(validOwner(context)&&host.connected&&(precise?context.ack?.closed===true:!exists()))dialog.close();
       else message.textContent='尚未收到后台结束确认，请检查连接后重试。';
-    }finally{submit.disabled=false;}
+    }finally{if(terminateSession===context)submit.disabled=false;}
   };
   $('new-project').onclick=()=>showRelayProfiles('workspace');
   const tabPicker=node('div','tab-picker'),tabPickerToggle=button('全部窗口 ▾','查看全部已打开窗口',()=>{const menu=$('tabs-overflow-menu'),show=menu.hidden;closeRoomMenu();closeAppMenu();renderTabPicker();menu.hidden=!show;positionTabPicker();tabPickerToggle.setAttribute('aria-expanded',String(show));if(show)(menu.querySelector('[aria-checked="true"]')||menu.querySelector('button'))?.focus();});

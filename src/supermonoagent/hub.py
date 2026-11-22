@@ -25,7 +25,7 @@ from .protocol import (
     pack_feed,
     pack_json,
 )
-from .pty import PtyClosed, WinPty, default_cwd, shell_command
+from .pty import PtyClosed, PtyCloseError, WinPty, default_cwd, shell_command
 from .pump import OutputPump
 from .history_context import pack_history_context
 from .task_events import DEFAULT_SUMMARY, TaskEventStore, TaskStateDetector
@@ -152,6 +152,7 @@ class Hub:
         self.pty_factory = pty_factory
         self.windows: dict[str, Window] = {}
         self.sessions: dict[str, Session] = {}
+        self._closing_sessions: dict[tuple[str, str], asyncio.Task] = {}
         self.clients: dict[str, Client] = {}
         self.groups: dict[str, Group] = {}
         self.presets: list[dict] = [dict(item) for item in DEFAULT_PRESETS]
@@ -165,6 +166,7 @@ class Hub:
         self.journals = None
         self.journal_factory = None
         self.managed_service = None
+        self.decorate_catalog = None
         self.machine = ""
         self.project = "默认"
         self._ensure_default()
@@ -226,8 +228,8 @@ class Hub:
                     "group": window.group_id,
                     "focused": window.focused,
                     "sessions": [
-                        {"id": item.id, "shell": item.shell, "cwd": item.cwd,
-                         **({'journal_id': item.journal_id, 'process_generation': item.process_generation} if item.journal_id else {}),
+                        {"id": item.id, "shell": item.shell, "cwd": item.cwd, "process_generation": item.process_generation,
+                         **({'journal_id': item.journal_id} if item.journal_id else {}),
                          **({'journal_error': item.journal_error} if item.journal_error else {}),
                          **({'interaction_mode': 'managed', 'provider': item.provider,
                              'managed_state': (item.managed_snapshot() if item.managed_snapshot else {}).get('state', 'starting')}
@@ -758,12 +760,48 @@ class Hub:
         if changed:
             self._catalog()
 
-    def close_session(self, session_id: str) -> None:
-        session = self.sessions.pop(session_id, None)
-        if session is None:
+    @staticmethod
+    def _close_pty(session: Session) -> None:
+        try:
+            result = session.pty.close()
+        except Exception as error:
+            raise PtyCloseError("process_still_alive") from error
+        if result is False:
+            raise PtyCloseError("process_still_alive")
+
+    async def end_native_session(self, session: Session) -> None:
+        """Wait for the exact source PTY off the event loop; share concurrent requests."""
+        if session.interaction_mode == 'managed':
+            raise ValueError("managed_requires_own_close")
+        key = (session.id, session.process_generation)
+        job = self._closing_sessions.get(key)
+        if job is None:
+            async def end():
+                try:
+                    await asyncio.to_thread(self._close_pty, session)
+                    self._forget_session(session)
+                finally:
+                    self._closing_sessions.pop(key, None)
+            job = asyncio.create_task(end())
+            # The request socket can disappear before its shielded close finishes.
+            job.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            self._closing_sessions[key] = job
+        await asyncio.shield(job)
+
+    def close_session(self, session_id: str, expected: Session | None = None) -> None:
+        # The reader may report EOF while an explicit close awaits process exit.
+        session = self.sessions.get(session_id)
+        if (session is not None and (expected is None or expected is session)
+                and (session_id,session.process_generation) not in self._closing_sessions):
+            self._close_pty(session)
+            self._forget_session(session)
+
+    def _forget_session(self, session: Session) -> None:
+        session_id = session.id
+        if self.sessions.get(session_id) is not session:
             return
+        self.sessions.pop(session_id)
         session.stop.set()
-        session.pty.close()
         window = self.windows.get(session.window_id)
         watchers = []
         with self._lock:
@@ -776,6 +814,10 @@ class Hub:
                     self.windows.pop(window.id, None)
                 for client in self.clients.values():
                     client.subscriptions.discard(session_id)
+                    client.pending_replays.discard(session_id)
+                    client.resync_pending.discard(session_id)
+                    client.feed_offsets.pop(session_id, None)
+                    client.history_after.pop(session_id, None)
                     if client.session_id == session_id:
                         client.session_id = window.focused
                         if remove_managed_window and client.window_id == window.id:
@@ -787,15 +829,14 @@ class Hub:
         self._catalog()
 
     def close_window(self, window_id: str) -> None:
-        window = self.windows.pop(window_id, None)
+        window = self.windows.get(window_id)
         if window is None:
             return
         for session_id in list(window.sessions):
-            session = self.sessions.pop(session_id, None)
-            if session is None:
-                continue
-            session.stop.set()
-            session.pty.close()
+            self.close_session(session_id)
+        if window.sessions or self.windows.get(window_id) is not window:
+            return
+        self.windows.pop(window_id)
         affected = []
         with self._lock:
             for client in self.clients.values():
@@ -879,7 +920,7 @@ class Hub:
         try:
             if self.journals is not None and session.journal_id:
                 self.journals.end_session(session, outcome=outcome)
-            self.loop.call_soon_threadsafe(self.close_session, session.id)
+            self.loop.call_soon_threadsafe(self.close_session, session.id, session)
         finally:
             session.reader_done.set()
 
@@ -1063,6 +1104,8 @@ class Hub:
             summary['capabilities'].pop('conversation_journal', None)
         if not client.managed_conversation or client.delegated:
             summary['capabilities'].pop('managed_conversation', None)
+        if self.decorate_catalog is not None:
+            self.decorate_catalog(client, summary)
         return summary
 
     def _catalog(self) -> None:

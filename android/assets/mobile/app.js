@@ -4,6 +4,7 @@
   const $=id=>document.getElementById(id),C=TerminalClient,M=MobileCore;
   const encoder=new TextEncoder(),decoder=new TextDecoder();
   let config;
+  let terminalAction=null;
   let mobileFeedbackQa=null;
   try{config=JSON.parse(decodeURIComponent(location.hash.slice(1)));history.replaceState(null,'',location.pathname+location.search);}
   catch{ $('status').textContent='连接配置缺失，请返回连接设置';$('notice').hidden=false;$('notice').textContent='请从安卓应用打开此页面';return; }
@@ -650,9 +651,10 @@
     if(captured.action==='respond_managed_permission')controller.respondPermission(captured.permission_request_id,captured.decision);
     else if(captured.action==='interrupt_managed')controller.interrupt();else if(captured.action==='close_managed')controller.closeSession();
   };
-  $('managed-interrupt').onclick=()=>managedController?.interrupt();$('managed-close').onclick=()=>managedController?.closeSession();
+  $('managed-interrupt').onclick=()=>managedController?.interrupt();$('managed-close').onclick=()=>openTerminalAction('close');
   // MANAGED_INTEGRATION_END
   function stopSocket(c=selected(),preserveArchive=preserveJournalArchive(c)){
+    if(terminalAction?.target.host===c)stopTerminalAction('连接已变化，请关闭后重新核对目标。');
     if(c===selected())mobileFeedbackQa?.invalidate();
     c.cockpitInstallationId='';
     if(pendingRefresh?.host===c)cancelRefresh();
@@ -831,6 +833,7 @@
     if(info.groups)c.groups=info.groups;
     if(typeof info.selected==='string')c.serverWindow=info.selected;if(typeof info.session==='string')c.serverSession=info.session;
     if(info.windows){const receivedAt=performance.now();c.inventory=mergeManagedCatalog(c,info.windows.flatMap(w=>(w.sessions||[]).map(s=>({...s,reportedOutputAt:Number.isSafeInteger(s.output_age_ms)&&s.output_age_ms>=0?receivedAt-s.output_age_ms:undefined,learnedAgent:c.agents.get(s.id)||'',title:w.title,window:w.id,windowFocused:w.focused,group:w.group}))));}
+    observeTerminalAction(c,info);
     if(c===selected())mobileFeedbackQa?.checkBinding();
     if(info.windows){const ids=new Set(c.inventory.map(s=>s.id));for(const cache of [c.activity,c.agents])for(const sid of cache.keys())if(!ids.has(sid))cache.delete(sid);for(const [key,draft] of attachmentDrafts)if(draft.target.host===c&&!ids.has(draft.target.session)){if(uploadJob?.target.key===key)cancelAttachmentUpload();attachmentDrafts.delete(key);}}
     if(c!==selected()){renderHosts();renderList();return;}
@@ -854,6 +857,7 @@
   let activityTimer=null,lastListSignature='';
   function startActivityTimer(){clearInterval(activityTimer);activityTimer=null;if(!paused&&$('session-dialog').open)activityTimer=setInterval(updateSessionDots,500);}
   function renderList(){
+    updateTerminalActionButtons();
     const signature=JSON.stringify([hostId,active,connected,createPending,$('session-search').value,[...connections.values()].map(c=>[c.host.id,c.host.name,c.connected,c.status,c.machine,c.project,c.groups,c.inventory.map(s=>[s.id,s.title,s.shell,s.cwd,s.group,s.window,s.agent,s.learnedAgent,s.command,s.argv])])]);
     if(signature===lastListSignature){metrics.listSkips++;return;}lastListSignature=signature;metrics.listBuilds++;
     $('session-list').replaceChildren();const query=$('session-search').value.trim().toLocaleLowerCase();let count=0;
@@ -1545,6 +1549,143 @@
   $('screen-history').addEventListener('touchstart',beginTerminalPress,{passive:true});$('screen-history').addEventListener('touchmove',moveTerminalPress,{passive:true});
   for(const type of ['touchend','touchcancel'])$('screen-history').addEventListener(type,cancelTerminalPress,{passive:true});
   $('screen').addEventListener('wheel',e=>{cancelTouchMomentum();e.preventDefault();if($('screen').dataset.viewportMode==='readable'){$('screen').scrollLeft+=e.deltaX||(e.shiftKey?e.deltaY:0);if(!e.shiftKey)localScroll(e.deltaY);}else scroll(Math.sign(e.deltaY)*3);},{passive:false});
+  function updateTerminalActionButtons(){
+    const c=selected(),s=c.inventory.find(item=>item.id===active),label=$('current-terminal-target');
+    const name=s?[c.machine||c.host.name,s.title||s.window,s.id].join(' · '):'请先选择终端';
+    if(label.textContent!==name)label.textContent=name;
+    const available=!!s&&!!s.window&&c.connected&&c.socket?.readyState===1&&!paused;
+    $('rename-current-window').disabled=!available;
+    $('close-current-process').disabled=!available||(s.interaction_mode==='managed'&&(!managedCurrent(managedTarget())||$('managed-close').disabled))||
+      (s.interaction_mode!=='managed'&&c.capabilities?.close_ack===1&&!s.process_generation);
+  }
+  function closeTerminalAction(){
+    const dialog=$('terminal-action-dialog');
+    if(!dialog.open)return false;
+    dialog.close();
+    return true;
+  }
+  function stopTerminalAction(message){
+    if(!terminalAction)return;
+    clearTimeout(terminalAction.timer);
+    terminalAction.phase='finished';
+    $('terminal-action-confirm').disabled=true;
+    $('terminal-action-name').readOnly=true;
+    $('terminal-action-cancel').textContent='关闭';
+    $('terminal-action-status').textContent=message;
+  }
+  function sameActionConnection(action){
+    const t=action.target,c=t.host;
+    return !paused&&!document.hidden&&selected()===c&&connections.get(c.host.id)===c&&c.connected&&
+      c.socket===action.socket&&c.socket?.readyState===1&&c.generation===t.generation&&
+      safeEndpoint(c.host)===t.endpoint&&(c.host.code||'')===t.room&&(hostTokens.get(c.host.id)||'')===t.token;
+  }
+  function matchingTerminal(action){
+    const t=action.target;
+    const s=t.host.inventory.find(item=>item.id===t.session&&item.window===t.window);
+    return s&&(s.process_generation||'')===t.process_generation&&
+      (s.interaction_mode==='managed')===action.managed&&(!action.managed||s.journal_id===t.journalId)?s:null;
+  }
+  function canConfirmAction(action){
+    if(!sameActionConnection(action)||active!==action.target.session)return false;
+    const s=matchingTerminal(action);
+    if(!s||(s.title||s.shell||'')!==action.target.windowTitle)return false;
+    if(action.kind==='rename')return true;
+    if(action.managed)return ! $('managed-close').disabled&&!!managedController&&!!managedContext&&managedCurrent(managedContext.target)&&
+      managedContext.target.session_id===s.id;
+    return action.ack===(action.target.host.capabilities?.close_ack===1)&&(!action.ack||!!s.process_generation);
+  }
+  function openTerminalAction(kind){
+    if(!['rename','close'].includes(kind)||$('terminal-action-dialog').open)return;
+    const target=journalTarget(),session=managedSession();
+    if(!session||!target.session||!target.window||!target.host.connected||target.host.socket?.readyState!==1){
+      notice('请先连接并选择终端。');return;
+    }
+    const action={kind,target,socket:target.host.socket,managed:session.interaction_mode==='managed',
+      ack:target.host.capabilities?.close_ack===1,phase:'confirm',timer:0,request:null,title:''};
+    terminalAction=action;
+    const rename=kind==='rename',input=$('terminal-action-name'),submit=$('terminal-action-confirm');
+    $('terminal-action-heading').textContent=rename?'修改窗口名称':'确认结束终端进程';
+    $('terminal-action-target').textContent=[target.host.machine||target.host.host.name,target.windowTitle||target.window,
+      (session.provider||M.agentType(session))+' · 终端 '+target.session].join(' / ');
+    $('terminal-action-name-label').hidden=!rename;input.disabled=!rename;input.required=rename;input.readOnly=false;
+    input.value=rename?target.windowTitle:'';
+    submit.dataset.action=kind;submit.textContent=rename?'保存名称':'确认结束进程';submit.disabled=false;
+    $('terminal-action-cancel').textContent='取消';
+    $('terminal-action-status').textContent=rename?'名称用于此窗口下的终端。':'此终端的运行进程将被终止，其他查看者也会失去此会话。';
+    $('terminal-action-dialog').showModal();
+    if(!canConfirmAction(action))stopTerminalAction('当前主机尚未提供此操作所需的终端身份，请重新检查连接。');
+    else if(rename){input.focus();input.select();}else $('terminal-action-cancel').focus();
+  }
+  function observeTerminalAction(c,info){
+    const action=terminalAction;
+    if(!action||action.target.host!==c||!$('terminal-action-dialog').open||action.phase==='finished')return;
+    if(!sameActionConnection(action)){stopTerminalAction('连接或授权已变化，请重新核对。');return;}
+    if(action.phase==='confirm'){
+      if(!canConfirmAction(action))stopTerminalAction('窗口或终端身份已变化，请重新选择。');
+      return;
+    }
+    const t=action.target,ack=info.close_ack;
+    if(action.kind==='close'&&!action.managed&&action.ack&&ack?.request===action.request&&
+      ack.session===t.session&&ack.window_id===t.window&&ack.process_generation===t.process_generation){
+      stopTerminalAction(ack.closed===true?'主机已确认结束选定终端进程。':
+        ack.error==='process_still_alive'?'主机尚未确认进程退出，终端仍在目录中。':'主机拒绝了本次请求，请重新核对目标状态。');
+      return;
+    }
+    if(!Array.isArray(info.windows))return;
+    const s=matchingTerminal(action);
+    if(action.kind==='rename'&&s?.title===action.title)stopTerminalAction('主机已确认窗口名称：'+action.title);
+    else if(action.kind==='close'&&(action.managed||!action.ack)){
+      if(!c.inventory.some(item=>item.id===t.session)||action.managed&&s?.managed_state==='ended')
+        stopTerminalAction(action.managed?'主机已关闭所选独立会话。':'主机目录已移除选定终端。');
+      else if(!s)stopTerminalAction('终端身份已变化，原进程退出状态待核对。');
+    }
+  }
+  async function confirmTerminalAction(event){
+    event.preventDefault();
+    const action=terminalAction;
+    if(!action||action.phase!=='confirm')return;
+    if(!canConfirmAction(action)){stopTerminalAction('窗口、连接或授权已变化，请重新选择。');return;}
+    const t=action.target;
+    if(action.kind==='rename'){
+      const name=$('terminal-action-name').value.trim();
+      if(!name||Array.from(name).length>40||/[\x00-\x1f\x7f]/.test(name)){
+        $('terminal-action-status').textContent='请输入 1–40 个字符的窗口名称。';return;
+      }
+      if(name===t.windowTitle){stopTerminalAction('窗口名称已是该值。');return;}
+      action.title=name;
+    }
+    action.phase='pending';$('terminal-action-confirm').disabled=true;$('terminal-action-name').readOnly=true;
+    $('terminal-action-cancel').textContent='关闭';$('terminal-action-status').textContent='请求已提交，等待主机确认…';
+    action.timer=setTimeout(()=>{
+      if(terminalAction===action&&action.phase==='pending')$('terminal-action-status').textContent='尚未收到主机确认，请查看终端状态。';
+    },8000);
+    try{
+      if(action.kind==='rename'){
+        if(!sendHost(t.host,15,{action:'title',window:t.window,title:action.title}))throw Error();
+      }else if(action.managed){
+        const result=await managedController.closeSession();
+        if(terminalAction!==action||action.phase!=='pending'||!sameActionConnection(action))return;
+        if(result?.state==='ended')stopTerminalAction('主机已关闭所选独立会话。');
+        else if(result?.operation?.phase==='unknown'||result?.state==='unknown')
+          $('terminal-action-status').textContent='关闭结果待核对，请查看独立会话状态。';
+      }else{
+        const params={session:t.session};
+        if(action.ack){
+          action.request=managedNonce();
+          Object.assign(params,{window_id:t.window,process_generation:t.process_generation,request:action.request});
+        }
+        if(!sendHost(t.host,9,params))throw Error();
+      }
+    }catch{if(terminalAction===action)stopTerminalAction('请求结果尚未确认，请检查当前主机连接和终端状态。');}
+  }
+  $('rename-current-window').onclick=()=>openTerminalAction('rename');
+  $('close-current-process').onclick=()=>openTerminalAction('close');
+  $('terminal-action-form').onsubmit=confirmTerminalAction;
+  $('terminal-action-cancel').onclick=closeTerminalAction;
+  $('terminal-action-dialog').addEventListener('close',()=>{
+    if($('terminal-action-dialog').open)return;
+    clearTimeout(terminalAction?.timer);terminalAction=null;$('terminal-action-name').value='';
+  });
   $('sessions').onclick=()=>{refreshWatchers();renderHosts();renderList();$('session-dialog').showModal();startActivityTimer();};$('sessions-close').onclick=()=>$('session-dialog').close();
   $('session-dialog').addEventListener('close',()=>{clearInterval(activityTimer);activityTimer=null;});
   $('session-search').oninput=renderList;
@@ -1799,6 +1940,7 @@
   }
   // MOBILE_FEEDBACK_QA_END
   mobileFeedbackQa=createMobileFeedbackQa(config.cockpitFeedbackQA);
+  window.MobileTerminal.closeWindowAction=closeTerminalAction;
   const cockpit=C.mountCockpit?.({
     menu:$('settings-dialog'),headerBefore:$('options'),mobile:true,
     mobileFeedbackHost:(project,endpoint)=>mobileFeedbackQa?.select(project,endpoint),

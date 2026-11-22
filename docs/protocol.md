@@ -51,7 +51,7 @@
 | Op | 名称 | 方向 | Payload / 语义 |
 |---|---|---|---|
 | 1 | HELLO | 客户端 → daemon | `{token,multiplex?,reliable?,window?,channel?}`；认证、能力与初始选择 |
-| 2 | HELLO_OK | daemon → 客户端 | 目录、身份、能力、当前选择、controls，可能带 error/resize_ack |
+| 2 | HELLO_OK | daemon → 客户端 | 目录、身份、能力、当前选择、controls，可能带 error/resize_ack/close_ack |
 | 3 | OUTPUT | daemon → 客户端 | 增量终端字节；multiplex 带 raw session 前缀 |
 | 4 | INPUT | 客户端 → daemon | 旧单视图按键；multiplex 客户端不使用此操作 |
 | 5 | RESIZE | 客户端 → daemon | `{session?,cols,rows,request?,take_control?}`；列 2–500、行 1–200 |
@@ -76,6 +76,8 @@
 | 25 | URL_OPEN | 客户端 ↔ daemon | `{request,url}` 请求在主机默认浏览器打开；仅完整 http(s) 绝对链接、URL ≤2048 字节，回复同 request 与 `ok`／安全错误；旧 daemon 不广播 `url_open` 能力，客户端不得发送 |
 
 OP16/17/5 都受 Token 所有权与订阅约束。OP18 的回放按 Token 所有权过滤，relay 客户端还按频道过滤；OP19 只发给已订阅且仍有权限的连接。客户端内部的 host/session 元组键不能放进线协议；不同 daemon 的相同 raw ID 由其所属连接隔离。关闭标签页只从 OP16 订阅集移除该 ID，不发送 OP9。
+
+支持 `close_ack:1` 的后台在会话目录提供 `process_generation`。结束一个普通会话时可发送 OP9 `{request,window_id,session,process_generation}`，OP2 返回这些原字段和 `closed`，位于 `close_ack` 对象内。主机会在进程退出后将会话移出目录并广播 OP7；同名空窗口可继续容纳新会话。失败时 `closed:false`，`error` 为 `target_changed`、`target_unavailable`、`process_still_alive` 或 `managed_requires_own_close`。客户端在回执丢失时可重新读取当前目录。旧客户端可继续使用 `{session}`；`{window}` 明确结束整个容器，托管会话使用自身的 OP24 关闭协议。
 
 HELLO 可协商 `history_context:1` 和 `history_resume:1`。OP16 的 `history_after` 按会话携带 `{position,epoch,stream_id}`；daemon 仅在保留区间、尺寸 epoch 和流身份都匹配时发送 `kind:resume` 的 OP23，否则回退 `kind:snapshot`。桌面与 Android 只在 xterm 写回调确认后推进游标；同一流的连续实时输出可以跨尺寸 epoch，流身份变化或字节位置缺口必须请求新快照，不得续接损坏的 ANSI 流。旧 daemon/客户端继续使用 OP3/OP8。
 

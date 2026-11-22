@@ -50,6 +50,9 @@ async def open_monitor(page):
 
 async def check_monitor(playwright,tmp_path):
     async with fixture(playwright) as (browser,url,endpoint,_trap,_messages,daemons,ops,_windows,sessions):
+        # Older daemons retain named windows after their PowerShell session exits.
+        for n in range(3):
+            daemons[0].hub.open_window(f'Empty {n}',owner=daemons[0].token)
         paths=[write_log(daemon,tmp_path,'DAEMON-'+str(i)) for i,daemon in enumerate(daemons)]
         requests=[[],[]];remote_gate=asyncio.Event();install_observers(daemons,requests,[None,remote_gate])
         page,remote,errors=await prepare(browser,url,endpoint,daemons)
@@ -59,6 +62,8 @@ async def check_monitor(playwright,tmp_path):
         assert await page.locator('#daemon-monitor-list [role=listitem]').count()==2
         row=page.locator('#daemon-monitor-list [data-host="local"]')
         assert '2 个窗口 / 2 个终端' in await row.inner_text()
+        assert '另有 3 个空窗口' in await row.inner_text()
+        assert '2 个终端' in await page.locator('.computer-tree[data-host="local"] .workspace-host-pick').inner_text()
         assert 'PID ' in await row.inner_text() and '已运行 ' in await row.inner_text()
         assert await page.locator('#daemon-monitor-log img').count()==0
         assert not await page.evaluate('window.monitorInjected===true')

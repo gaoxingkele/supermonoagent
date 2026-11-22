@@ -3,7 +3,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from supermonoagent.pty import ConptyInputFilter, WinPty, shell_command, default_cwd
+from supermonoagent.pty import ConptyInputFilter, PtyCloseError, WinPty, shell_command, default_cwd
 
 
 class PtyTest(unittest.TestCase):
@@ -33,6 +33,7 @@ class PtyTest(unittest.TestCase):
 
     def test_split_utf8_and_envelope_emit_one_complete_paste_without_enter(self):
         with patch("winpty.PtyProcess.spawn") as spawn:
+            spawn.return_value.isalive.return_value = False
             pty = WinPty(["unused"], default_cwd())
             try:
                 for byte in "\x1b[200~第一行\nsecond\x1b[201~".encode():
@@ -49,6 +50,7 @@ class PtyTest(unittest.TestCase):
 
     def test_isolated_escape_key_reaches_application_after_grace_period(self):
         with patch("winpty.PtyProcess.spawn") as spawn:
+            spawn.return_value.isalive.return_value = False
             arrived = threading.Event()
             spawn.return_value.write.side_effect = lambda _: arrived.set()
             pty = WinPty(["unused"], default_cwd())
@@ -74,6 +76,19 @@ class PtyTest(unittest.TestCase):
             self.assertIn("SUPERMONO_OK", text)
         finally:
             pty.close()
+
+    def test_failed_native_termination_requires_an_observed_exit_before_close(self):
+        with patch("winpty.PtyProcess.spawn") as spawn:
+            process = spawn.return_value
+            process.isalive.return_value = True
+            process.terminate.return_value = False
+            pty = WinPty(["mock"], default_cwd())
+            with self.assertRaises(PtyCloseError):
+                pty.close()
+            process.isalive.return_value = False
+            pty.close()
+            pty.close()
+            process.terminate.assert_called_once_with(force=True)
 
 
 if __name__ == "__main__":
