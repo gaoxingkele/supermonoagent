@@ -1,14 +1,21 @@
 {
   "schema": 2,
-  "updated": "2026-11-18",
-  "retention": "Only the three newest local builds per platform are kept; older archives were removed on 2026-11-18.",
+  "updated": "2026-11-23",
+  "retention": "Earlier public archives are retained as historical builds. Version 0.2.82 adds the standard upgrade APK and a portable Windows package.",
   "latest": {
-    "windows": "0.2.80",
-    "android": "0.2.78",
+    "windows": "0.2.82",
+    "android": "0.2.82",
     "uiCandidate": "0.2.78",
     "observedLiveUI": "0.2.67"
   },
   "windows": [
+    {
+      "version": "0.2.82",
+      "portable": "dist/windows/SuperMonoAgent-0.2.82-Portable.zip",
+      "sha256": "a036fa6d537f150ed0acab3938a3ea9e90161299d4c508b9d074e7c9a26e708c",
+      "source_commit": "4ae156f5a92c2a407377f21ce845c4874ecbf289",
+      "personalized": false
+    },
     {
       "version": "0.2.80",
       "runtime": "dist/windows/0.2.80/",
@@ -39,6 +46,15 @@
     }
   ],
   "android": [
+    {
+      "version": "0.2.82",
+      "version_code": 84,
+      "application_id": "dev.supermonoagent.mobile",
+      "path": "dist/android/0.2.82/SuperMonoAgent.apk",
+      "sha256": "af1d506746dc9aae5c14b1d79b5cbe712adf0c70e8e98a3070649509779b1bce",
+      "source_commit": "4ae156f5a92c2a407377f21ce845c4874ecbf289",
+      "status": "same-signature-upgrade-tested-on-android-15-emulator"
+    },
     {
       "version": "0.2.78",
       "path": ".omx/worktrees/conversation-journal/.omx/releases/android/0.2.78/SuperMonoAgent.apk",

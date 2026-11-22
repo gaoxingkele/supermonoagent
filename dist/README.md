@@ -1,5 +1,16 @@
 # 发布产物
 
+## 0.2.82 · 2026-11-23
+
+| 平台 | 下载 | 版本与校验 |
+| --- | --- | --- |
+| Android 标准版 | [SuperMonoAgent.apk](android/0.2.82/SuperMonoAgent.apk) | 原包名、原签名、code84，可覆盖升级 0.2.78。[SHA-256](android/0.2.82/SuperMonoAgent.apk.sha256) |
+| Windows 通用便携版 | [SuperMonoAgent-0.2.82-Portable.zip](windows/SuperMonoAgent-0.2.82-Portable.zip) | 包含新版进程退出确认及房间计数。[SHA-256](windows/SuperMonoAgent-0.2.82-Portable.zip.sha256) |
+
+安卓从「☰ → 工作空间 → 管理当前终端」改名或结束会话。[0.2.82 修改说明](../docs/release-0.2.82.md) · [构建索引](versions.json) · [0.2.81 隔离试点归档](pilots/0.2.81/)
+
+## 早期发布记录
+
 2026-11-18 清理：本地只保留各平台**最新三个版本**，早于 0.2.78 的构建已删除（仍保留在 Git 历史中，可按提交恢复）。
 
 ## Windows（完整目录 + 公共安装包）
