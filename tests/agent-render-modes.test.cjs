@@ -5,23 +5,23 @@ const path=require('node:path');
 const C=require('../src/supermonoagent/static/terminal-client.js');
 const {Terminal}=require('../src/supermonoagent/static/xterm.js');
 const directory=path.join(__dirname,'../src/supermonoagent/static/agent-modes');
-const raw=id=>JSON.parse(fs.readFileSync(path.join(directory,id+'.json'),'utf8'));
+const raw=id=>id==='hermes'?C.hermesAgentProfile:JSON.parse(fs.readFileSync(path.join(directory,id+'.json'),'utf8'));
 const profile=id=>C.validateAgentProfile(raw(id),id);
 const write=(t,text)=>new Promise(done=>t.write(text,done));
 
-test('six independent modes share one readable semantic palette and keep independent agent rules',()=>{
-  assert.deepEqual(C.agentProfiles.map(p=>p.id),['codex','claude-code','grok','kimi','pi-dev','cursor-cli']);
+test('seven independent modes share one readable semantic palette and keep independent agent rules',()=>{
+  assert.deepEqual(C.agentProfiles.map(p=>p.id),['codex','claude-code','grok','kimi','pi-dev','cursor-cli','hermes']);
   const profiles=C.agentProfiles.map(p=>profile(p.id));
   assert.equal(new Set(profiles.map(p=>p.theme.background)).size,1);
   assert.equal(new Set(profiles.map(p=>JSON.stringify(p.theme))).size,1);
   assert.deepEqual(profiles[0].theme,C.commonAgentProfile.theme);
-  assert.equal(new Set(profiles.map(p=>JSON.stringify(p.tokens))).size,6);
-  assert.equal(new Set(profiles.map(p=>p.tokens[2].pattern)).size,6);
+  assert.equal(new Set(profiles.map(p=>JSON.stringify(p.tokens))).size,7);
+  assert.equal(new Set(profiles.map(p=>p.tokens[2].pattern)).size,7);
   for(const p of profiles){assert.ok(Object.isFrozen(p)&&Object.isFrozen(p.tokens)&&Object.isFrozen(p.theme));assert.ok(p.tokens.length>=4);}
   assert.equal(C.commonAgentProfile.label,'自动');
 });
 
-test('six modes and auto assign identical semantic colors without making ordinary text gray',async()=>{
+test('seven modes and auto assign identical semantic colors without making ordinary text gray',async()=>{
   const term=new Terminal({cols:120,rows:8,allowProposedApi:true});
   try{
     await write(term,'# Result\r\napp.py "literal" `code()` 42\r\nError: failed\r\nPASSED 成功\r\nordinary user input\r\n');
@@ -141,6 +141,43 @@ test('Cursor CLI highlights prefixed TUI status labels without painting prose or
     }
     for(let row=labels.length;row<labels.length+3;row++)assert.deepEqual(C.highlightSpans(term.buffer.active.getLine(row),term.cols,p),[],'changed prose/native row '+row);
   }finally{term.dispose();}
+});
+
+test('Hermes highlights its transcript grammar, code and context without painting prose or native styles',async()=>{
+  const p=C.hermesAgentProfile,term=new Terminal({cols:180,rows:20,allowProposedApi:true});
+  const rows=[
+    '☤ Hermes','∴ Thought for 3s · Planning the change','📖 Read calc.py  0.2s','🔧 Patch calc.py',
+    '│ @@ -1,2 +1,6 @@','│ +def multiply(a, b):','│ +    return a * b','✗ $ pytest -q  0.4s [exit 1]',
+    '✓ PASSED 2 tests','⚠ YOLO · ctx [████░░] 82%','❯ /model nous','普通正文没有代码标记。',
+    '\x1b[38;2;240;180;210m📖 Read calc.py\x1b[0m','\x1b[2m∴ Thought for 3s\x1b[0m'
+  ];
+  function expectToken(row,token,color){
+    const line=term.buffer.active.getLine(row),text=line.translateToString(true),offset=text.indexOf(token);assert.ok(offset>=0,'missing '+token);
+    let at=0,x=-1;for(let column=0;column<term.cols;column++){const cell=line.getCell(column);if(!cell?.getWidth())continue;if(at===offset){x=column;break;}at+=cell.getChars().length;}
+    assert.ok(x>=0,'missing column '+token);const spans=C.highlightSpans(line,term.cols,p);
+    assert.ok(spans.some(span=>span.x<=x&&span.x+span.width>x&&span.foregroundColor===color),token+' '+JSON.stringify(spans));
+  }
+  try{
+    for(const row of rows)await write(term,row+'\r\n');
+    expectToken(0,'Hermes','#82cfff');expectToken(1,'Thought for','#82cfff');
+    expectToken(2,'Read','#c678dd');expectToken(2,'calc.py','#e5c07b');expectToken(3,'Patch','#c678dd');
+    expectToken(4,'@@ -1,2 +1,6 @@','#e5c07b');expectToken(5,'+def multiply(a, b):','#98c379');expectToken(6,'+    return a * b','#98c379');
+    expectToken(7,'pytest','#56b6c2');expectToken(7,'[exit 1]','#e06c75');expectToken(8,'PASSED','#98c379');
+    expectToken(9,'YOLO','#e5c07b');expectToken(9,'82%','#e5c07b');expectToken(10,'/model','#56b6c2');
+    assert.deepEqual(C.highlightSpans(term.buffer.active.getLine(11),term.cols,p),[],'ordinary prose must stay plain');
+    assert.deepEqual(C.highlightSpans(term.buffer.active.getLine(12),term.cols,p),[],'native RGB must stay intact');
+    assert.deepEqual(C.highlightSpans(term.buffer.active.getLine(13),term.cols,p),[],'native faint reasoning must stay intact');
+    assert.equal(p.id,'hermes');assert.equal(p.label,'Hermes');assert.ok(p.tokens.length<=24);
+  }finally{term.dispose();}
+});
+
+test('Hermes is inferred from CLI metadata and distinctive transcript evidence only',()=>{
+  for(const [session,title] of [[{shell:'hermes'},''],[{command:'python -m hermes_cli.main'},''],[{},'Hermes Agent'],[{learnedAgent:'hermes',shell:'powershell'},'renamed']])
+    assert.equal(C.agentModeFromSession(session,title),'hermes');
+  assert.equal(C.agentModeFromSession({shell:'powershell'},'ordinary terminal'),'auto');
+  assert.equal(C.inferAgentContent('☤ Hermes\nAdded multiply; 2 passed.\n❯ type to redirect this turn'),'hermes');
+  assert.equal(C.inferAgentContent('Hermes is a name in ordinary prose'),'');
+  assert.equal(C.inferAgentContent('Thought for 3s without the Hermes brand'),'');
 });
 
 test('profiles load individually with exact identity and bounded same-origin fetch',async()=>{

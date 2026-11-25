@@ -15,8 +15,8 @@ from test_client_integration import isolated_host
 from test_desktop_ui_updates import wait_ui
 
 EDGE = Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
-MODES = ['codex', 'claude-code', 'grok', 'kimi', 'pi-dev', 'cursor-cli']
-FIXTURE = b'\x1b[38;2;240;180;210mNATIVE Error 123\x1b[0m\r\nError "quoted" sample.py 123 Thinking Working Plan Codex Claude Grok Kimi Cursor\r\nRead(src/review.md:12) Ran git status https://example.test/review\r\nWarning: check evidence\r\n'
+MODES = ['codex', 'claude-code', 'grok', 'kimi', 'pi-dev', 'cursor-cli', 'hermes']
+FIXTURE = b'\x1b[38;2;240;180;210mNATIVE Error 123\x1b[0m\r\nError "quoted" sample.py 123 Thinking Working Plan Codex Claude Grok Kimi Cursor Hermes\r\nRead(src/review.md:12) Ran git status https://example.test/review\r\nWarning: check evidence\r\n'
 ARTIFACTS = Path(__file__).parents[1] / '.omx/artifacts/windows-agent-modes'
 SCREEN = "p=>Array.from({length:p.term.buffer.active.length},(_,i)=>p.term.buffer.active.getLine(i).translateToString(true)).join('\\n')"
 
@@ -51,7 +51,7 @@ def browser_api():
 
 
 @pytest.mark.parametrize('frontend',[False,True],ids=['source','revision-namespace'])
-def test_windows_six_real_profiles_theme_highlight_ansi_and_persistence(tmp_path,frontend):
+def test_windows_seven_real_profiles_theme_highlight_ansi_and_persistence(tmp_path,frontend):
     asyncio.run(check_profiles(tmp_path,frontend,browser_api()))
 
 
@@ -84,7 +84,7 @@ async def check_profiles(tmp_path,frontend,playwright):
                     await wait_ui(page,'mode=>smaWorkspace.activePane.agentProfile===mode',arg=mode)
                     await wait_ui(page,'profileDecos.length>0&&document.querySelectorAll(".xterm-decoration").length>0')
                     value=await page.evaluate("""() => {const p=smaWorkspace.activePane;return {theme:p.term.options.theme,cursorStyle:p.term.options.cursorStyle,screen:("""+SCREEN+""")(p),ansi:p.term.buffer.active.getLine(0).getCell(0).getFgColor(),decos:profileDecos,domColors:[...document.querySelectorAll('.xterm-decoration')].map(d=>getComputedStyle(d).color),nativeDOM:[...p.el.querySelectorAll('.xterm-rows span')].filter(el=>el.textContent.includes('NATIVE')).map(el=>getComputedStyle(el).color),background:getComputedStyle(p.el.querySelector('.xterm-viewport')).backgroundColor};}""")
-                    profile=json.loads((Path(__file__).parents[1]/'src/supermonoagent/static/agent-modes'/f'{mode}.json').read_text(encoding='utf-8'))
+                    profile=json.loads((Path(__file__).parents[1]/'src/supermonoagent/static/agent-modes'/f'{"codex" if mode=="hermes" else mode}.json').read_text(encoding='utf-8'))
                     assert value['theme']['background']==profile['theme']['background']
                     assert value['theme']['cursor']==profile['theme']['cursor']=='#7ee787'
                     assert value['cursorStyle']==('bar' if mode=='cursor-cli' else 'block')
@@ -102,7 +102,7 @@ async def check_profiles(tmp_path,frontend,playwright):
                 assert len(set(themes))==1
                 baseline_colors=set(decoration_sets[0])
                 for mode,colors in zip(MODES,decoration_sets):
-                    expected=baseline_colors|({'#c678dd','#56b6c2'} if mode in {'grok','claude-code','cursor-cli'} else set())
+                    expected=baseline_colors|({'#c678dd','#56b6c2'} if mode in {'grok','claude-code','cursor-cli','hermes'} else set())
                     assert set(colors)==expected,(mode,colors,expected)
                 assert resizes==baseline
                 assert all(not session.pty.written for session in sessions)
@@ -121,7 +121,8 @@ async def check_profiles(tmp_path,frontend,playwright):
                 await wait_ui(page,"smaWorkspace.activePane.agentProfile==='kimi'")
                 for mode in MODES:
                     hits=[url for url,status in responses if '/agent-modes/'+mode+'.json' in url and status==200]
-                    assert hits,(mode,responses)
+                    if mode=='hermes':assert not hits,'Hermes must use the embedded hot-update-compatible profile'
+                    else:assert hits,(mode,responses)
                     if frontend:assert all('/__ui/bundled/agent-modes/' in url and '?bundle=' in url for url in hits),hits
             finally:
                 await browser.close()
@@ -184,6 +185,41 @@ async def check_isolation(tmp_path,playwright):
                     await browser.close()
         finally:
             uplink.cancel();await asyncio.gather(uplink,return_exceptions=True)
+
+
+def test_windows_hermes_tui_output_selects_embedded_profile_and_preserves_ansi(tmp_path):
+    asyncio.run(check_hermes_content_detection(tmp_path, browser_api()))
+
+
+async def check_hermes_content_detection(tmp_path, playwright):
+    async with surface(tmp_path, False) as (daemon, sessions, origin, _relay):
+        async with playwright.async_playwright() as runtime:
+            browser = await runtime.chromium.launch(executable_path=str(EDGE), headless=True)
+            try:
+                page = await browser.new_page(viewport={'width': 1100, 'height': 760})
+                responses = []
+                errors = []
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                page.on('response', lambda response: responses.append(response.url) if '/agent-modes/' in response.url else None)
+                await page.goto(origin + '/workspace?direct=1&renderer=dom#token=' + daemon.token)
+                await wait_ui(page, 'window.smaWorkspace?.connected&&smaWorkspace.panes.size===2')
+                await page.evaluate('id=>smaWorkspace.openSession(id,false)', sessions[0].id)
+                await wait_ui(page, "smaWorkspace.activePane.term.buffer.active.getLine(1)?.translateToString(true).includes('sample.py')")
+                assert await page.locator('#agent-mode').input_value() == 'auto'
+                await page.evaluate("""() => {window.hermesDecos=[];const t=smaWorkspace.terminal,register=t.registerDecoration.bind(t);t.registerDecoration=options=>{hermesDecos.push({x:options.x,width:options.width,color:options.foregroundColor,line:options.marker.line});return register(options);};}""")
+                sessions[0].pty.inbox.put('☤ Hermes\r\n📖 Read calc.py  0.2s\r\n🔧 Patch calc.py\r\n│ @@ -1,2 +1,6 @@\r\n│ +def multiply(a, b):\r\n✗ $ pytest -q  0.4s [exit 1]\r\n⚠ YOLO · ctx [████░░] 82%\r\n❯ type to redirect this turn\r\n'.encode())
+                await wait_ui(page, "smaWorkspace.activePane.agentProfile==='hermes'")
+                await wait_ui(page, "hermesDecos.some(d=>d.color==='#c678dd')&&hermesDecos.some(d=>d.color==='#98c379')")
+                assert await page.locator('#agent-mode').input_value() == 'auto'
+                assert 'Hermes' in await page.locator('.pane.active .pane-header').inner_text()
+                assert not any('/agent-modes/hermes.json' in url for url in responses)
+                assert await page.evaluate('smaWorkspace.activePane.term.buffer.active.getLine(0).getCell(0).getFgColor()') == 0xF0B4D2
+                assert all(not session.pty.written for session in sessions)
+                assert not errors
+                ARTIFACTS.mkdir(parents=True, exist_ok=True)
+                await page.screenshot(path=str(ARTIFACTS/'source-hermes-auto.png'))
+            finally:
+                await browser.close()
 
 
 def test_cursor_tui_output_selects_profile_without_cli_metadata(tmp_path):

@@ -4,8 +4,8 @@
   "latest": {
     "android": "0.2.83",
     "windows": "0.2.83",
-    "uiCandidate": "0.2.83",
-    "observedLiveUI": "0.2.83"
+    "uiCandidate": "0.2.84",
+    "observedLiveUI": "0.2.84"
   },
   "android": [
     {
@@ -405,6 +405,26 @@
     }
   ],
   "ui": [
+    {
+      "revision": "0.2.84",
+      "path": "dist/ui/0.2.84/",
+      "status": "published-stable",
+      "sequence": 1795611166833052,
+      "files": {
+        "android.zip": {
+          "bytes": 219577,
+          "sha256": "7269833a693060ac4b13bcc0413428774f9f7b79f9db3f7d877ad02d7dc98590"
+        },
+        "desktop.zip": {
+          "bytes": 258028,
+          "sha256": "2ac976b9db8b9b938835679af8d79c3b677b48bc56709f76f4749951d3a4ace1"
+        },
+        "manifest.json": {
+          "bytes": 6876,
+          "sha256": "b48b358527e26cf847a550e8ca375730fe4ecc5ee1ce7a95446af2b4e5ef4a09"
+        }
+      }
+    },
     {
       "revision": "0.2.83",
       "path": "dist/ui/0.2.83/",

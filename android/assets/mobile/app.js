@@ -59,7 +59,7 @@
   function connection(h){let c=connections.get(h.id);if(!c){c={host:h,socket:null,generation:0,retry:0,retryTimer:null,pingTimer:null,lastPing:0,connected:false,inventory:[],groups:[],activity:new Map(),agents:new Map(),historyContexts:new Map(),historyQuality:new Map(),controls:{},machine:'',project:'',subscription:'',status:'等待连接',createPending:false,beforeCreate:new Set()};connections.set(h.id,c);}return c;}
   let paused=false,connected=false;
   let inventory=[],active='',term=null,fit=null,writer=null,highlighter=null,webgl=null,renderer=config.renderer||'auto';
-  const agentModeIds=new Set(['auto','codex','claude-code','grok','kimi','pi-dev','cursor-cli']);
+  const agentModeIds=new Set(['auto','codex','claude-code','grok','kimi','pi-dev','cursor-cli','hermes']);
   const agentModePreferences=new Map();
   let agentModeGeneration=0,agentModeRequest=null,agentDetector=null;
   try{for(const row of JSON.parse(localStorage.getItem('sma.mobile.agent-modes')||'[]')){

@@ -6,7 +6,7 @@
   // split UTF-8, SGR/OSC sequences and cursor-addressed TUI output stay intact.
   const agentProfiles=Object.freeze([
     ['codex','Codex'],['claude-code','Claude Code'],['grok','Grok'],
-    ['kimi','Kimi'],['pi-dev','pi.dev'],['cursor-cli','Cursor CLI']
+    ['kimi','Kimi'],['pi-dev','pi.dev'],['cursor-cli','Cursor CLI'],['hermes','Hermes']
   ].map(([id,label])=>Object.freeze({id,label})));
   const profileIds=new Set(['common',...agentProfiles.map(item=>item.id)]);
   const compiledProfiles=new WeakMap();
@@ -51,6 +51,27 @@
     {pattern:'\\b\\d+(?:\\.\\d+)?(?:\\s?(?:KiB|MiB|ms|tokens|字节))?',flags:'gu',color:'#e5c07b'},
     {pattern:'\\b(?:Success|SUCCESS|Passed|PASSED)\\b|(?:成功|已完成)',flags:'gu',color:'#98c379'},
     {pattern:'^#{1,6} [^\\n]+|\\*\\*[^*\\n]+\\*\\*',flags:'gu',color:'#82cfff'}
+  ]});
+  // Keep Hermes in this existing hot-update asset: API2 shells reject newly
+  // introduced resource paths, but already accept updated shared JavaScript.
+  const hermesAgentProfile=validateAgentProfile({id:'hermes',label:'Hermes',theme:{...commonAgentProfile.theme},tokens:[
+    {pattern:'"[^"\\n]+"|\'[^\'\\n]+\'',flags:'gu',color:'#e5c07b'},
+    {pattern:'(?:错误|失败|异常)|\\b(?:Error|Exception|ERROR|FAIL|FAILED)\\b|\\[exit [1-9]\\d*\\]',flags:'gu',color:'#e06c75'},
+    {pattern:'\\bHermes\\b|^[ \\t]*∴[ \\t]+Thought for\\b',flags:'giu',color:'#82cfff'},
+    {pattern:'https?://[^\\s<>"\'\\x60]+',flags:'giu',color:'#56b6c2'},
+    {pattern:'[\\p{L}\\p{N}_./\\\\:-]+\\.(?:py|js|jsx|ts|tsx|css|html|json|md|exe|ps1|sh|yaml|yml|toml|java|go|rs|cpp|h)(?::\\d+)?',flags:'gu',color:'#e5c07b'},
+    {pattern:'(?:📖|🔧|💻|🔍|📄)[ \\t]+(?:Read|Patch|Edit|Write|terminal|web_search|web_extract|browser|vision_analyze|image_generate)\\b|\\b(?:read_file|write_file|edit_file|web_search|web_extract|skill_manage|session_search)(?:\\s*\\(|\\s*:|[ \\t]+)',flags:'giu',color:'#c678dd'},
+    {pattern:'`[^`\\n]+`|\\b[A-Za-z_][\\w]*\\(\\)',flags:'gu',color:'#e5c07b'},
+    {pattern:'\\b(?:Ran|Running|cmd(?:\\.exe)?|powershell(?:\\.exe)?|git|python|pytest|node|npm|pnpm|yarn|adb)\\b',flags:'giu',color:'#56b6c2'},
+    {pattern:'^[ \\t]*│[ \\t]*@@[^@\\n]+@@',flags:'gu',color:'#e5c07b'},
+    {pattern:'^[ \\t]*│[ \\t]*\\+[^\\n]+',flags:'gu',color:'#98c379'},
+    {pattern:'^[ \\t]*│[ \\t]*-[^\\n]+',flags:'gu',color:'#e06c75'},
+    {pattern:'\\b\\d+(?:\\.\\d+)?%',flags:'gu',color:'#e5c07b'},
+    {pattern:'\\b\\d+(?:\\.\\d+)?(?:\\s?(?:KiB|MiB|ms|tokens|tok|s|字节))?',flags:'gu',color:'#e5c07b'},
+    {pattern:'\\b(?:Success|SUCCESS|Passed|PASSED)\\b|(?:成功|已完成)',flags:'gu',color:'#98c379'},
+    {pattern:'^#{1,6} [^\\n]+|\\*\\*[^*\\n]+\\*\\*',flags:'gu',color:'#82cfff'},
+    {pattern:'(?:警告)|\\b(?:Warning|Caution|YOLO)\\b',flags:'giu',color:'#e5c07b'},
+    {pattern:'/(?:help|model|tools|skills|bg|btw|reasoning|title|status|context|sessions|compress|usage|verbose|yolo|queue|stop|approve|answer)\\b',flags:'giu',color:'#56b6c2'}
   ]});
   const presentationProfiles=new WeakMap();
   const neutralPresentationRGB=new Set(['foreground','black','white','brightBlack','brightWhite'].map(key=>parseInt(commonAgentProfile.theme[key].slice(1),16)));
@@ -170,6 +191,7 @@
   }
   async function loadAgentProfile(value,id){
     if(!agentProfiles.some(item=>item.id===id))throw new Error('Unknown agent mode');
+    if(id==='hermes')return hermesAgentProfile;
     const url=new URL(value,root.location?.href);
     if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.hash
       ||root.location&&url.origin!==root.location.origin)throw new Error('Profile must use the document origin');
@@ -191,6 +213,7 @@
       if(/\bpi(?:\.dev|[-_ ]dev)\b|@mariozechner\/pi-coding-agent/i.test(text)
         ||command&&/(?:^|[\\/\s])pi(?:\.exe)?(?:\s|$)/i.test(text))return 'pi-dev';
       if(/\bclaude(?:[-_ ]code)?\b/i.test(text))return 'claude-code';
+      if(/\bhermes(?:[-_ ]+(?:agent|cli|chat|tui))?\b/i.test(text))return 'hermes';
       for(const id of ['codex','grok','kimi'])if(new RegExp('\\b'+id+'\\b','i').test(text))return id;
       return null;
     }
@@ -206,6 +229,8 @@
     const auto=/\bAuto[ \t]+·[ \t]*\d+(?:\.\d+)?%[ \t]+·[ \t]*\d+[ \t]+files edited\b/.test(text);
     const thinking=/\bthinking[ \t]*:[ \t]*(?:max|high|medium|low)\b/i.test(text);
     const context=/\bcontext[ \t]*:[ \t]*\d+(?:\.\d+)?%[ \t]*\([^)\n]*\)/i.test(text);
+    const hermes=/^[ \t]*☤[ \t]+Hermes\b/m.test(text)&&/^[ \t]*❯[ \t]+\S/m.test(text);
+    if(hermes)return 'hermes';
     return (finished&&(followUp||auto))||(thinking&&context)?'cursor-cli':'';
   }
   function createAgentDetector(term,{isUnknown,onDetected,delay=750,schedule=root.setTimeout,cancel=root.clearTimeout}={}){
@@ -984,7 +1009,7 @@
     return {snapshot,submit,reconcile,interrupt,respondPermission,closeSession,retry,exportPending,restorePending,setContext,
       dispose(){const old=exportPending();version++;dead=true;pending=null;receipt=null;active=null;permissions=[];lastOutcome=null;operation=null;query=null;submissionFlight=null;controls.clear();accepted.clear();cancelledSubmissions.clear();return old;}};
   }
-  const api = {composerAction,createComposerSubmitter,createComposerEcho,presentationPolicy,localHistoryPolicy,createManagedController,createConversationViewer,parseCodeFences,formatQuote,agentProfiles,commonAgentProfile,validateAgentProfile,loadAgentProfile,agentModeFromSession,inferAgentContent,createAgentDetector,highlightSpans,createHighlighter,createScreenHistory,pack, unpack, targetFrame, sessionPayload, historyPayload, historyFrameBytes, terminalInput, cursorKey, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,updateHintRevision,
+  const api = {composerAction,createComposerSubmitter,createComposerEcho,presentationPolicy,localHistoryPolicy,createManagedController,createConversationViewer,parseCodeFences,formatQuote,agentProfiles,commonAgentProfile,hermesAgentProfile,validateAgentProfile,loadAgentProfile,agentModeFromSession,inferAgentContent,createAgentDetector,highlightSpans,createHighlighter,createScreenHistory,pack, unpack, targetFrame, sessionPayload, historyPayload, historyFrameBytes, terminalInput, cursorKey, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,updateHintRevision,
     retryDelay: attempt => Math.min(15000, 500 * 2 ** Math.min(10, attempt)),
     rendererName: name => ['auto', 'dom', 'webgl'].includes(name) ? name : 'auto'};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

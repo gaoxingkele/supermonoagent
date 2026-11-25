@@ -1,8 +1,8 @@
 # Agent 独立渲染模式
 
-支持“自动”、Codex、Claude Code、Grok、Kimi、pi.dev、Cursor CLI。Windows 在终端底部选择模式；Android 在终端设置中选择。选择按电脑、房间和终端分别保存，切换模式只修改显示，不发送按键、不清空终端、不重启 agent。
+支持“自动”、Codex、Claude Code、Grok、Kimi、pi.dev、Cursor CLI、Hermes。Windows 在终端底部选择模式；Android 在终端设置中选择。选择按电脑、房间和终端分别保存，切换模式只修改显示，不发送按键、不清空终端、不重启 agent。
 
-自动模式优先使用会话提供的 agent 信息，再参考命令与标题；无法识别时使用基础高亮。对尚无明确类型的终端，也会在输出完成后有界检查最近 48 行，只有出现成组的 Cursor CLI 界面信号时才采用 `cursor-cli`，包括 `Finished`/后续输入提示、Auto 文件统计，或同时出现的 `thinking:` 与 `context:` 状态栏；不覆盖已有类型或手动选择。检测器延迟 750ms 合并处理，没有后台持续扫描，关闭视图时释放；窗口名本身不作为推断依据。Cursor 的 `Finished` 使用绿色，后续输入提示使用青色，编辑状态和工具命令分别使用蓝色、紫色，保留普通正文和原生 ANSI 样式。
+自动模式优先使用会话提供的 agent 信息，再参考命令与标题；无法识别时使用基础高亮。对尚无明确类型的终端，也会在输出完成后有界检查最近 48 行，只有出现成组的 Cursor CLI 界面信号时才采用 `cursor-cli`，包括 `Finished`/后续输入提示、Auto 文件统计，或同时出现的 `thinking:` 与 `context:` 状态栏；Hermes 需要同时出现 `☤ Hermes` 和 `❯` 输入提示。检测不覆盖已有类型或手动选择。检测器延迟 750ms 合并处理，没有后台持续扫描，关闭视图时释放。Cursor 的 `Finished` 使用绿色，后续输入提示使用青色，编辑状态和工具命令分别使用蓝色、紫色，保留普通正文和原生 ANSI 样式。
 
 ## 跨端共享配置
 
@@ -16,16 +16,19 @@
 | Kimi | [kimi.json](../src/supermonoagent/static/agent-modes/kimi.json) |
 | pi.dev | [pi-dev.json](../src/supermonoagent/static/agent-modes/pi-dev.json) |
 | Cursor CLI | [cursor-cli.json](../src/supermonoagent/static/agent-modes/cursor-cli.json) |
+| Hermes | [terminal-client.js](../src/supermonoagent/static/terminal-client.js) 内置配置 |
 
-格式为 `id`、`label`、`theme`、`tokens`。`theme` 控制终端背景、文字及 ANSI 调色板；`tokens` 是文本匹配规则，每条包含 `pattern`、`flags`、`color`。文件通过字段、大小、对比度与规则限制校验后才能应用。字格解析、传输、输入处理和高亮器也由两端共用。
+格式为 `id`、`label`、`theme`、`tokens`。`theme` 控制终端背景、文字及 ANSI 调色板；`tokens` 是文本匹配规则，每条包含 `pattern`、`flags`、`color`。配置通过字段、大小、对比度与规则限制校验后才能应用。字格解析、传输、输入处理和高亮器也由两端共用。Hermes 内嵌在已有共享脚本中，不增加 `hermes.json`，因为现有 Native API 2 外壳只接受固定资源路径；这样旧外壳也能直接接收 Hermes 热更新。
 
 补色作用于未指定前景/背景的文字，不覆盖程序明确给出的 ANSI 前景、背景、反色、隐藏和暗淡属性；真彩色值保持原样。光标所在的输入段暂不加补色，避免光标寻址 TUI 把普通输入误判为结构文本；终端自己绘制的幽灵提示和输入区保留原样式。模式并非完整的编程语言语法解析器，也不替换 agent 的交互协议。
 
-### Grok、Claude Code 与 Cursor CLI 的语义细分
+### Grok、Claude Code、Cursor CLI 与 Hermes 的语义细分
 
-Grok、Claude Code 与 Cursor CLI 在共用主题上进一步区分工具调用、命令和链接：工具调用使用紫色 `#c678dd`，命令和 URL 使用青色 `#56b6c2`；Agent 与思考/搜索状态沿用蓝色，路径、字符串、数字和行内代码沿用黄色。警告使用黄色，错误使用红色，成功使用绿色。工具规则先于通用函数规则，避免 `Read(...)` 被当成普通函数着色；普通正文不整行补色。
+这些模式在共用主题上进一步区分工具调用、命令和链接：工具调用使用紫色 `#c678dd`，命令和 URL 使用青色 `#56b6c2`；Agent 与思考/搜索状态沿用蓝色，路径、字符串、数字和行内代码沿用黄色。警告使用黄色，错误使用红色，成功使用绿色。工具规则先于通用函数规则，避免 `Read(...)` 被当成普通函数着色；普通正文不整行补色。
 
 这些配置只修饰默认前景字格，不改变终端字节、原生 ANSI/真彩色、暗淡提示或输入区。共享主题使用绿色 `#7ee787` 光标；Windows 与 Android 在 Cursor CLI 下改用条形光标，其他模式保持块形光标。Grok 额外覆盖搜索、引用及常见读写/执行工具，Claude Code 覆盖 Read、Write、Edit、MultiEdit、Bash、Task、Glob、Grep、TodoWrite、WebSearch 等工具，Cursor CLI 覆盖行首状态、`thinking:`/`context:` 状态栏、Review、Apply、Diff 等状态与同类工具。
+
+Hermes 依据官方 CLI 的 `☤ Hermes`、`∴ Thought for`、工具行、`│` 差异块、`YOLO` 和 `ctx` 状态栏补色；差异新增为绿色、删除为红色、区块头为黄色，斜杠命令和 shell 命令为青色。普通代码行仍使用共享关键字、字符串、路径和数字规则。规则参考 [Hermes CLI 文档](https://hermes-agent.nousresearch.com/docs/user-guide/cli) 与 NousResearch/hermes-agent 主分支 `f85f33bf534d0a4ac88c348d34a4c9ddb424dcb7`，不按机器名或窗口名做特殊判断。
 
 ### 2026-11-08 Cursor 前缀状态修正（0.2.70 候选）
 
@@ -39,10 +42,10 @@ Cursor 的状态行可能带圆点、框线或箭头，例如 `● Thinking`、`
 
 ## 统一修改与调试
 
-1. 编辑上表中的单个 JSON，在 Windows 和 Android 选择同一模式验证。
+1. 编辑上表中的单个 JSON，或修改共享脚本中的 Hermes 内置配置，在 Windows 和 Android 选择同一模式验证。
 2. 开发调试时重新加载界面以清除页面内配置缓存。正式资源按 revision 固定，不能就地覆盖已发布的包。
 3. 独立回归：Windows `tests/test_windows_agent_modes.py`，Android `tests/test_android_agent_modes.py`；共享规则与释放行为为 `tests/agent-render-modes.test.cjs`。
-4. 使用既有签名工具打包发布。桌面完整包为 17 个文件，Android 为 18 个文件，两端打包的六份 JSON 字节一致。
+4. 使用既有签名工具打包发布。桌面完整包为 18 个文件，Android 为 19 个文件，两端打包的六份 JSON 字节一致，Hermes 规则包含在两端相同的共享脚本中。
 
 模板资源需要 Native API 2，首次必须安装支持它的 Windows 外壳或 Android APK；旧 API 1 不接受缺少资源的新包。之后在相同 API 内修改模板可继续热更新。旧缓存和旧安装包保留，升级不终止后台终端。
 

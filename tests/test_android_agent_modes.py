@@ -19,26 +19,28 @@ from test_client_integration import ControlledPty
 ROOT=Path(__file__).resolve().parents[1]
 PROFILES=ROOT/'src/supermonoagent/static/agent-modes'
 EDGE=Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
-IDS=['codex','claude-code','grok','kimi','pi-dev','cursor-cli']
-BRANDS={'codex':'Codex','claude-code':'Claude Code','grok':'Grok','kimi':'Kimi','pi-dev':'pi.dev','cursor-cli':'Cursor CLI'}
-ROW='Codex Claude Code Grok Kimi pi.dev Cursor CLI'
+IDS=['codex','claude-code','grok','kimi','pi-dev','cursor-cli','hermes']
+BRANDS={'codex':'Codex','claude-code':'Claude Code','grok':'Grok','kimi':'Kimi','pi-dev':'pi.dev','cursor-cli':'Cursor CLI','hermes':'Hermes'}
+ROW='Codex Claude Code Grok Kimi pi.dev Cursor CLI Hermes'
 PAPER_ROW='论文复核 src/paper.md 42 ms "证据" `holdout_once`'
 
 
-def test_six_mobile_profiles_use_the_windows_source_and_shared_schema():
+def test_seven_mobile_profiles_use_the_windows_source_and_shared_schema():
     node=shutil.which('node')
     if not node:pytest.skip('Node required for actual shared profile validator')
     script=r'''
 const fs=require('fs'),assert=require('assert/strict'),C=require('./src/supermonoagent/static/terminal-client.js');
-for(const {id} of C.agentProfiles){const raw=JSON.parse(fs.readFileSync('src/supermonoagent/static/agent-modes/'+id+'.json','utf8'));const p=C.validateAgentProfile(raw,id);assert.equal(p.id,id);assert.ok(p.tokens.length>=4);assert.ok(Object.isFrozen(p));}
+for(const {id} of C.agentProfiles){const raw=id==='hermes'?C.hermesAgentProfile:JSON.parse(fs.readFileSync('src/supermonoagent/static/agent-modes/'+id+'.json','utf8'));const p=C.validateAgentProfile(raw,id);assert.equal(p.id,id);assert.ok(p.tokens.length>=4);assert.ok(Object.isFrozen(p));}
 assert.equal(C.agentModeFromSession({agent:'kimi'},'Codex workspace'),'kimi');
+assert.equal(C.agentModeFromSession({agent:'hermes'},'ordinary title'),'hermes');
 assert.equal(C.agentModeFromSession({shell:'powershell'},'ordinary cursor position'),'auto');
 '''
     subprocess.run([node,'-e',script],cwd=ROOT,check=True,capture_output=True)
-    assert {p.stem for p in PROFILES.glob('*.json')}==set(IDS)
-    assert len({(PROFILES/(id+'.json')).read_bytes() for id in IDS})==6
+    json_ids=set(IDS)-{'hermes'}
+    assert {p.stem for p in PROFILES.glob('*.json')}==json_ids
+    assert len({(PROFILES/(id+'.json')).read_bytes() for id in json_ids})==6
     assert not list((ROOT/'android/assets/mobile').glob('agent-modes/*.json')), 'Mobile profile forks must not be reintroduced'
-    for id in IDS:
+    for id in json_ids:
         raw=json.loads((PROFILES/(id+'.json')).read_text('utf-8'))
         assert set(raw)=={'id','label','theme','tokens'} and raw['id']==id
         assert {'background','foreground','red','green','blue','brightWhite'}<=raw['theme'].keys()
@@ -139,7 +141,7 @@ window.closeEvents=[];const NativeSocket=WebSocket;window.WebSocket=class extend
                         before=await page.evaluate('({text:MobileTerminal.terminal.buffer.active.getLine(0).translateToString(true),writes:MobileTerminal.metrics.writes,bad:outboundModeOps.filter(op=>op===5||op===17).length})')
                         for id in IDS:
                             await choose_mode(page,id)
-                            profile=json.loads((PROFILES/(id+'.json')).read_text('utf-8'));brand=BRANDS[id];color=profile['tokens'][2]['color'];start=ROW.index(brand)
+                            profile=json.loads((PROFILES/('codex' if id=='hermes' else id)).with_suffix('.json').read_text('utf-8'));brand=BRANDS[id];color=profile['tokens'][2]['color'];start=ROW.index(brand)
                             await page.wait_for_function('arg=>modeDecorations.some(e=>e.term===MobileTerminal.terminal&&!e.decoration.isDisposed&&e.decoration.marker.line===0&&e.decoration.options.x<=arg.x&&e.decoration.options.x+e.decoration.options.width>arg.x&&e.decoration.options.foregroundColor===arg.color)',arg={'x':start,'color':color})
                             cells=await page.evaluate('''()=>{const t=MobileTerminal.terminal,b=t.buffer.active;return {text:b.getLine(0).translateToString(true),defaultForeground:b.getLine(0).getCell(0).isFgDefault(),nativeRGB:b.getLine(1).getCell(0).getFgColor(),nativeIndexed:b.getLine(2).getCell(0).getFgColor(),background:t.options.theme.background,foreground:t.options.theme.foreground,writes:MobileTerminal.metrics.writes,bad:outboundModeOps.filter(op=>op===5||op===17).length};}''')
                             assert cells['text']==ROW and cells['defaultForeground'];assert cells['nativeRGB']==0x0c2238 and cells['nativeIndexed']==2
@@ -209,7 +211,7 @@ window.closeEvents=[];const NativeSocket=WebSocket;window.WebSocket=class extend
                         assert all(json.loads(key)[2]!='host:other' for key,mode in await page.evaluate('JSON.parse(localStorage.getItem("sma.mobile.agent-modes"))'))
                         assert all(not session.pty.written for session in sessions)
                         assert not await page.evaluate('outboundModeOps.some(op=>op===5||op===17)')
-                        assert profile_requests and {Path(urlsplit(path).path).stem for path in profile_requests}==set(IDS)
+                        assert profile_requests and {Path(urlsplit(path).path).stem for path in profile_requests}==set(IDS)-{'hermes'}
                         assert all(parse_qs(urlsplit(path).query)=={'ui_revision':['mobile-mode-fixture']} for path in profile_requests)
                         assert not errors,errors
                         (artifacts/(renderer+'-cells.json')).write_text(json.dumps(evidence,indent=2),'utf-8')
