@@ -162,7 +162,7 @@ async def verify(playwright, tmp_path):
                             await panel.get_by_label("项目",exact=True).fill("*")
                             await panel.get_by_label("只读访问凭据").fill(reader)
                             await panel.get_by_role("button",name="连接项目").click()
-                            await panel.get_by_label("向总管提问").wait_for()
+                            await panel.get_by_text("beta evidence",exact=True).wait_for()
                             await panel.locator("[data-tab=tasks]").click()
                             item = panel.get_by_text("beta evidence",exact=True).locator("..")
                             await item.get_by_role("button",name="查看任务").click()

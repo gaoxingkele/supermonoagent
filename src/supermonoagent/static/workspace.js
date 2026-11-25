@@ -1419,11 +1419,9 @@
       function updateToggle(){toggle.textContent=host.collapsed?'▸':'▾';toggle.setAttribute('aria-expanded',String(!host.collapsed));toggle.title=(host.collapsed?'展开':'收起')+'窗口列表';toggle.setAttribute('aria-label',toggle.title+' '+(host.identity.machine||host.name));}
       updateToggle();row.append(toggle);
       const pick=button('','切换到'+(host.id==='local'?host.name:' '+host.name),()=>switchHost(host.id));pick.className='workspace-host-pick';pick.setAttribute('aria-current',String(host.id===selectedHost));
-      const rooms=host.config.code?[host.config.code]:host.id==='local'?[...new Set(homeRelays.map(relay=>relay.code).filter(code=>typeof code==='string'&&code))]:[];
-      const roomLabel=rooms.length?'房间号：'+rooms.join('、'):'未配置房间号';
-      pick.append(node('span','workspace-host-name',host.identity.machine||host.name),node('small','muted',(host.connected?catalogCounts(host.catalog).terminals+' 个终端 · ':'')+roomLabel));
-      pick.append(node('span','workspace-host-status',(host.connected?'已连接':host.phase)+' · '+(host.meter.rtt===null?'—':Math.round(host.meter.rtt)+' ms')),
-        node('small','host-rates','↑ '+C.formatRate(host.rates.tx)+' ↓ '+C.formatRate(host.rates.rx)));row.append(pick);
+      const terminals=catalogCounts(host.catalog).terminals;
+      pick.append(node('span','workspace-host-name',(host.identity.machine||host.name)+'（'+terminals+' 个终端）'));
+      pick.append(node('small','host-rates workspace-host-status',(host.connected?'已连接':host.phase)+' · '+(host.meter.rtt===null?'—':Math.round(host.meter.rtt)+' ms')+' · ↑ '+C.formatRate(host.rates.tx)+' ↓ '+C.formatRate(host.rates.rx)));row.append(pick);
       const actions=button('···','房间菜单 '+(host.identity.machine||host.name),event=>showRoomMenu(event,host));actions.className='workspace-host-edit';row.append(actions);return row;
   }
   function renderHosts(){

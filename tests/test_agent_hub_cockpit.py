@@ -81,10 +81,15 @@ async def exercise(page, *, mobile, url, peers):
     await page.locator('#options' if mobile else '#app-menu-toggle').click()
     await page.locator('#cockpit-open').click()
     panel = page.locator('#sma-cockpit')
+    assert await panel.get_by_label('驾驶舱服务地址').input_value() == 'wss://117.50.48.22/hub/view'
+    assert await panel.get_by_label('项目', exact=True).input_value() == '*'
     await panel.get_by_label('驾驶舱服务地址').fill(url)
     await panel.get_by_label('项目', exact=True).fill('alpha')
     await panel.get_by_label('只读访问凭据').fill('test-read-only')
     await panel.get_by_role('button',name='连接项目').click()
+    await panel.get_by_text('等待测试反馈',exact=True).wait_for()
+    assert await panel.locator('[data-tab=tasks]').get_attribute('aria-current') == 'true'
+    await panel.get_by_role('button',name='对话',exact=True).click()
     await panel.get_by_label('向总管提问').fill('当前结果是什么？')
     await panel.get_by_role('button',name='发送给总管').click()
     await panel.get_by_text('合成任务的结论',exact=True).wait_for()

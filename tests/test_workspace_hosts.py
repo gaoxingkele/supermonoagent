@@ -68,9 +68,16 @@ async def _check_hosts(playwright, edge):
                         await page.wait_for_function("window.smaWorkspace?.connected && smaWorkspace.activePane?.title.textContent.includes('Remote terminal')")
                         await page.wait_for_function("smaWorkspace.terminal.buffer.active.getLine(0)?.translateToString(true).includes('REMOTE-ONLY')")
                         assert await page.locator('#tree > .computer-tree').count() == 2
-                        assert await page.locator('#tree .workspace-host-name').all_text_contents() == ['LOCAL-MACHINE', 'REMOTE-MACHINE']
+                        assert await page.locator('#tree .workspace-host-name').all_text_contents() == ['LOCAL-MACHINE（1 个终端）', 'REMOTE-MACHINE（1 个终端）']
                         remote_tree = page.locator('#tree > .computer-tree').nth(1)
-                        assert '房间号：office-room' in await remote_tree.locator('.workspace-host').inner_text()
+                        assert 'office-room' not in await remote_tree.locator('.workspace-host').inner_text()
+                        telemetry = await remote_tree.locator('.workspace-host-pick > .host-rates').inner_text()
+                        assert telemetry.startswith('已连接 · ') and ' · ↑ ' in telemetry and ' ↓ ' in telemetry
+                        layout = await remote_tree.locator('.workspace-host-pick').evaluate("""pick => {
+                            const name=pick.querySelector('.workspace-host-name').getBoundingClientRect(),rates=pick.querySelector('.host-rates');
+                            return {children:pick.children.length,separate:name.bottom<=rates.getBoundingClientRect().top,nowrap:getComputedStyle(rates).whiteSpace==='nowrap'};
+                        }""")
+                        assert layout == {'children': 2, 'separate': True, 'nowrap': True}
                         assert await remote_tree.locator(':scope > .computer-windows > .session-row').count() == 1
                         assert await page.locator('#tree .group-label, #tree .project-label, #workspace-hosts, #new-group, #search').count() == 0
                         await remote_tree.locator('.workspace-host-toggle').click()

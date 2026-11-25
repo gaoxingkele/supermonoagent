@@ -1108,7 +1108,7 @@
       return b;
     }
     let dialog, nav, main, message, projectLabel, scopePicker, sourceLabel, opener, reader = null, live = false;
-    let revision = 0, tab = 'chat', detail = false, configuration = false, refreshTimer = 0;
+    let revision = 0, tab = 'tasks', detail = false, configuration = false, refreshTimer = 0;
     let taskId = '', taskProject = '', scopeProject = '', query = '', librarySource = '', chatHistory = [], chatDraft = '', backTo = null;
     let taskFilter='attention', authorizationTimer=0;
     const headings = {chat:'对话', tasks:'待处理', usage:'额度', library:'mylib'};
@@ -1254,7 +1254,7 @@
       configuration = true;
       refreshTitle();
       const form = element('form');
-      const endpoint = field('驾驶舱服务地址', preferences.endpoint);
+      const endpoint = field('驾驶舱服务地址', preferences.endpoint||'wss://117.50.48.22/hub/view');
       endpoint.input.placeholder = 'wss://host/hub/view';
       const project = field('项目', preferences.project||'*');
       project.input.title='项目 ID 或 *（全部获准项目）';
@@ -1265,7 +1265,7 @@
       for (const f of [endpoint,project,secret]) f.input.required = true;
       const connect = element('button', '连接项目');
       connect.type = 'submit';
-      form.append(endpoint.el, project.el, secret.el, connect);
+      form.append(element('p','地址和项目已预填；只需填写运维签发的只读凭据。','hub-meta'),endpoint.el, project.el, secret.el, connect);
       const forget = button('清除连接设置', () => {
         preferences = {...defaults};
         try { root.localStorage.removeItem(key); } catch {}
