@@ -2,10 +2,10 @@
 
 This index covers the retained public build artifacts in this repository. Archiving a signed UI snapshot does not mean it was activated on the live update channel.
 
-- Latest Android APK: **0.2.69**.
-- Latest Windows application: **0.2.67**.
-- Cursor UI candidate: **0.2.70**, not published to the live channel. Last observed live UI: **0.2.67**.
-- Android 0.2.67 and 0.2.68 are retained for history; use 0.2.69 for the native resource and update-feed fixes.
+- Latest Android APK: **0.2.83 (85)**.
+- Latest Windows application: **0.2.83**.
+- Latest signed desktop and Android UI: **0.2.83**, published to the live stable channel.
+- Android 0.2.82 and earlier builds are retained for history; use 0.2.83 for the current cockpit and shared UI.
 - Older signed manifests retain their original bytes and expiration dates; an archived manifest may no longer be eligible for installation.
 - Private connection defaults, signing keys, local runtime data, screenshots and terminal content are excluded.
 
@@ -15,6 +15,8 @@ Machine-readable paths and SHA-256 hashes: [versions.json](versions.json).
 
 | Version | APK |
 | --- | --- |
+| 0.2.83 | [Download](android/0.2.83/SuperMonoAgent.apk) |
+| 0.2.82 | [Download](android/0.2.82/SuperMonoAgent.apk) |
 | 0.2.69 | [Download](android/0.2.69/SuperMonoAgent.apk) |
 | 0.2.68 | [Download](android/0.2.68/SuperMonoAgent.apk) |
 | 0.2.67 | [Download](android/0.2.67/SuperMonoAgent.apk) |
@@ -55,6 +57,8 @@ Legacy APK filenames directly under [android/](android/) are preserved as well.
 
 | Version | Application directory | Installer |
 | --- | --- | --- |
+| 0.2.83 | [Portable](windows/SuperMonoAgent-0.2.83-Portable.zip) | [ZIP](windows/SuperMonoAgent-0.2.83-Setup.zip) |
+| 0.2.82 | [Portable](windows/SuperMonoAgent-0.2.82-Portable.zip) | — |
 | 0.2.67 | [Files](windows/0.2.67/) | [ZIP](windows/SuperMonoAgent-0.2.67-Setup.zip) |
 | 0.2.66 | [Files](windows/0.2.66/) | [ZIP](windows/SuperMonoAgent-0.2.66-Setup.zip) |
 | 0.2.65 | [Files](windows/0.2.65/) | — |
@@ -102,6 +106,7 @@ Legacy APK filenames directly under [android/](android/) are preserved as well.
 
 | Revision | Desktop | Android | Signed manifest | Status |
 | --- | --- | --- | --- | --- |
+| 0.2.83 | [ZIP](ui/0.2.83/desktop.zip) | [ZIP](ui/0.2.83/android.zip) | [JSON](ui/0.2.83/manifest.json) | published-stable |
 | 0.2.70 | [ZIP](ui/0.2.70/desktop.zip) | [ZIP](ui/0.2.70/android.zip) | [JSON](ui/0.2.70/manifest.json) | candidate-not-published |
 | 0.2.67 | [ZIP](ui/0.2.67/desktop.zip) | [ZIP](ui/0.2.67/android.zip) | [JSON](ui/0.2.67/manifest.json) | archived |
 | 0.2.66 | [ZIP](ui/0.2.66/desktop.zip) | [ZIP](ui/0.2.66/android.zip) | [JSON](ui/0.2.66/manifest.json) | archived |

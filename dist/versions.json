@@ -1,13 +1,22 @@
 {
   "schema": 1,
-  "updated": "2026-11-23",
+  "updated": "2026-11-25",
   "latest": {
-    "android": "0.2.82",
-    "windows": "0.2.82",
-    "uiCandidate": "0.2.70",
-    "observedLiveUI": "0.2.67"
+    "android": "0.2.83",
+    "windows": "0.2.83",
+    "uiCandidate": "0.2.83",
+    "observedLiveUI": "0.2.83"
   },
   "android": [
+    {
+      "version": "0.2.83",
+      "version_code": 85,
+      "application_id": "dev.supermonoagent.mobile",
+      "path": "dist/android/0.2.83/SuperMonoAgent.apk",
+      "sha256": "0df639e8b14d2667eb41e0ec7af37789b0a00dd1303055dd71a66511b6c761fe",
+      "source_commit": "c3cd3b7",
+      "status": "published-standard-apk-and-signed-ui"
+    },
     {
       "version": "0.2.82",
       "version_code": 84,
@@ -184,6 +193,15 @@
     }
   ],
   "windows": [
+    {
+      "version": "0.2.83",
+      "portable": "dist/windows/SuperMonoAgent-0.2.83-Portable.zip",
+      "portableSha256": "162a4f9c2257cd325a7ae3209e03e2d908bbdaa6edcf566173fc6784e9576067",
+      "installer": "dist/windows/SuperMonoAgent-0.2.83-Setup.zip",
+      "installerSha256": "48fec815a1e19b2fd136f4ecd5ee3b34dae14011fd43bfc6400e9fcb152d6c4d",
+      "source_commit": "c3cd3b7",
+      "personalized": false
+    },
     {
       "version": "0.2.82",
       "portable": "dist/windows/SuperMonoAgent-0.2.82-Portable.zip",
@@ -387,6 +405,26 @@
     }
   ],
   "ui": [
+    {
+      "revision": "0.2.83",
+      "path": "dist/ui/0.2.83/",
+      "status": "published-stable",
+      "sequence": 1795566636770853,
+      "files": {
+        "android.zip": {
+          "bytes": 218878,
+          "sha256": "ccc9d6f1edcf16ab1bf8a96df3b5d99b74bc9a6ea2506d617c5859a49191e4a2"
+        },
+        "desktop.zip": {
+          "bytes": 257334,
+          "sha256": "cbd293006501fe0f5b1a47e5009e425f6fdf7acb91a1c73b5b6cb2cabb32144d"
+        },
+        "manifest.json": {
+          "bytes": 6876,
+          "sha256": "733334328af3b8668a9f1e78bbc5c9997df2ac54fa84c91970ef8e97382477ff"
+        }
+      }
+    },
     {
       "revision": "0.2.70",
       "path": "dist/ui/0.2.70/",
