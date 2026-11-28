@@ -47,7 +47,8 @@ async def check_refresh(playwright, renderer):
                     await page.evaluate('()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))')
                     assert await page.locator('#terminal-status').evaluate('e=>e.scrollWidth<=e.clientWidth&&e.getBoundingClientRect().right<=innerWidth&&e.getBoundingClientRect().left>=0')
                     assert '82%' in await page.locator('#terminal-status').inner_text()
-                await page.locator('#draft').evaluate("e=>{e.value='unsent refresh draft';e.dispatchEvent(new Event('input'));}")
+                await page.locator('#quick-draft').fill('unsent refresh draft')
+                await page.locator('#tools-toggle').click()
                 await page.locator('#refresh-screen').click()
                 await eventually(lambda: len(calls) == 1)
                 assert await page.locator('#refresh-screen').get_attribute('aria-busy') == 'true'
@@ -135,6 +136,7 @@ async def check_legacy_refresh(playwright):
                 await page.locator('#sessions').click()
                 await page.locator(f'#session-list .session[data-session="{second.id}"]').click()
                 await page.wait_for_function('sid=>MobileTerminal.active===sid&&MobileTerminal.ready', arg=second.id)
+                await page.locator('#tools-toggle').click()
                 await page.locator('#control').click()
                 await page.wait_for_function('MobileTerminal.controls?.owner===true')
                 await page.evaluate('()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))')

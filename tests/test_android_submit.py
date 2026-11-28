@@ -145,6 +145,7 @@ async def check_composer(playwright, action):
                             # A bounded reconnect snapshot may omit the old ?2004h mode.
                             await page.evaluate("MobileTerminal.terminal.reset()")
                             assert not await page.evaluate("MobileTerminal.terminal.modes.bracketedPasteMode")
+                        await page.locator("#tools-toggle").click()
                         await page.locator("#mode").click()
                         # Shift+Enter remains a local newline; composition candidate Enter never submits.
                         await page.locator("#draft").fill("candidate")

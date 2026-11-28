@@ -318,6 +318,7 @@ def test_actual_mobile_reload_preserves_tuple_drafts_modes_and_session_credentia
                             page=await browser.new_page(viewport={'width':390,'height':844},is_mobile=True,has_touch=True)
                             await page.add_init_script('if(!localStorage.getItem("sma.mobile.hosts"))localStorage.setItem("sma.mobile.hosts",'+json.dumps(json.dumps([{'id':'host:other','name':'Other','endpoint':origin,'code':''}]))+');')
                             document=origin+'/mobile/index.html#'+quote(json.dumps(config));await page.goto(document);await page.wait_for_function('MobileTerminal.ready')
+                            await page.locator('#tools-toggle').click()
                             await page.locator('#mode').click();await page.locator('#draft').fill('home unsent draft')
                             await page.locator('#composer-close').click()
                             await page.locator('#sessions').click();await page.locator('#host-list .host-row').nth(1).locator('button').nth(1).click();await page.locator('#host-token').fill(daemon.token);await page.locator('#host-form button[type=submit]').click();await page.wait_for_function('MobileTerminal.ready && MobileTerminal.hosts.every(h=>h.connected)')

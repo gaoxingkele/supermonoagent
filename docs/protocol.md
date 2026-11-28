@@ -88,6 +88,8 @@ P1 通过 OP2 与 OP7 确认 `managed_events:1` 和 `host_installation_id`。OP2
 
 OP16 的可选 `managed_after` 按原始会话 ID 携带 `host_installation_id`、`journal_id`、`process_generation`、`runtime_epoch`、`revision`，以受当前授权保护的保留修订补发。序列缺口、daemon 代次变化或保留区间不足可返回 `resync:true`，客户端用 OP24 `managed_status` 和原 nonce 校准状态及回执。旧客户端仍按既有 OP24 语义查询。
 
+P2 在新 daemon 无法确认旧进程时，以只读的 `state: "ambiguous"` 提供已有 Journal 与持久回执。协商事件的 OP24 回包还带 `runtime_verification: "unverifiable"`，用当前 `runtime_epoch` 和修订 0 标注本次查询。原 `process_generation` 只用于定位旧记录。新的物理连接和 Relay 重连沿用同一个正在运行的 daemon 代次。
+
 OP16/17/5 都受 Token 所有权与订阅约束。OP18 的回放按 Token 所有权过滤，relay 客户端还按频道过滤；OP19 只发给已订阅且仍有权限的连接。客户端内部的 host/session 元组键不能放进线协议；不同 daemon 的相同 raw ID 由其所属连接隔离。关闭标签页只从 OP16 订阅集移除该 ID，不发送 OP9。
 
 支持 `close_ack:1` 的后台在会话目录提供 `process_generation`。结束一个普通会话时可发送 OP9 `{request,window_id,session,process_generation}`，OP2 返回这些原字段和 `closed`，位于 `close_ack` 对象内。主机会在进程退出后将会话移出目录并广播 OP7；同名空窗口可继续容纳新会话。失败时 `closed:false`，`error` 为 `target_changed`、`target_unavailable`、`process_still_alive` 或 `managed_requires_own_close`。客户端在回执丢失时可重新读取当前目录。旧客户端可继续使用 `{session}`；`{window}` 明确结束整个容器，托管会话使用自身的 OP24 关闭协议。
