@@ -1,5 +1,12 @@
 # 发布产物
 
+## 0.2.85 · 2026-11-29
+
+| 产物 | 下载 | 说明 |
+| --- | --- | --- |
+| Windows 通用安装版 | [SuperMonoAgent-0.2.85-Setup.zip](https://117.50.48.22/updates/installers/0.2.85/SuperMonoAgent-0.2.85-Setup.zip) | 原生后台和桌面外壳已发布。[Windows 签名清单](https://117.50.48.22/updates/windows/stable/manifest.json) |
+| Windows / Android 签名界面 | [双端 stable 清单](https://117.50.48.22/updates/stable/manifest.json) | 托管运行时事件与状态恢复。Android 原生包仍为 0.2.83（构建 85）。[实施与发布记录](../docs/orca-upgrade-rollout.md) |
+
 ## 0.2.84 · 2026-11-25
 
 | 平台 | 下载 | 版本与校验 |

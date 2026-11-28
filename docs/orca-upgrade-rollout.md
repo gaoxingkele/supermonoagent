@@ -6,8 +6,8 @@
 | --- | --- | --- |
 | P0 基线和回滚 | 0.2.84 界面、0.2.83 原生包的回归与恢复记录 | 通过 |
 | P1 运行时事件 | 0.2.85 后台候选，随后双端界面候选 | 试点验证通过，公开发布并入 P2 |
-| P2 统一状态 | 0.2.85 完整候选，验证后逐端升级 | 候选已暂存，稳定门槛验证中 |
-| P3 WebRTC 验证 | 独立 QA 包、状态目录和 Relay 测试房间 | 待 P2 |
+| P2 统一状态 | 0.2.85 完整候选，验证后逐端升级 | stable 已发布，现场核对通过 |
+| P3 WebRTC 验证 | 独立 QA 包、状态目录和 Relay 测试房间 | 隔离验证准备中 |
 | P4 本地 Bot 与 Worker | 0.2.86 原生候选，完成接管和重启恢复后升级 | 待 P3 |
 | P5 直连集成 | 0.2.87 QA，有成功切换和 Relay 回退两类证据 | 待 P4 |
 | P6 直连稳定化 | 0.2.87 原生发布，直连默认关闭 | 待 P5 |
@@ -88,7 +88,7 @@ Ewan 的探测继续单列。以 `probe-short.json` 的 HELLO/PONG 和 `server-m
 - 在同一真实网络拓扑上用合成 Provider 测两轮，共记录 60 次权限、30 次完成和 30 次失败状态。按最近秩计算的端到端可见 p95 分别为 196.391、186.154 和 217.146 ms，均优于 300 ms。原首轮 462.433 ms 慢样本保留，Windows 到发出 22.251 ms，其余 440.182 ms 发生在发出后至手机可见之间。证据为主工作树 `.omx/artifacts/orca-p1-release/wan-latency-pooled.json`。
 - Windows 0.2.85 签名安装包完成隔离原生安装、daemon 启动和 WebView2 启动。Android 独立 QA 0.2.85（code 86）已安装并读回 APK SHA-256。云端试点目录已接收双端签名界面、Windows 安装包及 Android QA APK，逐项哈希一致。证据在主工作树 `.omx/artifacts/orca-p1-release/`。公开 stable 为界面 0.2.84、原生 0.2.83。
 - 真实 Edge、隔离 Relay、daemon 和 SQLite 的混合版本矩阵验证了 0.2.84 界面配新后台，以及新界面配 0.2.84 后台。两组 7 秒内各发两次旧状态查询，OP26 均为零，均收到一次关联原 nonce 的持久回执。证据在主工作树 `.omx/artifacts/orca-p1-mixed/matrix.json`。
-- JavaScript 全量 215 项通过。Python 全量回归保持在 P1 工作树运行。移动视口 DOM/WebGL 的历史底部按钮与接管测试的历史顶部按钮在精确 0.2.84 代码上同样因工具栏默认折叠而超时。
+- JavaScript 全量 215 项通过。冻结 P1 的 Python 全量结果为 2074 通过、155 跳过、25 失败，另有 72 个子测试通过。已在原 0.2.84 对照失败入口，并在 P2 修正测试操作。三项 Windows Cursor `block` 与 `bar` 的断言差异在原 0.2.84 和 P2 均重现，沿用该方向的基线边界。原始摘要为主工作树 `.omx/artifacts/orca-p1-release/full-pytest-summary.txt`。
 
 ## P2 状态归属与恢复
 
@@ -104,3 +104,10 @@ P2 从试点提交 `eee23f953c13d19a40acede4d758ef897bd5ecf7` 开始，在 `code
 - 在 0.2.84 与 P2 均复现两类测试时序问题。回执丢失测试只在故意丢回执时缩短等待。权限到期测试等待实际持久撤回完成，再断言旧权限已撤销。对延迟注入和原三项断言均完成复测。
 - P2 的实际 Edge 混合版本三组通过，旧 UI/新后台及新 UI/旧后台保留轮询，新版组合空闲零状态查询。公开发布工具 60 项通过，1 项按环境条件跳过。
 - 三十分钟稳定性测试验证十个页签 1800.010 秒保持就绪，周期 `managed_status`、空闲 OP26、重连和主线程长任务均为零。120 次 PONG 全部返回，p95 为 2.627 ms。31 个采样点中，状态轨迹数量和保留事件数量均为 10，队列为空。空闲结束后 10 个测试轮次各派发一次，产生 33 个 OP26，并重连恢复。证据为主工作树 `.omx/artifacts/orca-p2-soak/p2-soak.json`。
+- Python 全量原始结果为 2080 通过、155 跳过、22 失败，另有 72 个子测试通过。其中 19 个在已修正的旧界面入口或测试时序下通过复测，三项 Cursor 光标断言仍与 0.2.84 相同。一次 PTY 测试退出警告在同一用例的基线和候选重跑中均未再出现。原始记录为 `.omx/artifacts/orca-p2-release/full-pytest.xml`。
+
+### 0.2.85 stable 现场发布
+
+- 阿里云先切换 Windows 完整程序，再切换两端的签名界面。已从公网回读 Windows 安装包和两个界面 ZIP，与候选文件逐字节一致，并核对签名。Relay `active/running`、重启计数 0，公网 `/health` 返回 200。
+- 本机 Windows 默认安装从 0.2.36 升到 0.2.85。原配置指向已不存在的凭据文件，经同状态目录的现有凭据完成只读 owner HELLO 核验后修复路径，原凭据字节、状态目录和三条已运行进程均保留。证据为 `.omx/artifacts/orca-p2-release/windows/desktop-install.json`。
+- 实体 Android 经 5G NR 激活并显示签名 UI 0.2.85，原生为 0.2.83（构建 85）。原房间已不在授权发现结果中，用同一保存凭据重新发现三个可用房间，并选择经本机只读核验的 Windows 房间，实际显示「已连接」。证据为 `.omx/artifacts/orca-p2-release/android-stable-readback.json`。
