@@ -1,4 +1,4 @@
-"""Clicking an http(s) URL in terminal output asks the local shell to open it."""
+"""Opening an http(s) terminal link on this device invokes the local browser."""
 from pathlib import Path
 import pytest
 
@@ -37,6 +37,10 @@ async def click_url_and_expect(page, needle, expected):
     await page.mouse.move(click_x,click_y)
     await page.wait_for_timeout(200)
     await page.mouse.down(); await page.mouse.up()
+    menu = page.get_by_role('menu')
+    await menu.wait_for(state='visible')
+    assert await page.evaluate('opened') == []
+    await menu.locator('button', has_text='在本设备打开').click()
     await page.wait_for_function('opened.length===1')
     assert await page.evaluate('opened') == [expected]
 
