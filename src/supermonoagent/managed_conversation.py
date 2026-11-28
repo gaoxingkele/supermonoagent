@@ -18,9 +18,10 @@ from .conversation_store import managed_creation_ids
 from .hub import Session
 from .managed_events import ManagedEvents
 from .managed_process import ManagedPty, sanitize_render_text
+from .runtime_state import TARGET, ManagedRuntimeSnapshot
 
 
-_TARGET = frozenset({'window_id', 'session_id', 'process_generation', 'journal_id'})
+_TARGET = frozenset(TARGET)
 _PARAMS = {
     'create_managed': {'session_id', 'process_generation', 'provider', 'nonce'},
     'submit_managed': _TARGET | {'nonce', 'text'},
@@ -57,6 +58,8 @@ class _Conversation:
     physically_sent: bool = False
     provider_busy: bool = False
     last_outcome: dict | None = None
+    projection: ManagedRuntimeSnapshot | None = field(default=None, repr=False)
+    projection_revision: int = 0
     start_task: object = field(default=None, repr=False)
     close_task: object = field(default=None, repr=False)
     jobs: set = field(default_factory=set, repr=False)
@@ -65,6 +68,15 @@ class _Conversation:
     def target(self):
         return dict(window_id=self.session.window_id, session_id=self.session.id,
             process_generation=self.session.process_generation, journal_id=self.session.journal_id)
+
+    def set_public_state(self, state, *, clear_permissions=False):
+        """Update the projected state while the caller holds the runtime fence."""
+        if self.state != state or clear_permissions and self.permissions:
+            self.projection = None
+        self.state = state
+        if clear_permissions:
+            self.permissions.clear()
+            self.details.clear()
 
 
 class ManagedConversationService:
@@ -207,9 +219,9 @@ class ManagedConversationService:
                 with c.fence:
                     state = 'error' if c.failed else 'ended' if c.ended else 'ambiguous'
                     last_outcome = c.last_outcome
-            result = self._status_result(target, control, state=state, last_outcome=last_outcome)
+            result = self._status_result(target, control, state=state, last_outcome=last_outcome, negotiated=event_cursor)
             if event_cursor:
-                result.update(self.events.snapshot_cursor(None, result))
+                result.update(self.events.snapshot_cursor(None, None))
             return result
         if target != c.target:
             raise JournalError('stale_target')
@@ -218,9 +230,8 @@ class ManagedConversationService:
             return await self._interrupt(c, params, owner, token, rooms, authorize)
         if action == 'close_managed':
             with c.fence:
-                c.closing, c.state = True, 'closing'
-                c.permissions.clear()
-                c.details.clear()
+                c.closing = True
+                c.set_public_state('closing', clear_permissions=True)
             self._publish(c)
             self._schedule_close(c, 'closed')
             return dict(c.target, state='ended' if c.close_task.done() else 'closing')
@@ -234,9 +245,7 @@ class ManagedConversationService:
                     control = await self._refresh(c, nonce=nonce, rooms=rooms)
                     result_receipt = control['receipt']
                 self._check(c, owner, token, rooms, authorize)
-                result = self._live_status(c, details=True, receipt=result_receipt)
-                if event_cursor:
-                    result.update(self.events.snapshot_cursor(c.session, result))
+                result = self._live_status(c, receipt=result_receipt, negotiated=event_cursor)
                 if len(canonical_json(result)) > 192 * 1024 - 4096:
                     raise JournalError('managed_status_limit')
                 return result
@@ -426,47 +435,53 @@ class ManagedConversationService:
     async def _refresh(self, c, *, nonce=None, rooms=None, accepted=None):
         control = await self._store(c, 'read_managed_control', nonce=nonce, rooms=rooms)
         with c.fence:
-            c.active = control['active_submission']
-            c.provider = control['provider'] or {}
-            c.permissions = {item['permission_request_id']: item for item in control['permissions']
+            active = control['active_submission']
+            provider = control['provider'] or {}
+            permissions = {item['permission_request_id']: item for item in control['permissions']
                 if item['state'] in {'pending', 'decided', 'expired'} and not (c.failed or c.closing or c.ended)}
-            c.details = {identity: details for identity, details in c.details.items() if identity in c.permissions}
-            c.state = ('error' if c.failed else 'ended' if c.ended else
-                       'closing' if c.closing else 'running' if c.provider_busy and c.active is None
-                       else control['state'])
-            self._cancel_timers(c, keep=set(c.permissions))
+            state = ('error' if c.failed else 'ended' if c.ended else
+                     'closing' if c.closing else 'running' if c.provider_busy and active is None
+                     else control['state'])
+            if (c.active, c.provider, c.permissions, c.state) != (active, provider, permissions, state):
+                c.projection = None
+            c.active, c.provider, c.permissions, c.state = active, provider, permissions, state
+            c.details = {identity: details for identity, details in c.details.items() if identity in permissions}
+            self._cancel_timers(c, keep=set(permissions))
         self._publish(c, receipt=accepted)
         return control
 
-    def _live_status(self, c, *, details=False, receipt=None):
+    def _runtime_snapshot(self, c):
         with c.fence:
-            public = self._snapshot(c)
-            permissions = [dict(item, **({'details': c.details.get(identity, '')} if details else {}))
-                for identity, item in c.permissions.items() if item['state'] == 'pending']
-            return dict(c.target, **public, interaction_mode='managed', active_submission=c.active,
-                        permissions=permissions, receipt=receipt)
+            if c.projection is None:
+                c.projection_revision += 1
+                c.projection = ManagedRuntimeSnapshot.capture(c.target, state=c.state, provider=c.binding['provider'],
+                    descriptor=c.provider, active=c.active,
+                    permissions=(item for item in c.permissions.values() if item['state'] == 'pending'),
+                    last_outcome=c.last_outcome, source_revision=c.projection_revision)
+            return c.projection
+
+    def _live_status(self, c, *, receipt=None, negotiated=False):
+        with c.fence:
+            snapshot = self._runtime_snapshot(c)
+            result = snapshot.control(details=c.details, receipt=receipt)
+            if negotiated:
+                result.update(self.events.snapshot_cursor(c.session, snapshot))
+            return result
 
     def _publish(self, c, *, receipt=None):
-        self.events.observe(c.session, self._live_status(c), receipt)
+        self.events.observe(c.session, self._runtime_snapshot(c), receipt)
 
     @staticmethod
-    def _status_result(target, control, *, state, last_outcome=None):
+    def _status_result(target, control, *, state, last_outcome=None, negotiated=False):
         provider = control.get('provider') or {}
-        return dict(target, interaction_mode='managed', state=state,
+        snapshot = ManagedRuntimeSnapshot.capture(target, state=state,
             provider=provider.get('provider') or control['creation']['request']['provider'],
-            provider_version=provider.get('provider_version'), provider_root_id=provider.get('provider_root_id'),
-            provider_root_confirmed=provider.get('confirmed', False), policy=provider.get('policy', {}),
-            active_submission=control['active_submission'], permissions=control['permissions'], receipt=control['receipt'],
-            last_outcome=dict(last_outcome) if last_outcome is not None else None)
+            descriptor=provider, active=control['active_submission'], permissions=control['permissions'],
+            last_outcome=last_outcome, runtime_verification='unverifiable' if state == 'ambiguous' else None)
+        return snapshot.control(receipt=control['receipt'], negotiated=negotiated)
 
     def _snapshot(self, c):
-        with c.fence:
-            return dict(state=c.state, provider=c.binding['provider'],
-                provider_version=c.provider.get('provider_version'),
-                provider_root_id=c.provider.get('provider_root_id'),
-                provider_root_confirmed=c.provider.get('confirmed', False),
-                policy=dict(c.provider.get('policy', {})),
-                last_outcome=dict(c.last_outcome) if c.last_outcome is not None else None)
+        return self._runtime_snapshot(c).directory()
 
     @staticmethod
     def _remember_outcome(c, submission_id, outcome, reason, has_final):
@@ -474,21 +489,24 @@ class ManagedConversationService:
         # credentials, or a substitute assistant response.
         reason = reason if isinstance(reason, str) and re.fullmatch(r'[a-z][a-z0-9_]{0,63}', reason) else None
         with c.fence:
-            c.last_outcome = dict(submission_id=submission_id, outcome=outcome,
-                reason=reason, has_final=bool(has_final))
+            outcome_data = dict(submission_id=submission_id, outcome=outcome, reason=reason, has_final=bool(has_final))
+            if c.last_outcome != outcome_data:
+                c.projection = None
+                c.last_outcome = outcome_data
 
     def source_status(self, journal_id):
         c = self._conversations.get(journal_id)
         if c is None:
             return None
         with c.fence:
-            return dict(binding_id=c.binding['binding_id'], origin='managed', provider=c.binding['provider'],
-                provider_version=c.provider.get('provider_version'), provider_session_id=c.provider.get('provider_root_id'),
-                state=c.state, reason=c.failed, pending_turns=int(c.active is not None),
-                managed_state=c.state, coverage='managed_rendering', supported=True,
+            status = self._snapshot(c)
+            return dict(binding_id=c.binding['binding_id'], origin='managed', provider=status['provider'],
+                provider_version=status['provider_version'], provider_session_id=status['provider_root_id'],
+                state=status['state'], reason=c.failed, pending_turns=int(c.active is not None),
+                managed_state=status['state'], coverage='managed_rendering', supported=True,
                 bound=not c.ended and not self._closed,
                 healthy=not (c.failed or c.ended or c.closing or self._closed or c.session.journal_error),
-                provider_root_confirmed=c.provider.get('confirmed', False),
+                provider_root_confirmed=status['provider_root_confirmed'],
                 input_provenance='app_submission', runtime_verification='runtime_unverified')
 
     def _can_send(self, c, context):
@@ -626,7 +644,8 @@ class ManagedConversationService:
                 elif kind == 'permission_withdrawn':
                     identity = event['permission_request_id']
                     with c.fence:
-                        c.permissions.pop(identity, None)
+                        if c.permissions.pop(identity, None) is not None:
+                            c.projection = None
                         c.details.pop(identity, None)
                         self._cancel_timers(c, keep=set(c.permissions))
                     await self._store(c, 'withdraw_managed_permission', permission_request_id=identity)
@@ -653,10 +672,8 @@ class ManagedConversationService:
                         await self._settle_local(c, 'ambiguous', 'process_closed')
                     with c.fence:
                         c.ended = True
-                        c.state = 'error' if c.failed else 'ended'
-                        c.permissions.clear()
-                        c.details.clear()
-                    self.events.end(c.session, self._live_status(c))
+                        c.set_public_state('error' if c.failed else 'ended', clear_permissions=True)
+                    self.events.end(c.session, self._runtime_snapshot(c))
                     await asyncio.sleep(0)
                     c.session.pty.feed_eof()
                 else:
@@ -774,9 +791,7 @@ class ManagedConversationService:
     def _fail(self, c, reason):
         with c.fence:
             c.failed = c.failed or reason
-            c.state = 'error'
-            c.permissions.clear()
-            c.details.clear()
+            c.set_public_state('error', clear_permissions=True)
         # capture_failed may originate in a Hub reader thread. Timer mutation
         # stays on the event loop; the RAM fence already revokes positive writes.
         self._loop.call_soon_threadsafe(self._publish, c)
@@ -795,10 +810,7 @@ class ManagedConversationService:
     async def _close(self, c, reason):
         with c.fence:
             c.closing = True
-            if not c.failed:
-                c.state = 'closing'
-            c.permissions.clear()
-            c.details.clear()
+            c.set_public_state('error' if c.failed else 'closing', clear_permissions=True)
             self._cancel_timers(c)
         self._publish(c)
         if c.start_task is not None and not c.start_task.done() and c.start_task is not asyncio.current_task():
@@ -821,8 +833,8 @@ class ManagedConversationService:
                 except Exception:
                     pass  # RAM remains failed; unavailable storage cannot prove recovery.
             with c.fence:
-                c.state = 'error' if c.failed else 'ended'
-            self.events.end(c.session, self._live_status(c))
+                c.set_public_state('error' if c.failed else 'ended')
+            self.events.end(c.session, self._runtime_snapshot(c))
             await asyncio.sleep(0)
             c.session.pty.feed_eof()
         jobs = [task for task in c.jobs if task is not asyncio.current_task() and not task.done()]
@@ -830,7 +842,7 @@ class ManagedConversationService:
             await asyncio.gather(*jobs, return_exceptions=True)
         await asyncio.to_thread(c.session.reader_done.wait)
         with c.fence:
-            c.state = 'error' if c.failed else 'ended'
+            c.set_public_state('error' if c.failed else 'ended')
 
     async def aclose(self):
         if self._shutdown_task is None:

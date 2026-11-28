@@ -62,6 +62,7 @@ async def check_handoff(playwright):
                         await page.locator('#control').tap()
                         await page.wait_for_function('MobileTerminal.controls?.owner&&MobileTerminal.terminal.cols<80', timeout=12000)
                         await page.wait_for_timeout(1200)
+                        await page.locator('#tools-toggle').tap()
                         await page.locator('#history-top').tap()
                         await page.wait_for_function("MobileTerminal.terminal.buffer.active.viewportY===0&&MobileTerminal.terminal.buffer.active.getLine(0)?.translateToString(true).includes('AUDIT_ROW_00000_')")
                         await page.locator('#history-bottom').tap()

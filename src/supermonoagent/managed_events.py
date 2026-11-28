@@ -4,29 +4,13 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 from .protocol import OP_RUNTIME_EVENT, pack_json, unpack_json
+from .runtime_state import TARGET, ManagedRuntimeSnapshot, RuntimeEvent
 
 
-TARGET = ('window_id', 'session_id', 'journal_id', 'process_generation')
 CURSOR = ('host_installation_id', 'journal_id', 'process_generation', 'runtime_epoch', 'revision')
 MAX_FRAME_BYTES = 16 * 1024
 COALESCE_SECONDS = .025
 RETAINED_REVISIONS = 128
-_ACTIVE = ('submission_id', 'provider_turn_id', 'cancel_version')
-_PERMISSION = ('permission_request_id', 'submission_id', 'provider_turn_id', 'tool_name',
-               'choices', 'requires_user_interaction', 'expires_at', 'state')
-_RECEIPT = (*TARGET, 'nonce', 'submission_id', 'event_id', 'seq', 'state', 'dispatch_state')
-_STATUS = (*TARGET, 'interaction_mode', 'state', 'provider', 'provider_version',
-           'provider_root_id', 'provider_root_confirmed', 'policy', 'last_outcome')
-
-
-def _fields(value, allowed):
-    return {key: value[key] for key in allowed if key in value}
-
-
-def _public_status(status):
-    return {**_fields(status, _STATUS),
-            'active_submission': _fields(status['active_submission'], _ACTIVE) if status['active_submission'] else None,
-            'permissions': [_fields(item, _PERMISSION) for item in status['permissions'] if item['state'] == 'pending']}
 
 
 @dataclass
@@ -34,6 +18,7 @@ class _Track:
     session: object
     target: dict
     revision: int = 0
+    source_revision: int | None = None
     status: dict | None = None
     pending: dict | None = None
     receipt: dict | None = None
@@ -52,20 +37,32 @@ class ManagedEvents:
     def observe(self, session, status, receipt=None):
         if self._closed or self._hub.sessions.get(session.id) is not session:
             return None
+        snapshot = status if isinstance(status, ManagedRuntimeSnapshot) else ManagedRuntimeSnapshot.from_status(status)
         track = self._tracks.get(session.id)
+        if track is not None and track.session is session and snapshot.source_revision is not None:
+            if track.source_revision is not None and snapshot.source_revision < track.source_revision:
+                return track
+            if snapshot.source_revision == track.source_revision and not receipt:
+                return track
+        public = snapshot.event()
         if track is None or track.session is not session:
-            track = self._tracks[session.id] = _Track(session, _fields(status, TARGET))
-        public = _public_status(status)
-        if public != (track.pending if track.pending is not None else track.status) or receipt:
+            track = self._tracks[session.id] = _Track(session, {key: public[key] for key in TARGET})
+        if snapshot.source_revision is not None:
+            track.source_revision = snapshot.source_revision
+        accepted = RuntimeEvent.project_receipt(receipt)
+        if public != (track.pending if track.pending is not None else track.status) or accepted is not None:
             track.pending = public
-            if receipt and receipt['state'] == 'accepted':
-                track.receipt = _fields(receipt, _RECEIPT)
+            if accepted is not None:
+                track.receipt = accepted
             self._schedule()
         return track
 
     def snapshot_cursor(self, session, status):
         track = self.observe(session, status) if session is not None else None
         if track is not None:
+            if (isinstance(status, ManagedRuntimeSnapshot) and status.source_revision is not None
+                    and track.source_revision != status.source_revision):
+                raise ValueError('Stale managed runtime snapshot')
             # A snapshot must name the exact committed revision it describes.
             self._commit(track)
         return self._cursor(track)
@@ -125,7 +122,8 @@ class ManagedEvents:
             self._scheduled = self._loop.call_later(COALESCE_SECONDS, self._tick)
 
     def _resync_frame(self, track):
-        return pack_json(OP_RUNTIME_EVENT, {**track.target, **self._cursor(track), 'resync': True})
+        event = RuntimeEvent(**self._cursor(track), target=track.target)
+        return pack_json(OP_RUNTIME_EVENT, event.wire_payload())
 
     def _commit(self, track):
         if track.pending is None:
@@ -136,10 +134,8 @@ class ManagedEvents:
             return
         track.status = public
         track.revision += 1
-        event = {**public, **self._cursor(track)}
-        if receipt is not None:
-            event['receipt'] = receipt
-        frame = pack_json(OP_RUNTIME_EVENT, event)
+        event = RuntimeEvent(**self._cursor(track), target=track.target, public_status=public, accepted_receipt=receipt)
+        frame = pack_json(OP_RUNTIME_EVENT, event.wire_payload())
         track.recent.append((track.revision, frame if len(frame) <= MAX_FRAME_BYTES else self._resync_frame(track)))
 
     def _deliver(self, client, sid):

@@ -126,6 +126,7 @@ async def check_phone_fit(playwright, renderer):
                     assert (await page.evaluate(geometry))["left"] >= 175
                     await drag(0, 150)
                     assert (await page.evaluate(geometry))["top"] < (await page.evaluate(geometry))["maxTop"]
+                    await page.locator("#tools-toggle").click()
                     await page.locator("#history-bottom").click()
                     # Both normal and fullscreen alternate buffers use the same local grid.
                     for enter, leave in ((b"", b""), (b"\x1b[?1049h", b"\x1b[?1049l")):
@@ -156,6 +157,7 @@ async def check_phone_fit(playwright, renderer):
                     after = await page.evaluate("MobileTerminal.terminal.buffer.active.viewportY")
                     assert 1 <= before-after <= 3  # Fine drags accumulate pixels, not one row per event.
                     await page.locator("#history-bottom").click()
+                    await page.locator("#tools-toggle").click()
                     # A user-selected font remains its actual on-screen size.
                     await page.locator("#options").click()
                     await page.locator("#font").fill("18")

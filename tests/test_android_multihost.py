@@ -98,6 +98,7 @@ async def check(playwright):
                         sessions[1].pty.inbox.put(b'ONLY-OTHER\r\n')
                         await page.wait_for_function('MobileTerminal.terminal.buffer.active.getLine(0).translateToString().includes("ONLY-OTHER")')
                         assert 'ONLY-HOME' not in await screen(page)
+                        await page.locator('#tools-toggle').tap()
                         await page.tap('#mode')
                         await page.locator('#draft').fill('other unsent draft')
                         await page.evaluate('MobileTerminal.chooseHost("home")')
