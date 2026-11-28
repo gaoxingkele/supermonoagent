@@ -62,6 +62,8 @@ async def check(playwright, surface, application):
                     await page.goto(url)
                     client = 'MobileTerminal' if mobile else 'smaWorkspace'
                     await page.wait_for_function(f'{client}.ready' if mobile else 'smaWorkspace.activePane?.ready')
+                    if mobile:
+                        await page.locator('#tools-toggle').click()
                     terminal = client + ('.terminal' if mobile else '.activePane.term')
                     sequence = ('\x1b[?1h' if application else '\x1b[?1l') + '\x1b[2J\x1b[H> \x1b[2m' + SUGGESTION + '\x1b[0m\x1b[3G'
                     session.pty.inbox.put(sequence.encode())

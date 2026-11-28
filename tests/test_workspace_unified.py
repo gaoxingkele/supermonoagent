@@ -201,8 +201,6 @@ async def check_alternate_archive(playwright, *, renderer='dom'):
         await page.wait_for_function('renderer=>smaWorkspace.effectiveRenderer===renderer', arg=renderer)
         sid = await page.evaluate('smaWorkspace.activePane.raw')
         session = daemons[0].hub.sessions[sid]
-        session.task_detector.app = 'claude-code'
-        daemons[0].hub._catalog()
         await page.wait_for_function('performance.now()>850')
         session.pty.inbox.put(b'\x1b[?1049h\x1b[H\x1b[2JOWNED ARCHIVE FIRST\r\nfirst recorded screen')
         await page.wait_for_function('smaWorkspace.activePane.screenArchive.length>=1')

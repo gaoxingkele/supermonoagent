@@ -98,11 +98,13 @@ async def check_cross_device_layout(playwright):
                     for viewport in ({"width": 844, "height": 390}, {"width": 390, "height": 844}):
                         await mobile.set_viewport_size(viewport)
                         await assert_desktop_preserved()
+                    await mobile.locator("#tools-toggle").click()
                     await mobile.locator("#mode").click()
                     await mobile.locator("#composer").wait_for(state="visible")
                     await mobile.locator("#draft").fill("unsent draft must not resize another client's terminal")
                     await assert_desktop_preserved()
                     await mobile.locator("#composer-close").click()
+                    await mobile.locator("#tools-toggle").click()
 
                     # The explicit phone control button may claim and fit this one session.
                     target = sessions[1]
