@@ -7,8 +7,8 @@
 | P0 基线和回滚 | 0.2.84 界面、0.2.83 原生包的回归与恢复记录 | 通过 |
 | P1 运行时事件 | 0.2.85 后台候选，随后双端界面候选 | 试点验证通过，公开发布并入 P2 |
 | P2 统一状态 | 0.2.85 完整候选，验证后逐端升级 | stable 已发布，现场核对通过 |
-| P3 WebRTC 验证 | 独立 QA 包、状态目录和 Relay 测试房间 | 隔离验证准备中 |
-| P4 本地 Bot 与 Worker | 0.2.86 原生候选，完成接管和重启恢复后升级 | 待 P3 |
+| P3 WebRTC 验证 | 独立 QA 包、状态目录和 Relay 测试房间 | 同 LAN、5G、IPv6 实测通过，真实对称 NAT 待验收 |
+| P4 本地 Bot 与 Worker | 0.2.86 原生候选，完成接管和重启恢复后升级 | 待 P3 对称 NAT 验收口径 |
 | P5 直连集成 | 0.2.87 QA，有成功切换和 Relay 回退两类证据 | 待 P4 |
 | P6 直连稳定化 | 0.2.87 原生发布，直连默认关闭 | 待 P5 |
 
@@ -111,3 +111,12 @@ P2 从试点提交 `eee23f953c13d19a40acede4d758ef897bd5ecf7` 开始，在 `code
 - 阿里云先切换 Windows 完整程序，再切换两端的签名界面。已从公网回读 Windows 安装包和两个界面 ZIP，与候选文件逐字节一致，并核对签名。Relay `active/running`、重启计数 0，公网 `/health` 返回 200。
 - 本机 Windows 默认安装从 0.2.36 升到 0.2.85。原配置指向已不存在的凭据文件，经同状态目录的现有凭据完成只读 owner HELLO 核验后修复路径，原凭据字节、状态目录和三条已运行进程均保留。证据为 `.omx/artifacts/orca-p2-release/windows/desktop-install.json`。
 - 实体 Android 经 5G NR 激活并显示签名 UI 0.2.85，原生为 0.2.83（构建 85）。原房间已不在授权发现结果中，用同一保存凭据重新发现三个可用房间，并选择经本机只读核验的 Windows 房间，实际显示「已连接」。证据为 `.omx/artifacts/orca-p2-release/android-stable-readback.json`。
+
+## P3 独立 WebRTC 技术验证
+
+- Windows 家庭 WLAN 与实体 Android QA WebView 完成 UDP、ICE、DTLS 和 SCTP 合成回显。启用 mDNS 查询的 Pion 在同 LAN 无 STUN、WLAN 到 5G 两个场景准确回显 47 字节，单次回显往返分别为 6.323 和 45.516 ms。独立 IPv6-only 探针的实测为 49.981 ms。三个试验所选路径均为 IPv6，TURN 配置为空。ADB 只承载控制，DataChannel 承载合成回显。证据为主工作树 `.omx/artifacts/orca-p3-webrtc/p3-summary.json`。
+- 初始 Pion 同 LAN 测试的 SDP 已有 8 个 host 候选，ICE 最后失败。将试验探针的 mDNS 调整为 QueryOnly 后，同一物理 WLAN 通过，并复查 5G。aiortc 在实际同 LAN 通过，在 WLAN 到 5G 的两次尝试超时。Pion 的实际 IPv4-only 尝试也超时，关闭试验后 Relay 仍可用。
+- Pion 暂定为可选 sidecar 候选。校验的 Windows 单文件样本为 10,597,888 字节，aiortc 对照单文件为 49,412,219 字节，两者均实测本机回显。正式签名和安全软件兼容留在原生交付验收。对照来源为 [Pion API](https://pkg.go.dev/github.com/pion/webrtc/v4) 和 [aiortc API](https://aiortc.readthedocs.io/en/stable/api.html)。
+- Windows 绑定实际 WLAN 后，两处公开 STUN 地址均未返回有效 IPv4 UDP Binding 响应。5G 手机在相应 WebView 试验仍产生 srflx 候选。结果只界定本次客户端路径，不判定运营商的 NAT 类型。[Cloudflare STUN 文档](https://developers.cloudflare.com/realtime/sfu/get-started/connection-patterns/) · [WebRTC STUN 样例](https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/)。
+- 两端地址和端口相关映射、过滤的对称 NAT 模型在 Pion 进程内仿真。两端收到 STUN 响应，对照组完成回显，对称模型的直连在约 6 秒内超时。真实对称 NAT 的设备样本仍缺。验收需确认是否以隔离仿真覆盖该场景后进入 P4。证据为 `.omx/artifacts/orca-p3-webrtc/native-comparison/synthetic-nat-test.log`。
+- 两个 QA 测试房间清理后，以原凭据查找结果均为零，临时凭据和状态已清理。手机 Wi‑Fi 恢复原关闭状态，正式 App 通过 5G 显示已连接。业务继续使用已经发布的 0.2.85 stable。
