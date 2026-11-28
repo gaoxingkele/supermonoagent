@@ -75,6 +75,15 @@
 | 23 | HISTORY_CONTEXT | daemon → 客户端 | raw session 前缀、有界 JSON 元数据和终端字节；快照、实时输出或增量恢复 |
 | 25 | URL_OPEN | 客户端 ↔ daemon | `{request,url}` 请求在主机默认浏览器打开；仅完整 http(s) 绝对链接、URL ≤2048 字节，回复同 request 与 `ok`／安全错误；旧 daemon 不广播 `url_open` 能力，客户端不得发送 |
 
+### Orca 升级预留编号
+
+| Op | 名称 | 方向 | 启用条件 |
+| --- | --- | --- | --- |
+| 26 | RUNTIME_EVENT | daemon → 客户端 | 双方在 HELLO 中协商 `managed_events`，并且连接具有当前 OP16 订阅及目标权限 |
+| 27 | DIRECT_SIGNAL | 客户端 ↔ daemon | 双方协商 `direct_webrtc`，并且用户通过已认证的中继连接主动发起直连 |
+
+`bots` 和 `workers` 预留为独立能力名。P0 只做编号与能力登记。稳定版运行时读写、OP24 请求、HELLO 能力和中继帧保持当前语义。各阶段的验证及启用边界见 [实施与发布记录](orca-upgrade-rollout.md)。
+
 OP16/17/5 都受 Token 所有权与订阅约束。OP18 的回放按 Token 所有权过滤，relay 客户端还按频道过滤；OP19 只发给已订阅且仍有权限的连接。客户端内部的 host/session 元组键不能放进线协议；不同 daemon 的相同 raw ID 由其所属连接隔离。关闭标签页只从 OP16 订阅集移除该 ID，不发送 OP9。
 
 支持 `close_ack:1` 的后台在会话目录提供 `process_generation`。结束一个普通会话时可发送 OP9 `{request,window_id,session,process_generation}`，OP2 返回这些原字段和 `closed`，位于 `close_ack` 对象内。主机会在进程退出后将会话移出目录并广播 OP7；同名空窗口可继续容纳新会话。失败时 `closed:false`，`error` 为 `target_changed`、`target_unavailable`、`process_still_alive` 或 `managed_requires_own_close`。客户端在回执丢失时可重新读取当前目录。旧客户端可继续使用 `{session}`；`{window}` 明确结束整个容器，托管会话使用自身的 OP24 关闭协议。
