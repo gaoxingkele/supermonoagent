@@ -628,14 +628,24 @@ def test_permission_expiry_denies_without_fabricated_human_decision(tmp_path):
                 return register(*args, **kwargs, expires_at=time.time() + .03)
             f.store.register_managed_permission = short
             driver = f.drivers[0]
+            withdrawn = asyncio.Event()
+            emit = driver.emit
+
+            async def observe_withdrawal(event):
+                await emit(event)
+                if event['kind'] == 'permission_withdrawn' and event['permission_request_id'] == 'expiring':
+                    withdrawn.set()
+
+            driver.emit = observe_withdrawal
             await driver.emit(dict(kind='permission', permission_request_id='expiring',
                 submission_id=accepted['submission_id'], provider_turn_id='turn', tool_name='test',
                 details='synthetic', choices=['allow_once', 'deny'], requires_user_interaction=False))
             for _ in range(200):
-                if driver.answers:
+                if withdrawn.is_set():
                     break
                 await asyncio.sleep(.001)
             assert driver.answers == ['deny']
+            assert withdrawn.is_set()
             control = f.store.read_managed_control('owner', f.target['journal_id'], target=f.target)
             assert control['permissions'] == []
             assert not control['active_submission']['cancel_requested']

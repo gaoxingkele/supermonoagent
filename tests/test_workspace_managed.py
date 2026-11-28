@@ -275,12 +275,21 @@ async def check_unknown(playwright, *, edited=True):
         state = install_managed_wire(daemons[0])
         state.update(lose=True, expose=False)
         page = await browser.new_page(viewport={'width': 390, 'height': 844})
-        await page.add_init_script('''(()=>{const timer=window.setTimeout;window.setTimeout=(fn,ms,...args)=>timer(fn,ms===10000?150:ms,...args);})();''')
+        await page.add_init_script('''(()=>{
+            const timer=window.setTimeout;
+            let waitingForLostSubmit=false;
+            window.setLostSubmitDeadline=value=>{waitingForLostSubmit=value;};
+            window.setTimeout=(fn,ms,...args)=>timer(fn,waitingForLostSubmit&&ms===10000?150:ms,...args);
+        })();''')
         await create(page, url, state)
         await page.locator('#terminal-composer-open').click()
         await page.locator('#terminal-composer-text').fill('保存原提交')
-        await page.locator('#terminal-composer-insert').click()
-        await page.wait_for_function('smaWorkspace.activePane.managedController.snapshot().pending?.phase==="unknown"')
+        await page.evaluate('setLostSubmitDeadline(true)')
+        try:
+            await page.locator('#terminal-composer-insert').click()
+            await page.wait_for_function('smaWorkspace.activePane.managedController.snapshot().pending?.phase==="unknown"')
+        finally:
+            await page.evaluate('setLostSubmitDeadline(false)')
         original = next(params for action, params in state['calls'] if action == 'submit_managed')
         if edited:
             await page.locator('#terminal-composer-text').fill('编辑后的草稿保留')
