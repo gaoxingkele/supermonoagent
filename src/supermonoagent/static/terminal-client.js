@@ -835,13 +835,26 @@
     let context={...options},target=targetOf(options.target),targetKey=options.targetKey??options.target?.targetKey??'';
     let version=0,dead=false,state='unknown',pending=null,receipt=null,active=null,permissions=[],policy=null,lastOutcome=null;
     let provider=null,providerVersion=null,providerRoot=null,error=null,operation=null,query=null,submissionFlight=null,cancelEpoch=0;
+    let runtime=options.runtimeEvents?parseCursor(options.runtimeCursor):null,recovery=null,runtimeConfirmed=false,localChange=0;
+    const retiredEpochs=new Set();
     const accepted=new Set(),cancelledSubmissions=new Set(),controls=new Map();
     const current=()=>{try{return !dead&&typeof context.request==='function'&&typeof context.isCurrent==='function'&&!!context.isCurrent();}catch{return false;}};
     const valid=epoch=>epoch===version&&current();
     const idle=()=>['ready','idle'].includes(state)&&!active;
+    const awaitingRuntime=()=>!!context.runtimeEvents&&(!runtimeConfirmed||!!recovery);
+    const runtimeReady=()=>!awaitingRuntime()&&(!context.runtimeEvents||state!=='unknown');
+    function parseCursor(value){
+      if(!value)return null;
+      const {host_installation_id,runtime_epoch,revision,journal_id,process_generation}=value;
+      if(!id(host_installation_id)||!id(runtime_epoch)||!Number.isSafeInteger(revision)||revision<0
+        ||journal_id!==target.journal_id||process_generation!==target.process_generation
+        ||context.hostInstallationId&&host_installation_id!==context.hostInstallationId)return null;
+      return {host_installation_id,runtime_epoch,revision,journal_id,process_generation};
+    }
+    function runtimeCursor(){return dead||!runtime?null:{...runtime};}
     function snapshot(){return copy({target,targetKey,state:dead?'disposed':state,pending,receipt,active_submission:active,permissions,provider,
       provider_version:providerVersion,provider_root_id:providerRoot,policy,last_outcome:lastOutcome,operation,error,
-      canSubmit:current()&&!pending&&!operation&&idle()});}
+      awaiting_runtime:!dead&&awaitingRuntime(),canSubmit:current()&&runtimeReady()&&!pending&&!operation&&idle()});}
     function notify(){const value=snapshot();if(current()&&typeof context.onState==='function'){try{Promise.resolve(context.onState(value)).catch(()=>{});}catch{}}return value;}
     function fail(code){error=code;return notify();}
     function exportPending(){return pending?copy(pending):null;}
@@ -859,7 +872,7 @@
       if(typeof value.replayed==='boolean')receipt.replayed=value.replayed;
       pending=null;error=null;
       if(!fromStatus&&lastOutcome?.submission_id!==value.submission_id)lastOutcome=null;
-      if(!fromStatus&&!['closing','ended'].includes(state)){state='running';active={submission_id:value.submission_id,cancel_version:0};permissions=[];}
+      if(!fromStatus&&!['closing','ended'].includes(state)){localChange++;state='running';active={submission_id:value.submission_id,cancel_version:0};permissions=[];}
       if(!accepted.has(record.nonce)){
         accepted.add(record.nonce);
         if(typeof context.onAccepted==='function'){try{Promise.resolve(context.onAccepted(copy(receipt),copy(record))).catch(()=>{});}catch{}}
@@ -868,12 +881,13 @@
     }
     async function sendPending(){
       if(!current()||!pending)return fail('stale_target');
-      const epoch=version,record=pending,request=context.request;submissionFlight=record;record.phase='sending';error=null;notify();
+      const epoch=version,record=pending,request=context.request,cursorAtSend=runtime;submissionFlight=record;record.phase='sending';error=null;notify();
       try{
         if(!valid(epoch)||pending!==record)return snapshot();
         const result=await request('submit_managed',{...record.target,nonce:record.nonce,text:record.text});
         if(!valid(epoch)||pending!==record)return snapshot();
-        if(!accept(result,record)){record.phase='unknown';error='acceptance_unknown';}
+        const newerState=context.runtimeEvents&&(runtime!==cursorAtSend||!!recovery);
+        if(!accept(result,record,newerState)){record.phase='unknown';error='acceptance_unknown';}
       }catch{if(valid(epoch)&&pending===record){record.phase='unknown';error='acceptance_unknown';}}
       finally{if(submissionFlight===record)submissionFlight=null;}
       return valid(epoch)?notify():snapshot();
@@ -881,6 +895,7 @@
     async function submit(text){
       if(!current())return fail('stale_target');
       if(pending)return snapshot();
+      if(!runtimeReady())return fail('status_unavailable');
       if(active||operation||['starting','running','waiting_permission','interrupting','closing','ended','error'].includes(state))return fail('session_busy');
       if(!textOK(text))return fail('invalid_text');
       let token;try{token=nonce();}catch{return fail('secure_random_unavailable');}
@@ -890,32 +905,40 @@
     }
     async function retry(){
       if(!current())return fail('stale_target');
-      if(!pending||pending.phase!=='absent'||!idle()||operation)return fail('retry_not_confirmed');
+      if(!runtimeReady()||!pending||pending.phase!=='absent'||!idle()||operation)return fail('retry_not_confirmed');
       return sendPending();
     }
-    function applyStatus(value){
-      if(!sameTarget(value,target)||!states.has(value.state)||!Array.isArray(value.permissions)||value.permissions.length>32
+    function validateStatus(value){
+      if(!sameTarget(value,target)||!(states.has(value.state)||context.runtimeEvents&&value.state==='ambiguous')||!Array.isArray(value.permissions)||value.permissions.length>32
         ||encoder.encode(JSON.stringify(value)).length>196608)throw new Error('Invalid managed status');
       const outcome=value.last_outcome;
       if(outcome!==null&&outcome!==undefined&&(!id(outcome.submission_id)
         ||!['completed','failed','interrupted','blocked','ambiguous','not_dispatched','cancelled'].includes(outcome.outcome)
         ||typeof outcome.has_final!=='boolean'||outcome.has_final&&outcome.outcome!=='completed'
         ||outcome.reason!==null&&outcome.reason!==undefined&&(typeof outcome.reason!=='string'||!/^[A-Za-z0-9_:-]{0,128}$/.test(outcome.reason))))throw new Error('Invalid managed outcome');
-      const next=value.active_submission;
+      const next=value.state==='ambiguous'?null:value.active_submission;
       if(next!==null&&next!==undefined&&(!id(next.submission_id)||next.provider_turn_id!==undefined&&next.provider_turn_id!==null&&!id(next.provider_turn_id)
         ||next.cancel_version!==undefined&&(!Number.isSafeInteger(next.cancel_version)||next.cancel_version<0)))throw new Error('Invalid active submission');
+      return {outcome,next};
+    }
+    function applyStatus(value,fromEvent=false){
+      const {outcome,next}=validateStatus(value);
       if(active?.submission_id!==next?.submission_id||active?.provider_turn_id!==next?.provider_turn_id
         ||Number(next?.cancel_version||0)>Number(active?.cancel_version||0))cancelEpoch++;
       active=next?Object.fromEntries(['submission_id','provider_turn_id','cancel_version','nonce'].filter(key=>next[key]!==undefined).map(key=>[key,next[key]])):null;
       if(operation?.submission_id&&operation.submission_id!==active?.submission_id)operation=null;
       permissions=value.permissions.filter(item=>item&&item.state==='pending'&&id(item.permission_request_id)&&item.submission_id===active?.submission_id
         &&(item.provider_turn_id??null)===(active?.provider_turn_id??null)
-        &&typeof(item.details??'')==='string'&&encoder.encode(item.details??'').length<=65536).map(item=>({
-          permission_request_id:item.permission_request_id,submission_id:item.submission_id,...(item.provider_turn_id?{provider_turn_id:item.provider_turn_id}:{}),
-          tool_name:typeof item.tool_name==='string'?item.tool_name:'',details:item.details||'',state:'pending',
-          choices:Array.isArray(item.choices)?item.choices.filter(choice=>choice==='deny'||choice==='allow_once'&&!item.requires_user_interaction):['deny'],
-          ...(item.requires_user_interaction?{requires_user_interaction:true}:{})}));
-      state=value.state;provider=typeof value.provider==='string'?value.provider:null;providerVersion=typeof value.provider_version==='string'?value.provider_version:null;
+        &&(fromEvent||typeof(item.details??'')==='string'&&encoder.encode(item.details??'').length<=65536)).map(item=>{
+          const detailsRequired=fromEvent||context.runtimeEvents&&typeof item.details!=='string';
+          return {
+            permission_request_id:item.permission_request_id,submission_id:item.submission_id,...(item.provider_turn_id?{provider_turn_id:item.provider_turn_id}:{}),
+            tool_name:typeof item.tool_name==='string'?item.tool_name:'',details:detailsRequired?'':item.details||'',state:'pending',
+            choices:Array.isArray(item.choices)?item.choices.filter(choice=>choice==='deny'||choice==='allow_once'&&!item.requires_user_interaction&&!detailsRequired):['deny'],
+            ...(detailsRequired?{details_required:true}:{}),
+            ...(item.requires_user_interaction?{requires_user_interaction:true}:{})};
+        });
+      state=value.state==='ambiguous'?'unknown':value.state;provider=typeof value.provider==='string'?value.provider:null;providerVersion=typeof value.provider_version==='string'?value.provider_version:null;
       providerRoot=typeof value.provider_root_id==='string'?value.provider_root_id:null;policy=copy(value.policy);error=null;
       if(outcome!==undefined)lastOutcome=outcome===null?null:{submission_id:outcome.submission_id,outcome:outcome.outcome,reason:outcome.reason??null,has_final:outcome.has_final};
       if(active&&(cancelledSubmissions.has(active.submission_id)||Number(active.cancel_version||0)>0)){
@@ -925,21 +948,64 @@
       if(operation?.permission_request_id&&!permissions.some(item=>item.permission_request_id===operation.permission_request_id))operation=null;
       if(operation?.action==='close_managed'&&['closing','ended'].includes(state))operation=null;
     }
+    function confirmRuntime(next){
+      if(runtime&&runtime.runtime_epoch!==next.runtime_epoch){
+        retiredEpochs.add(runtime.runtime_epoch);
+        if(retiredEpochs.size>8)retiredEpochs.delete(retiredEpochs.values().next().value);
+      }
+      if(!runtime||runtime.runtime_epoch!==next.runtime_epoch||runtime.revision!==next.revision)runtime=next;
+      runtimeConfirmed=true;recovery=null;
+    }
+    function applyRuntimeEvent(value){
+      if(!context.runtimeEvents||!current()||!sameTarget(value,target))return 'ignored';
+      const next=parseCursor(value),sameEpoch=next?.runtime_epoch===runtime?.runtime_epoch;
+      const installedHost=(runtime||recovery)?.host_installation_id;
+      if(!next||retiredEpochs.has(next.runtime_epoch)||installedHost&&next.host_installation_id!==installedHost
+        ||runtime&&sameEpoch&&next.revision<runtime.revision||next.revision===0&&value.resync!==true)return 'ignored';
+      if(recovery||value.resync===true||runtime&&(!sameEpoch||next.revision>runtime.revision+1)){
+        if(value.resync!==true){try{validateStatus(value);}catch{return 'ignored';}}
+        if(!recovery||recovery.runtime_epoch===next.runtime_epoch&&next.revision>recovery.revision){
+          recovery=next;permissions=[];notify();
+        }
+        return 'reconcile';
+      }
+      if(runtime&&next.revision===runtime.revision)return 'ignored';
+      try{applyStatus(value,true);}catch{return 'ignored';}
+      confirmRuntime(next);
+      if(pending&&value.receipt)accept(value.receipt,pending,true);
+      notify();return 'applied';
+    }
     async function reconcile(){
       if(!current())return fail('stale_target');
-      if(query)return snapshot();
-      const epoch=version,request=context.request,record=pending,marker={};query=marker;
-      try{
-        const result=await request('managed_status',{...target,...(record?{nonce:record.nonce}:{})});
+      if(query)return query.result;
+      const epoch=version,request=context.request,record=pending,marker={},cursorAtRequest=runtime;
+      const recoveryAtRequest=recovery,changeAtRequest=localChange;
+      query=marker;
+      marker.result=(async()=>{
+        try{
+          const result=await request('managed_status',{...target,...(record?{nonce:record.nonce}:{})});
+          if(!valid(epoch))return snapshot();
+          let fresh=true;
+          if(context.runtimeEvents){
+            const next=parseCursor(result),sameEpoch=next?.runtime_epoch===runtime?.runtime_epoch;
+            const installedHost=(runtime||recovery)?.host_installation_id;
+            if(!next||!sameTarget(result,target)||installedHost&&next.host_installation_id!==installedHost)throw new Error('Invalid managed cursor');
+            fresh=!retiredEpochs.has(next.runtime_epoch)
+              &&(!recovery||next.runtime_epoch===recovery.runtime_epoch&&next.revision>=recovery.revision)
+              &&(!runtime||!sameEpoch||next.revision>runtime.revision||next.revision===runtime.revision&&changeAtRequest===localChange);
+            if(fresh){applyStatus(result);confirmRuntime(next);}
+          }else applyStatus(result);
+          if(record&&pending===record){
+            if(result.receipt){if(!accept(result.receipt,record,true)&&fresh){record.phase='unknown';error='acceptance_unknown';}}
+            else if(fresh)record.phase=submissionFlight===record?'sending':result.receipt===null&&idle()?'absent':'unknown';
+          }
+        }catch{if(valid(epoch)&&(!context.runtimeEvents||runtime===cursorAtRequest||recovery))error='status_unavailable';}
+        finally{if(query===marker)query=null;}
         if(!valid(epoch))return snapshot();
-        applyStatus(result);
-        if(record&&pending===record){
-          if(result.receipt){if(!accept(result.receipt,record,true)){record.phase='unknown';error='acceptance_unknown';}}
-          else record.phase=submissionFlight===record?'sending':result.receipt===null&&idle()?'absent':'unknown';
-        }
-      }catch{if(valid(epoch))error='status_unavailable';}
-      finally{if(query===marker)query=null;}
-      return valid(epoch)?notify():snapshot();
+        if(recovery&&recovery!==recoveryAtRequest||runtime!==cursorAtRequest&&permissions.some(item=>item.details_required))return reconcile();
+        return notify();
+      })();
+      return marker.result;
     }
     function controlKey(action,params){return action==='close_managed'?'close':action+':'+params.submission_id+':'+(params.permission_request_id||'');}
     async function control(action,params,guard,onSuccess){
@@ -963,9 +1029,10 @@
     }
     async function interrupt(){
       if(!current())return fail('stale_target');
+      if(!runtimeReady())return fail('status_unavailable');
       if(!active||['closing','ended','error'].includes(state))return fail('no_active_submission');
       const captured=copy(active),submission=captured.submission_id;
-      cancelEpoch++;cancelledSubmissions.add(submission);permissions=[];state='interrupting';
+      localChange++;cancelEpoch++;cancelledSubmissions.add(submission);permissions=[];state='interrupting';
       return control('interrupt_managed',{submission_id:submission,...(captured.provider_turn_id?{provider_turn_id:captured.provider_turn_id}:{})},
         ()=>active?.submission_id===submission&&!['closing','ended','error'].includes(state),result=>{
           if(result?.submission_id!==submission||!['interrupt_requested','not_dispatched'].includes(result.state)
@@ -975,9 +1042,10 @@
     }
     async function respondPermission(permissionID,decision){
       if(!current())return fail('stale_target');
+      if(!runtimeReady())return fail('status_unavailable');
       if(!['allow_once','deny'].includes(decision))return fail('invalid_decision');
       const permission=permissions.find(item=>item.permission_request_id===permissionID);
-      if(!permission||!active||!permission.choices.includes(decision)||decision==='allow_once'&&permission.requires_user_interaction
+      if(!permission||!active||!permission.choices.includes(decision)||decision==='allow_once'&&(permission.requires_user_interaction||permission.details_required)
         ||['interrupting','closing','ended','error'].includes(state))return fail('stale_permission');
       const captured=copy(active),epoch=cancelEpoch;
       return control('respond_managed_permission',{submission_id:captured.submission_id,...(captured.provider_turn_id?{provider_turn_id:captured.provider_turn_id}:{}),permission_request_id:permissionID,decision},
@@ -986,13 +1054,14 @@
           if(result?.permission_request_id!==permissionID||result.decision!==decision||result.state!=='decided'
             ||result.submission_id!==undefined&&result.submission_id!==captured.submission_id
             ||result.cancel_version!==undefined&&result.cancel_version!==Number(captured.cancel_version||0))return false;
-          permissions=permissions.filter(item=>item.permission_request_id!==permissionID);return true;
+          localChange++;permissions=permissions.filter(item=>item.permission_request_id!==permissionID);return true;
         });
     }
     async function closeSession(){
       if(!current())return fail('stale_target');
+      if(!runtimeReady())return fail('status_unavailable');
       if(state==='ended')return snapshot();
-      cancelEpoch++;permissions=[];state='closing';
+      localChange++;cancelEpoch++;permissions=[];state='closing';
       return control('close_managed',{},()=>state==='closing',result=>{
         if(!sameTarget(result,target)||!['closing','ended'].includes(result.state))return false;
         state=result.state;if(state==='ended')active=null;return true;
@@ -1001,12 +1070,13 @@
     function setContext(value={}){
       const old=exportPending(),next={...context,...value},nextTarget=targetOf(next.target);
       version++;context=next;target=nextTarget;targetKey=next.targetKey??next.target?.targetKey??'';
+      runtime=context.runtimeEvents?parseCursor(value.runtimeCursor):null;recovery=null;runtimeConfirmed=false;localChange=0;retiredEpochs.clear();
       state='unknown';pending=null;receipt=null;active=null;permissions=[];policy=null;lastOutcome=null;provider=null;providerVersion=null;providerRoot=null;
       error=null;operation=null;query=null;submissionFlight=null;cancelEpoch++;accepted.clear();cancelledSubmissions.clear();controls.clear();
       if(value.pendingState)restorePending(value.pendingState);else notify();return old;
     }
     if(options.pendingState)restorePending(options.pendingState);
-    return {snapshot,submit,reconcile,interrupt,respondPermission,closeSession,retry,exportPending,restorePending,setContext,
+    return {snapshot,submit,reconcile,applyRuntimeEvent,runtimeCursor,interrupt,respondPermission,closeSession,retry,exportPending,restorePending,setContext,
       dispose(){const old=exportPending();version++;dead=true;pending=null;receipt=null;active=null;permissions=[];lastOutcome=null;operation=null;query=null;submissionFlight=null;controls.clear();accepted.clear();cancelledSubmissions.clear();return old;}};
   }
   const api = {composerAction,createComposerSubmitter,createComposerEcho,presentationPolicy,localHistoryPolicy,createManagedController,createConversationViewer,parseCodeFences,formatQuote,agentProfiles,commonAgentProfile,hermesAgentProfile,validateAgentProfile,loadAgentProfile,agentModeFromSession,inferAgentContent,createAgentDetector,highlightSpans,createHighlighter,createScreenHistory,pack, unpack, targetFrame, sessionPayload, historyPayload, historyFrameBytes, terminalInput, cursorKey, snapshotBytes, terminalSize, ConnectionMeter, formatRate, redrawSizes, disposePane, socketURL, secureEndpoint,updateHintRevision,

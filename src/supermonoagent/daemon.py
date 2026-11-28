@@ -37,6 +37,7 @@ from .protocol import (
     OP_ASSISTANT_CONTEXT,
     OP_HISTORY_CONTEXT,
     OP_JOURNAL,
+    OP_RUNTIME_EVENT,
     OP_FOCUS,
     OP_GROUP,
     OP_HELLO,
@@ -547,7 +548,8 @@ class Daemon:
                             action == 'managed_status') or not managed_current():
                         raise JournalError('permission_denied')
                 result = await managed.handle(action, params, owner_scope=owner,
-                    owner_token=token, rooms=rooms, authorize=managed_current)
+                    owner_token=token, rooms=rooms, authorize=managed_current,
+                    event_cursor=client.managed_events and assignment is None)
                 if not self.client_authorized(client):
                     return [], 4001
                 if not managed_current():
@@ -724,12 +726,21 @@ class Daemon:
                 if frame is None:
                     await ws.close(code=1013, reason=(client.failure if client else "Slow client")[:120])
                     return
+                if not self._queued_frame_current(client, frame):
+                    continue
                 await ws.send(frame)
                 supplement = await self.snapshot_supplement(client, frame)
                 if supplement is not None:
                     await ws.send(supplement)
         except asyncio.CancelledError:
             return
+
+    def _queued_frame_current(self, client, frame):
+        if len(frame) < 5 or frame[4] != OP_RUNTIME_EVENT:
+            return True
+        events = getattr(getattr(self, 'managed', None), 'events', None)
+        return (client is not None and events is not None and self.client_authorized(client)
+                and events.delivery_current(client, frame[5:]))
 
     async def snapshot_supplement(self, client, frame):
         """Read a session's genuine footer after replay, without losing history."""
@@ -882,6 +893,11 @@ class Daemon:
             client.managed_conversation = (client.conversation_journal
                 and type(body.get('managed_conversation')) is int and body['managed_conversation'] == 1)
             client.multiplex = body.get("multiplex") is True
+            client.managed_events = (client.managed_conversation and client.multiplex
+                and getattr(getattr(self, 'managed', None), 'events', None) is not None
+                and type(body.get('managed_events')) is int and body['managed_events'] == 1)
+            if not client.managed_events:
+                client.managed_after.clear()
             client.reliable = body.get("reliable") is True
             client.history_context = client.multiplex and type(body.get('history_context')) is int and body['history_context'] == 1
             client.history_resume = client.history_context and type(body.get('history_resume')) is int and body['history_resume'] == 1
@@ -924,6 +940,9 @@ class Daemon:
                 if existing is not None:
                     # Newly added sessions already received their initial snapshot above.
                     self.hub.refresh_subscriptions(client, existing)
+                events = getattr(getattr(self, 'managed', None), 'events', None)
+                if client.managed_events and events is not None:
+                    events.subscribe(client, body.get('managed_after'))
             return [self._state(client)], None
         if op == OP_INPUT_SESSION:
             sid, separator, data = payload.partition(b"\0")
@@ -1235,6 +1254,10 @@ class Daemon:
     def _add_cockpit_identity(self, client, body):
         # OP2 and OP7 both carry complete, freshly negotiated capabilities.
         installation = getattr(getattr(self.journals, 'store', None), 'host_installation_id', None)
+        if (installation and client.managed_events and self.managed is not None
+                and not client.delegated and body['capabilities'].get('managed_conversation')):
+            body['host_installation_id'] = installation
+            body['capabilities'] = {**body['capabilities'], 'managed_events': 1}
         if (installation and not client.delegated and client.conversation_journal
                 and (self.log_state_dir / 'cockpit-feedback.json').is_file()):
             body['host_installation_id'] = installation
@@ -1360,7 +1383,7 @@ async def relay_uplink(daemon: Daemon, url: str, code: str, slot: str) -> None:
                     async def outbound() -> None:
                         while True:
                             phone_id, client, frame = await uplink.get()
-                            if route_valid(phone_id, client):
+                            if route_valid(phone_id, client) and daemon._queued_frame_current(client, frame):
                                 await ws.send(struct.pack("<I", phone_id) + frame)
 
                     async def bridge(phone_id: int, client) -> None:

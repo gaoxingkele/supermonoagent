@@ -16,29 +16,34 @@ class Element{
   remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(node=>node!==this);}
   close(){this.open=false;}focus(){this.doc.activeElement=this;}
 }
-function fixture({native=false,storage=new Map()}={}){
+function fixture({native=false,storage=new Map(),events=false}={}){
   const doc={activeElement:null,querySelector:()=>null,querySelectorAll:()=>[],createElement(tag){return new Element(doc,tag);}};
   const elements=new Map(),$=id=>{if(!elements.has(id))elements.set(id,new Element(doc));return elements.get(id);};
   const session={id:native?'native1':'managed1',window:native?'native-window':'managed-window',process_generation:native?'native-generation':'managed-generation',journal_id:native?'native-journal':'managed-journal',interaction_mode:native?'native':'managed',managed_state:'ready',provider:'claude',cwd:'D:\\synthetic'};
-  const c={host:{id:'home',endpoint:'https://relay.example',code:'room'},connected:true,generation:3,capabilities:{managed_conversation:1},inventory:[session]};
-  const sent=[],timers=new Map(),notices=[],activations=[];let count=0;
+  const c={host:{id:'home',endpoint:'https://relay.example',code:'room'},connected:true,generation:3,capabilities:{managed_conversation:1,...(events?{managed_events:1}:{})},inventory:[session],cockpitInstallationId:'host-install-1'};
+  const sent=[],timers=new Map(),notices=[],activations=[];let count=0,now=0;
   const context={TextEncoder,Uint8Array,crypto:webcrypto,Map,Set,JSON,Promise,Error,encoder:new TextEncoder(),C:shared,$,document:doc,term:{options:{disableStdin:false}},active:session.id,ready:false,connected:true,createPending:false,paused:false,composing:false,uploadJob:null,composerSubmit:{pending:false},uncertainModelCommands:new Set(),journalRequestSequence:0,
+    performance:{now:()=>now},metrics:{managedStatusRequests:0,managedStatusBytes:0,managedEventsReceived:0,managedEventGaps:0,managedReconciles:0,managedLastEventLatency:null},
     selected:()=>c,hostTokens:new Map([['home','synthetic-token']]),drafts:new Map(),sessionKey:(sid=context.active,hid='home')=>JSON.stringify([hid,sid]),
     journalTarget:()=>{const s=c.inventory.find(s=>s.id===context.active);return {host:c,endpoint:c.host.endpoint,room:c.host.code,token:context.hostTokens.get('home'),generation:c.generation,session:s?.id||'',window:s?.window||'',process_generation:s?.process_generation||'',journalId:s?.journal_id||''};},
     journalTargetCurrent:t=>!!t&&!context.paused&&context.active===t.session&&t.host===c&&t.endpoint===c.host.endpoint&&t.room===c.host.code&&t.token===context.hostTokens.get('home')&&t.generation===c.generation,
     journalError:code=>Object.assign(new Error('fixed journal failure'),{code}),sendHost:(host,op,value)=>{sent.push({op,value});return host.connected;},
     sessionStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},notice:text=>notices.push(text),updateComposer:()=>{},attachmentsPending:()=>false,
     syncDraftFields:text=>{$('draft').value=text;$('quick-draft').value=text;context.drafts.set(context.sessionKey(),text);},refreshJournalStatus:()=>{},
-    setTimeout:fn=>{timers.set(++count,fn);return count;},clearTimeout:id=>timers.delete(id),loadSelected:()=>{},renderList:()=>{},activate:id=>{activations.push(id);context.active=id;}
+    setTimeout:(fn,delay)=>{timers.set(++count,{fn,at:now+delay});return count;},clearTimeout:id=>timers.delete(id),loadSelected:()=>{},renderList:()=>{},activate:id=>{activations.push(id);context.active=id;}
   };
   $('new-interaction-mode').value='managed';$('managed-provider').value='claude';
-  vm.createContext(context);vm.runInContext(block+'\nglobalThis.api={managedTarget,managedCurrent,syncManagedContext,releaseManagedContext,submitManaged,managedPending,renderManagedState,createManaged,mergeManagedCatalog,updateManagedCreation,rememberManagedPending,get snapshot(){return managedSnapshot;},get controller(){return managedController;},get records(){return managedPendingRecords;}};',context);
+  vm.createContext(context);vm.runInContext(block+'\nglobalThis.api={managedTarget,managedCurrent,syncManagedContext,releaseManagedContext,submitManaged,managedPending,renderManagedState,createManaged,mergeManagedCatalog,updateManagedCreation,rememberManagedPending,managedRuntimeEvent,savedManagedCursor,get snapshot(){return managedSnapshot;},get controller(){return managedController;},get records(){return managedPendingRecords;}};',context);
   const tick=()=>new Promise(resolve=>setImmediate(resolve));
-  const wait=async predicate=>{for(let n=0;n<100;n++){if(predicate())return;await tick();}throw Error('fixture wait exceeded');};
+  const wait=async predicate=>{const deadline=Date.now()+3000;while(Date.now()<deadline){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,1));}throw Error('fixture wait exceeded');};
   const reply=(result,error)=>{const request=sent.at(-1).value;c.journalPending.get(request.request_id).finish(error||null,result);};
-  const status=extra=>({window_id:session.window,session_id:session.id,process_generation:session.process_generation,journal_id:session.journal_id,state:'ready',provider:'claude',provider_version:'synthetic',provider_root_id:'root-1',policy:{mode:'normal'},active_submission:null,permissions:[],...extra});
+  const status=extra=>({window_id:session.window,session_id:session.id,process_generation:session.process_generation,journal_id:session.journal_id,state:'ready',provider:'claude',provider_version:'synthetic',provider_root_id:'root-1',policy:{mode:'normal'},active_submission:null,permissions:[],...(events?{host_installation_id:c.cockpitInstallationId,runtime_epoch:'boot-1',revision:1}:{}),...extra});
   const mount=async extra=>{await context.api.syncManagedContext();await wait(()=>sent.at(-1)?.value.action==='managed_status');reply(status(extra));await tick();};
-  return {context,api:context.api,c,session,$,doc,sent,timers,notices,activations,storage,tick,wait,reply,status,mount};
+  const advance=delta=>{
+    now+=delta;
+    for(const [id,timer] of [...timers].sort((a,b)=>a[1].at-b[1].at))if(timer.at<=now&&timers.delete(id))timer.fn();
+  };
+  return {context,api:context.api,c,session,$,doc,sent,timers,notices,activations,storage,tick,wait,reply,status,mount,advance};
 }
 
 test('managed observational terminal rejects raw OP17 before any parser/input state',()=>{
@@ -54,6 +59,64 @@ test('explicit independent creation and typed managed controller are wired into 
   const html=fs.readFileSync(path.join(__dirname,'../android/assets/mobile/index.html'),'utf8');
   assert.match(html,/id="new-interaction-mode"/);assert.match(html,/id="managed-provider"/);
   assert.match(app,/createManagedController/);assert.match(app,/create_managed/);
+});
+
+test('Android preserves two-second legacy polling and stops idle polling with managed events',async()=>{
+  const old=fixture();await old.mount();old.advance(1999);assert.equal(old.sent.length,1);
+  old.advance(1);assert.equal(old.sent.length,2);assert.equal(old.sent.at(-1).value.action,'managed_status');
+  const modern=fixture({events:true});await modern.mount();modern.advance(600000);
+  assert.equal(modern.sent.length,1);assert.equal(modern.context.metrics.managedStatusRequests,1);
+  assert.match(app,/managed_conversation:1,managed_events:1/);assert.match(app,/op===26/);
+});
+
+test('Android event gaps calibrate, and a tool descriptor stays deny-only until OP24 provides details',async()=>{
+  const f=fixture({events:true});await f.mount();
+  f.api.managedRuntimeEvent(f.c,f.status({revision:2,host_installation_id:'different-host',state:'running'}));
+  assert.equal(f.sent.length,1);assert.equal(f.api.snapshot.state,'ready');
+  f.api.managedRuntimeEvent(f.c,f.status({revision:3,state:'running'}));
+  assert.equal(f.context.metrics.managedEventGaps,1);assert.equal(f.sent.at(-1).value.action,'managed_status');
+  f.reply(f.status({revision:3}));await f.tick();
+  const descriptor={permission_request_id:'tool-permission',submission_id:'sub',provider_turn_id:'turn',state:'pending',tool_name:'Command',choices:['allow_once','deny']};
+  const state={revision:4,state:'waiting_permission',active_submission:{submission_id:'sub',provider_turn_id:'turn'},permissions:[descriptor]};
+  f.api.managedRuntimeEvent(f.c,f.status(state));
+  assert.equal(f.$('managed-permissions').children[0].querySelectorAll('button').length,1);
+  assert.match(f.$('managed-permissions').textContent,/正在核对工具请求详情/);
+  assert.equal(f.sent.at(-1).value.action,'managed_status');
+  f.reply(f.status({...state,permissions:[{...descriptor,details:'Exact tool arguments'}]}));await f.tick();
+  assert.equal(f.$('managed-permissions').children[0].querySelectorAll('button').length,2);
+  assert.match(f.$('managed-permissions').textContent,/Exact tool arguments/);
+  f.api.releaseManagedContext();const cursor=f.api.savedManagedCursor(f.api.managedTarget());
+  assert.equal(cursor.revision,4);assert.equal(cursor.runtime_epoch,'boot-1');
+  f.context.connections=new Map([['home',f.c]]);f.context.composerSubmit.cancel=()=>{};f.context.clearNativeUncertainty=()=>{};
+  vm.runInContext(app.slice(app.indexOf('  function setHostToken('),app.indexOf('  function captureNativeScope(')),f.context);
+  f.context.setHostToken('home','new-owner-token');assert.equal(f.api.savedManagedCursor(f.api.managedTarget()),null);
+});
+
+test('Android reconciles a lost submission ACK at 3, 10 and 30 seconds without resending',async()=>{
+  const f=fixture({events:true});await f.mount();f.context.syncDraftFields('retained after ACK loss');f.api.submitManaged();
+  const nonce=f.sent.at(-1).value.params.nonce;f.reply(null,new Error('lost ACK'));await f.tick();
+  const before=f.sent.length;
+  for(const [delta,attempt] of [[3000,1],[7000,2],[20000,3]]){
+    f.advance(delta-1);assert.equal(f.sent.length,before+attempt-1);
+    f.advance(1);assert.equal(f.sent.length,before+attempt);
+    assert.equal(f.sent.at(-1).value.action,'managed_status');assert.equal(f.sent.at(-1).value.params.nonce,nonce);
+    assert.ok(!Object.hasOwn(f.sent.at(-1).value.params,'text'));
+    f.reply(f.status());await f.tick();
+  }
+  f.advance(60000);assert.equal(f.sent.length,before+3);
+  assert.equal(f.sent.filter(entry=>entry.value.action==='submit_managed').length,1);
+  assert.equal(f.$('draft').value,'retained after ACK loss');
+});
+
+test('Android backs off a failed gap calibration and clears its timer once idle state is authoritative',async()=>{
+  const f=fixture({events:true});await f.mount();
+  f.api.managedRuntimeEvent(f.c,f.status({revision:3,resync:true}));
+  f.reply(null,new Error('temporary status error'));await f.tick();
+  f.advance(29999);assert.equal(f.sent.length,2);
+  f.advance(1);assert.equal(f.sent.length,3);
+  f.reply(f.status({revision:3}));await f.tick();
+  f.advance(60000);assert.equal(f.sent.length,3);
+  assert.equal(f.api.snapshot.canSubmit,true);
 });
 test('managed submit uses durable OP24 once even when terminal replay is not ready',async()=>{
   const f=fixture();await f.mount();f.context.syncDraftFields('中文😀 original request');

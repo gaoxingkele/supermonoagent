@@ -75,6 +75,7 @@ class Fixture:
         self.anchor = Session('native', 'native-window', 'powershell', 'D:/synthetic', object(),
                               process_generation='native-gen')
         self.hub = SimpleNamespace(sessions={'native': self.anchor},
+            clients={},
             windows={'native-window': SimpleNamespace(group_id='group')},
             groups={'group': SimpleNamespace(channel='room', owner='token')})
         self.hub.add_managed_session = self.add_session

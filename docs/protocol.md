@@ -75,14 +75,18 @@
 | 23 | HISTORY_CONTEXT | daemon → 客户端 | raw session 前缀、有界 JSON 元数据和终端字节；快照、实时输出或增量恢复 |
 | 25 | URL_OPEN | 客户端 ↔ daemon | `{request,url}` 请求在主机默认浏览器打开；仅完整 http(s) 绝对链接、URL ≤2048 字节，回复同 request 与 `ok`／安全错误；旧 daemon 不广播 `url_open` 能力，客户端不得发送 |
 
-### Orca 升级预留编号
+### Orca 升级操作
 
 | Op | 名称 | 方向 | 启用条件 |
 | --- | --- | --- | --- |
 | 26 | RUNTIME_EVENT | daemon → 客户端 | 双方在 HELLO 中协商 `managed_events`，并且连接具有当前 OP16 订阅及目标权限 |
-| 27 | DIRECT_SIGNAL | 客户端 ↔ daemon | 双方协商 `direct_webrtc`，并且用户通过已认证的中继连接主动发起直连 |
+| 27 | DIRECT_SIGNAL（预留） | 客户端 ↔ daemon | 双方协商 `direct_webrtc`，并且用户通过已认证的中继连接主动发起直连 |
 
-`bots` 和 `workers` 预留为独立能力名。P0 只做编号与能力登记。稳定版运行时读写、OP24 请求、HELLO 能力和中继帧保持当前语义。各阶段的验证及启用边界见 [实施与发布记录](orca-upgrade-rollout.md)。
+`bots` 和 `workers` 预留为独立能力名。各阶段的验证及启用边界见 [实施与发布记录](orca-upgrade-rollout.md)。
+
+P1 通过 OP2 与 OP7 确认 `managed_events:1` 和 `host_installation_id`。OP26 的 JSON 以 `window_id`、`session_id`、`journal_id`、`process_generation` 绑定准确会话，以 `host_installation_id`、`runtime_epoch`、`revision` 校准顺序。每帧最多 16 KiB，保留 128 条修订。事件附带公开状态、权限描述及可选的持久接收凭据；查看权限详情用 OP24。
+
+OP16 的可选 `managed_after` 按原始会话 ID 携带 `host_installation_id`、`journal_id`、`process_generation`、`runtime_epoch`、`revision`，以受当前授权保护的保留修订补发。序列缺口、daemon 代次变化或保留区间不足可返回 `resync:true`，客户端用 OP24 `managed_status` 和原 nonce 校准状态及回执。旧客户端仍按既有 OP24 语义查询。
 
 OP16/17/5 都受 Token 所有权与订阅约束。OP18 的回放按 Token 所有权过滤，relay 客户端还按频道过滤；OP19 只发给已订阅且仍有权限的连接。客户端内部的 host/session 元组键不能放进线协议；不同 daemon 的相同 raw ID 由其所属连接隔离。关闭标签页只从 OP16 订阅集移除该 ID，不发送 OP9。
 

@@ -6,15 +6,40 @@ from supermonoagent.protocol import pack_json, unpack_json, unpack
 from test_workspace_profile_rooms import fixture, run
 
 
-def install_managed_wire(daemon):
+def install_managed_wire(daemon, *, runtime_events=False):
     original = daemon._op
     original_state = daemon._state
     summary = daemon.hub.summary
     state = dict(target=None, phase='ready', active=None, permissions=[], receipts={}, expose=True, lose=False, lose_create=False, lose_permission=False, calls=[])
+    if runtime_events:
+        installation = getattr(getattr(daemon.journals, 'store', None), 'host_installation_id', 'fixture-host')
+        state.update(runtime_cursor=dict(host_installation_id=installation, runtime_epoch='fixture-runtime', revision=0),
+                     subscriptions=[])
+        queued_frame_current = daemon._queued_frame_current
+
+        def fixture_frame_current(client, frame):
+            if frame[4] == 26:
+                target = state['target']
+                return target is not None and target['session_id'] in client.subscriptions
+            return queued_frame_current(client, frame)
+
+        daemon._queued_frame_current = fixture_frame_current
+    else:
+        add_identity = daemon._add_cockpit_identity
+
+        def legacy_catalog(client, value):
+            add_identity(client, value)
+            value['capabilities'].pop('managed_events', None)
+
+        daemon._add_cockpit_identity = legacy_catalog
+        daemon.hub.decorate_catalog = legacy_catalog
 
     def managed_summary(*args, **kwargs):
         result = summary(*args, **kwargs)
         result['capabilities']['managed_conversation'] = 1
+        if runtime_events:
+            result['capabilities']['managed_events'] = 1
+            result['host_installation_id'] = installation
         return result
 
     daemon.hub.summary = managed_summary
@@ -23,12 +48,17 @@ def install_managed_wire(daemon):
         opcode, payload = unpack(original_state(client, *args, **kwargs))
         value = unpack_json(payload)
         value['capabilities']['managed_conversation'] = 1
+        if runtime_events:
+            value['capabilities']['managed_events'] = 1
+            value['host_installation_id'] = installation
         return pack_json(opcode, value)
 
     daemon._state = managed_state
 
     async def op(client, opcode, payload):
         if opcode != 24:
+            if runtime_events and opcode == 16:
+                state['subscriptions'].append(unpack_json(payload))
             if opcode in {6, 9}:
                 state['calls'].append(('legacy_open' if opcode == 6 else 'legacy_close', unpack_json(payload)))
             if opcode == 17:
@@ -69,6 +99,8 @@ def install_managed_wire(daemon):
                           active_submission=state['active'], permissions=state['permissions'])
             if state.get('last_outcome'):
                 result['last_outcome'] = state['last_outcome']
+            if runtime_events:
+                result.update(state['runtime_cursor'])
             if 'nonce' in params:
                 result['receipt'] = state['receipts'].get(params['nonce']) if state['expose'] else None
         elif action == 'submit_managed':
@@ -119,6 +151,54 @@ async def create(page, url, state):
     assert await page.evaluate('smaWorkspace.activePane.raw') == state['target']['session_id']
     assert native != state['target']['session_id']
     return native
+
+
+def test_runtime_events_replace_idle_status_poll_and_reconcile_a_gap():
+    run(check_runtime_events)
+
+
+async def check_runtime_events(playwright):
+    async with fixture(playwright) as (browser, url, _endpoint, _trap, _messages, daemons, *_):
+        daemon = daemons[0]
+        state = install_managed_wire(daemon, runtime_events=True)
+        page = await browser.new_page(viewport={'width': 1100, 'height': 760})
+        await create(page, url, state)
+
+        def status_calls():
+            return sum(action == 'managed_status' for action, _ in state['calls'])
+
+        def emit(revision, phase, active=None):
+            value = dict(state['target'], **state['runtime_cursor'])
+            value.update(revision=revision, state=phase, provider='codex',
+                         active_submission=active, permissions=[])
+            subscribers = [client for client in daemon.hub.clients.values()
+                           if state['target']['session_id'] in client.subscriptions]
+            assert subscribers
+            for client in subscribers:
+                daemon.hub._send(client, pack_json(26, value))
+
+        assert status_calls() == 1
+        await page.wait_for_timeout(3400)
+        assert status_calls() == 1
+
+        emit(1, 'running', dict(submission_id='event-turn', cancel_version=0))
+        await page.wait_for_function('smaWorkspace.activePane.managedController.snapshot().state === "running"', timeout=4000)
+        emit(2, 'ready')
+        await page.wait_for_function('smaWorkspace.activePane.managedController.snapshot().state === "ready"')
+        assert status_calls() == 1
+
+        state['runtime_cursor']['revision'] = 4
+        emit(4, 'running', dict(submission_id='missing-prior-event', cancel_version=0))
+        await page.wait_for_function('smaWorkspace.activePane.managedController.runtimeCursor()?.revision === 4')
+        assert await page.evaluate('smaWorkspace.activePane.managedController.snapshot().state') == 'ready'
+        assert status_calls() == 2
+        assert await page.evaluate('smaWorkspace.metrics.managedEventGaps') == 1
+
+        await page.evaluate('smaWorkspace.activePane.host.ws.close(4000)')
+        await page.wait_for_function('smaWorkspace.activePane?.managedController?.snapshot().canSubmit')
+        cursor = state['subscriptions'][-1].get('managed_after', {}).get(state['target']['session_id'])
+        assert cursor and cursor['revision'] == 4 and cursor['runtime_epoch'] == 'fixture-runtime'
+        assert cursor['journal_id'] == state['target']['journal_id']
 
 
 def test_managed_creation_readonly_structured_submit_and_permissions():

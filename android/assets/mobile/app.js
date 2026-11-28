@@ -123,6 +123,7 @@
     for(const key of [...uncertainDrafts.keys(),...uncertainModelCommands]){try{if(JSON.parse(key)[0]===host)forgetNativeScope(key);}catch{}}
   }
   function setHostToken(host,token){
+    if(hostTokens.get(host)!==token)connections.get(host)?.managedCursors?.clear();
     if(hostTokens.has(host)&&hostTokens.get(host)!==token){if(selected().host.id===host){composerSubmit.cancel('authorization_changed');if(typeof mobileFeedbackQa!=='undefined')mobileFeedbackQa?.invalidate();}clearNativeUncertainty(host);}
     hostTokens.set(host,token);
   }
@@ -166,7 +167,8 @@
   $('sizing').value=sizing;
   let createPending=false;
   const modes=new Map(),drafts=new Map();
-  const metrics={connections:0,frames:0,bytes:0,writes:0,fallbacks:0,historySamples:0,historySkips:0,historyCells:0,historyMilliseconds:0,listBuilds:0,listSkips:0};
+  const metrics={connections:0,frames:0,bytes:0,writes:0,fallbacks:0,historySamples:0,historySkips:0,historyCells:0,historyMilliseconds:0,listBuilds:0,listSkips:0,
+    managedStatusRequests:0,managedStatusBytes:0,managedEventsReceived:0,managedEventGaps:0,managedReconciles:0,managedLastEventLatency:null};
   let replayNoticeTimer=null,pendingRefresh=null,refreshFeedbackTimer=null;
   const replayFeeds=new WeakMap();
   const replayGrids=new WeakMap(),drawEpochs=new WeakMap();
@@ -279,9 +281,11 @@
       try{if(!sendHost(c,24,{request_id,action,params}))finish(journalError('disconnected'));}catch{finish(journalError('disconnected'));}
     });
   }
-  function journalHostResponse(c,value){
+  function journalHostResponse(c,value,frameBytes){
     if(!value||typeof value.request_id!=='string')return;
-    c.journalPending?.get(value.request_id)?.finish(value.ok===true?null:journalError('request_refused'),value.result);
+    const entry=c.journalPending?.get(value.request_id);
+    if(entry?.statusRead&&Number.isSafeInteger(frameBytes))metrics.managedStatusBytes+=frameBytes;
+    entry?.finish(value.ok===true?null:journalError('request_refused'),value.result);
   }
   function journalArchiveURL(t){
     if(!t.room||!t.token)throw journalError('unsupported');
@@ -444,6 +448,8 @@
   const managedTargetFields=['window_id','session_id','process_generation','journal_id'];
   const managedStates=new Set(['starting','ready','idle','running','waiting_permission','interrupting','closing','ended','error','unknown']);
   const managedActions=new Set(['create_managed','submit_managed','managed_status','interrupt_managed','respond_managed_permission','close_managed']);
+  const managedRetryDelays=[3000,10000,30000];
+  const managedActiveStates=new Set(['starting','running','waiting_permission','interrupting','closing']);
   try{for(const row of JSON.parse(sessionStorage.getItem('sma.mobile.managed-pending')||'[]'))if(Array.isArray(row)&&typeof row[0]==='string'&&row[1]?.schema===1&&managedPendingRecords.size<32)managedPendingRecords.set(row[0],row[1]);}catch{}
   try{for(const row of JSON.parse(sessionStorage.getItem('sma.mobile.managed-creations')||'[]'))if(Array.isArray(row)&&typeof row[0]==='string'&&row[1]?.nonce&&managedCreations.size<32)managedCreations.set(row[0],{...row[1],phase:'unknown'});}catch{}
   function managedSession(){return selected().inventory.find(s=>s.id===active);}
@@ -467,6 +473,20 @@
     return Array.from(new Uint8Array(digest),x=>x.toString(16).padStart(2,'0')).join('');
   }
   function managedRecordKey(auth,t){return JSON.stringify([auth,...managedTargetFields.map(key=>t[key])]);}
+  function wantsManagedEvents(c){return c.capabilities?.managed_conversation===1&&c.capabilities?.managed_events===1;}
+  function managedCursorKey(t){return JSON.stringify([t.endpoint,t.room,...managedTargetFields.map(key=>t[key])]);}
+  function savedManagedCursor(t){
+    const saved=t.host.managedCursors?.get(managedCursorKey(t));
+    return saved&&saved.host_installation_id===t.host.cockpitInstallationId?saved:null;
+  }
+  function rememberManagedCursor(controller,context){
+    const cursor=controller?.runtimeCursor?.();if(!cursor||!context)return;
+    const t=context.target;
+    if(t.token!==(hostTokens.get(t.host.host.id)||''))return;
+    const cache=t.host.managedCursors||(t.host.managedCursors=new Map()),key=managedCursorKey(t);
+    cache.delete(key);cache.set(key,cursor);
+    if(cache.size>32)cache.delete(cache.keys().next().value);
+  }
   function saveManagedRecords(){
     try{sessionStorage.setItem('sma.mobile.managed-pending',JSON.stringify([...managedPendingRecords]));sessionStorage.setItem('sma.mobile.managed-creations',JSON.stringify([...managedCreations]));}
     catch{notice('独立对话待核对状态无法保存到本机；草稿已保留，请先核对后再刷新。');}
@@ -479,7 +499,7 @@
   }
   function releaseManagedContext(){
     managedSetupVersion++;clearTimeout(managedPollTimer);managedPollTimer=null;
-    rememberManagedPending();managedController?.dispose();managedController=null;managedContext=null;managedSnapshot=null;managedOpeningJournal='';
+    rememberManagedCursor(managedController,managedContext);rememberManagedPending();managedController?.dispose();managedController=null;managedContext=null;managedSnapshot=null;managedOpeningJournal='';
     $('managed-panel').hidden=true;$('managed-permissions').replaceChildren();
   }
   function managedRPC(t,action,params){
@@ -491,15 +511,20 @@
     return new Promise((resolve,reject)=>{
       const c=t.host,request_id='mobile-managed-'+(++journalRequestSequence),pending=c.journalPending||(c.journalPending=new Map());
       const finish=(error,result)=>{const entry=pending.get(request_id);if(!entry)return;pending.delete(request_id);clearTimeout(entry.timer);if(error)reject(error);else if(!managedCurrent(t,!creating))reject(journalError('stale_target'));else resolve(result);};
-      const timer=setTimeout(()=>finish(journalError('timeout')),8000);pending.set(request_id,{timer,finish});
-      try{if(!sendHost(c,24,{request_id,action,params}))finish(journalError('disconnected'));}catch{finish(journalError('disconnected'));}
+      const statusRead=action==='managed_status',body={request_id,action,params};
+      const timer=setTimeout(()=>finish(journalError('timeout')),8000);pending.set(request_id,{timer,finish,statusRead});
+      try{
+        if(!sendHost(c,24,body))finish(journalError('disconnected'));
+        else if(statusRead){metrics.managedStatusRequests++;metrics.managedStatusBytes+=encoder.encode(JSON.stringify(body)).length+5;}
+      }catch{finish(journalError('disconnected'));}
     });
   }
   function renderManagedState(snapshot=managedSnapshot){
     if(!isManagedSession()){$('managed-panel').hidden=true;return;}
     $('managed-panel').hidden=false;
     if(term)term.options.disableStdin=true;
-    const s=managedSession(),state=!selected().connected?'unknown':snapshot?.state||s.managed_state||'unknown';
+    const s=managedSession(),state=!selected().connected||snapshot?.awaiting_runtime?'unknown':snapshot?.state||s.managed_state||'unknown';
+    const controlUnavailable=!!(managedContext?.events&&state==='unknown');
     const labels={starting:'正在启动',ready:'可发送',idle:'可发送',running:'本轮进行中',waiting_permission:'等待工具权限',interrupting:'正在请求中断',closing:'正在结束',ended:'已结束',error:'记录或运行异常',unknown:'状态待核对',disposed:'状态待核对'};
     $('managed-state').textContent='独立对话记录 · '+(labels[state]||'状态待核对');
     const root=snapshot?.provider_root_id;
@@ -514,10 +539,10 @@
     if(note.textContent!==outcomeText)note.textContent=outcomeText;note.hidden=!outcomeText;
     $('managed-retry').hidden=pending?.phase!=='absent';$('managed-retry').disabled=!managedController||!['ready','idle'].includes(state)||!!snapshot?.operation;
     const retryControl=$('managed-retry-control'),operation=snapshot?.operation;
-    retryControl.hidden=operation?.phase!=='unknown';retryControl.disabled=!managedController||!connected;retryControl.managedOperation=operation?.phase==='unknown'?{...operation}:null;
+    retryControl.hidden=operation?.phase!=='unknown';retryControl.disabled=!managedController||!connected||controlUnavailable;retryControl.managedOperation=operation?.phase==='unknown'?{...operation}:null;
     $('managed-reconcile').disabled=!managedController||!connected;
-    $('managed-interrupt').disabled=!managedController||!snapshot?.active_submission||['interrupting','closing','ended','error'].includes(state)||!!snapshot?.operation;
-    $('managed-close').disabled=!managedController||['closing','ended'].includes(state)||!!snapshot?.operation;
+    $('managed-interrupt').disabled=!managedController||controlUnavailable||!snapshot?.active_submission||['interrupting','closing','ended','error'].includes(state)||!!snapshot?.operation;
+    $('managed-close').disabled=!managedController||controlUnavailable||['closing','ended'].includes(state)||!!snapshot?.operation;
     const area=$('managed-permissions'),existing=new Map(Array.from(area.children).map(node=>[node.dataset.permissionId,node]));
     const live=new Set();
     for(const permission of snapshot?.permissions||[]){
@@ -527,13 +552,13 @@
       const card=document.createElement('section');card.className='managed-permission';card.dataset.permissionId=id;
       card.permissionSignature=signature;
       const title=document.createElement('strong');title.textContent=(permission.requires_user_interaction?'交互类型尚不支持，仅可拒绝':'实际 CLI 工具权限请求')+' · '+permission.tool_name;
-      const detail=document.createElement('pre');detail.textContent=permission.details;
+      const detail=document.createElement('pre');detail.textContent=permission.details_required?'正在核对工具请求详情…':permission.details;
       const identity=document.createElement('p');identity.className='hint';identity.textContent='会话 '+s.id+' · 本轮 '+permission.submission_id+(permission.provider_turn_id?' · '+permission.provider_turn_id:'');
       card.append(title,identity,detail);
       const deny=document.createElement('button');deny.type='button';deny.dataset.decision='deny';deny.textContent='拒绝';
-      const respond=decision=>{const controller=managedController,context=managedContext;if(!controller||!context||!managedCurrent(context.target))return;for(const button of card.querySelectorAll('button'))button.disabled=true;controller.respondPermission(id,decision).then(()=>{if(managedController===controller)controller.reconcile();});};
+      const respond=decision=>{const controller=managedController,context=managedContext;if(!controller||!context||!managedCurrent(context.target))return;for(const button of card.querySelectorAll('button'))button.disabled=true;controller.respondPermission(id,decision).then(()=>{if(managedController===controller)pollManaged();});};
       deny.onclick=()=>respond('deny');card.append(deny);
-      if(permission.choices.includes('allow_once')&&!permission.requires_user_interaction){const allow=document.createElement('button');allow.type='button';allow.dataset.decision='allow_once';allow.textContent='仅允许本次';allow.onclick=()=>respond('allow_once');card.append(allow);}
+      if(permission.choices.includes('allow_once')&&!permission.requires_user_interaction&&!permission.details_required){const allow=document.createElement('button');allow.type='button';allow.dataset.decision='allow_once';allow.textContent='仅允许本次';allow.onclick=()=>respond('allow_once');card.append(allow);}
       area.append(card);
       // Default focus is deny; merely displaying or dismissing never grants permission.
       if(!document.querySelector('dialog[open]')&&!['TEXTAREA','INPUT'].includes(document.activeElement?.tagName))deny.focus({preventScroll:true});
@@ -549,9 +574,48 @@
     if($('draft').value===record.text)syncDraftFields('');
     managedPendingRecords.delete(key);notice('');saveManagedRecords();
   }
+  function scheduleManagedPoll(context){
+    if(context!==managedContext||!managedCurrent(context.target))return;
+    clearTimeout(managedPollTimer);managedPollTimer=null;
+    if(context.query)return;
+    if(!context.events){managedPollTimer=setTimeout(pollManaged,2000);return;}
+    const now=performance.now(),pending=managedSnapshot?.pending;
+    const nonce=pending?.phase==='absent'?null:pending?.nonce||null;
+    if(context.nonce!==nonce){context.nonce=nonce;context.pendingSince=now;context.pendingTry=0;}
+    const pendingAt=nonce&&context.pendingTry<managedRetryDelays.length?context.pendingSince+managedRetryDelays[context.pendingTry]:Infinity;
+    const needsStatus=managedSnapshot?.awaiting_runtime||managedSnapshot?.error==='status_unavailable'||managedActiveStates.has(managedSnapshot?.state);
+    const activeAt=needsStatus?context.lastActivity+30000:Infinity;
+    const nextCheck=Math.min(pendingAt,activeAt);
+    if(!Number.isFinite(nextCheck))return;
+    managedPollTimer=setTimeout(()=>{
+      if(context!==managedContext||!managedCurrent(context.target))return;
+      if(pendingAt<=activeAt)context.pendingTry++;
+      pollManaged();
+    },Math.max(0,nextCheck-now));
+  }
   async function pollManaged(){
     const controller=managedController,context=managedContext;if(!controller||!context||!managedCurrent(context.target))return;
-    try{await controller.reconcile();}finally{if(managedController===controller&&managedContext===context&&managedCurrent(context.target)){clearTimeout(managedPollTimer);managedPollTimer=setTimeout(pollManaged,2000);}}
+    if(context.query)return;
+    context.query=true;context.lastActivity=performance.now();metrics.managedReconciles++;
+    clearTimeout(managedPollTimer);managedPollTimer=null;
+    try{await controller.reconcile();}finally{
+      if(managedController===controller&&managedContext===context&&managedCurrent(context.target)){
+        context.query=false;
+        scheduleManagedPoll(context);
+      }
+    }
+  }
+  function managedRuntimeEvent(c,value){
+    const context=managedContext,controller=managedController;
+    if(!controller||!context?.events||c!==context.target.host||!managedCurrent(context.target)||
+      !value||!managedID(value.host_installation_id)||value.host_installation_id!==c.cockpitInstallationId||!managedTargetFields.every(key=>value[key]===context.target[key]))return;
+    const received=performance.now(),result=controller.applyRuntimeEvent(value);
+    if(result==='ignored')return;
+    metrics.managedEventsReceived++;
+    if(result==='reconcile'){metrics.managedEventGaps++;pollManaged();return;}
+    metrics.managedLastEventLatency=performance.now()-received;context.lastActivity=received;
+    if(managedSnapshot?.permissions.some(permission=>permission.details_required))pollManaged();
+    else scheduleManagedPoll(context);
   }
   async function syncManagedContext(){
     const s=managedSession();
@@ -563,7 +627,8 @@
     }
     if(term)term.options.disableStdin=true;
     const t=managedTarget();renderManagedState();updateManagedCreation();
-    if(managedContext&&managedTargetFields.every(key=>managedContext.target[key]===t[key])&&managedCurrent(managedContext.target)){
+    const events=wantsManagedEvents(t.host),installationId=events?t.host.cockpitInstallationId:null;
+    if(managedContext&&managedContext.events===events&&managedContext.installationId===installationId&&managedTargetFields.every(key=>managedContext.target[key]===t[key])&&managedCurrent(managedContext.target)){
       const saved=managedPendingRecords.get(managedContext.key);if(saved&&!managedController.exportPending())managedController.restorePending(saved);
       renderManagedState();return;
     }
@@ -574,10 +639,10 @@
       if(managedController)releaseManagedContext();
       const key=managedRecordKey(auth,t),target=Object.fromEntries(managedTargetFields.map(field=>[field,t[field]]));
       let controller;
-      controller=C.createManagedController({target,targetKey:key,request:(action,params)=>managedRPC(t,action,params),isCurrent:()=>managedCurrent(t),
-        onState:value=>{if(managedController!==controller)return;managedSnapshot=value;rememberManagedPending();renderManagedState(value);updateComposer();},
+      controller=C.createManagedController({target,targetKey:key,runtimeEvents:events,runtimeCursor:events?savedManagedCursor(t):null,hostInstallationId:installationId,request:(action,params)=>managedRPC(t,action,params),isCurrent:()=>managedCurrent(t),
+        onState:value=>{if(managedController!==controller)return;managedSnapshot=value;rememberManagedPending();renderManagedState(value);updateComposer();if(events)scheduleManagedPoll(managedContext);},
         onAccepted:(receipt,record)=>managedAccepted(t,key,receipt,record)});
-      managedController=controller;managedContext={target:t,key};managedSnapshot=controller.snapshot();
+      managedController=controller;managedContext={target:t,key,events,installationId,query:false,nonce:null,pendingSince:0,pendingTry:0,lastActivity:performance.now()};managedSnapshot=controller.snapshot();
       const saved=managedPendingRecords.get(key);if(saved)controller.restorePending(saved);
       renderManagedState();updateComposer();pollManaged();
       if(managedOpeningJournal!==t.journal_id){managedOpeningJournal=t.journal_id;refreshJournalStatus(true);}
@@ -673,6 +738,10 @@
     if(session&&restoringTerms.has(term)&&(terminalWrites.get(term)||0)>0){const current=term,generation=c.generation;settledSubscriptions.set(current,()=>{if(term===current&&selected()===c&&active===session&&c.generation===generation)subscribeSessions(c,refresh);});return;}
     const body={sessions:session?[session]:[]},cursor=session&&initializedTerms.has(term)&&streamPositions.get(term);
     if(cursor&&c.capabilities?.history_resume===1){if(restoringTerms.has(term))queuedPositions.set(term,cursor);body.history_after={[session]:{position:cursor.position,epoch:cursor.epoch,stream_id:cursor.stream_id}};}
+    if(session&&wantsManagedEvents(c)&&isManagedSession()){
+      const t=managedTarget(),known=managedContext?.events&&managedCurrent(managedContext.target)?managedController.runtimeCursor():savedManagedCursor(t);
+      if(known)body.managed_after={[session]:known};
+    }
     if((refresh||c.subscription!==session)&&sendHost(c,16,body))c.subscription=session;
   }
   let updateHint='',updateCheckPending=false;
@@ -690,7 +759,7 @@
     let url;try{url=endpoint(c.host);}catch(e){hostState(c,e.message);return;}
     const ws=c.socket=new WebSocket(url);ws.binaryType='arraybuffer';metrics.connections++;
     const current=()=>gen===c.generation;
-    const hello=()=>ws.send(C.pack(1,encoder.encode(JSON.stringify({token:hostTokens.get(c.host.id)||'',multiplex:true,reliable:true,history_context:1,history_resume:1,history_chunks:1,conversation_journal:1,managed_conversation:1}))));
+    const hello=()=>ws.send(C.pack(1,encoder.encode(JSON.stringify({token:hostTokens.get(c.host.id)||'',multiplex:true,reliable:true,history_context:1,history_resume:1,history_chunks:1,conversation_journal:1,managed_conversation:1,managed_events:1}))));
     ws.onopen=()=>{if(!current())return;if(c.host.code)ws.send(JSON.stringify({op:'phone',code:c.host.code,token:hostTokens.get(c.host.id)||'',reliable:true}));else hello();};
     ws.onmessage=event=>{
       if(!current())return;
@@ -698,7 +767,13 @@
         if(typeof event.data==='string'){const m=JSON.parse(event.data);if(m.op==='ready')hello();else if(m.op==='ui_update')receiveUpdateHint(m);else if(m.error)hostState(c,String(m.error));return;}
         const {op,payload}=C.unpack(event.data);metrics.frames++;metrics.bytes+=payload.length;
         if(op===2||op===7)sync(JSON.parse(decoder.decode(payload)),c);
-        else if(op===24){try{if(payload.length>196608)throw journalError('invalid_response');journalHostResponse(c,JSON.parse(decoder.decode(payload)));}catch{for(const entry of c.journalPending?.values()||[])entry.finish(journalError('invalid_response'));}}
+        else if(op===24){try{if(payload.length>196608)throw journalError('invalid_response');journalHostResponse(c,JSON.parse(decoder.decode(payload)),event.data.byteLength);}catch{for(const entry of c.journalPending?.values()||[])entry.finish(journalError('invalid_response'));}}
+        else if(op===26){
+          if(c===selected()&&wantsManagedEvents(c)&&payload.length<=16384){
+            let value;try{value=JSON.parse(decoder.decode(payload));}catch{return;}
+            managedRuntimeEvent(c,value);
+          }
+        }
         else if(op===3||op===8||op===23){
           if(!payload.length)return;const feed=op===23?M.historyPayload(payload):C.sessionPayload(payload);
           if(op===8&&(c.historyContexts.has(feed.session)||restoringTerms.has(term)&&c.capabilities?.history_resume===1&&c===selected()&&feed.session===active))return;

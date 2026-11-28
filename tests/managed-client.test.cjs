@@ -38,3 +38,207 @@ test('permission acknowledgement must be durable decided and cannot confuse the 
 test('Ready status retains a known failed last outcome across polls without inventing a final or transport error',async()=>{let include=true;const outcome={submission_id:'prior-submission',outcome:'failed',reason:'provider_auth_failed',has_final:false};const c=make(async()=>ready(include?{last_outcome:outcome}:{}));await c.reconcile();assert.deepEqual(c.snapshot().last_outcome,outcome);assert.equal(c.snapshot().state,'ready');assert.equal(c.snapshot().error,null);assert.equal(c.snapshot().receipt,null);assert.equal(c.snapshot().active_submission,null);assert.equal(c.snapshot().canSubmit,true);include=false;await c.reconcile();assert.deepEqual(c.snapshot().last_outcome,outcome);const changed=c.snapshot();changed.last_outcome.reason='mutated';assert.equal(c.snapshot().last_outcome.reason,'provider_auth_failed');});
 test('last outcome resets on context/new acceptance and invalid outcome metadata cannot claim a final',async()=>{const outcome={submission_id:'prior',outcome:'blocked',reason:'provider_denied',has_final:false};const c=make(async(action,params)=>action==='managed_status'?ready({last_outcome:outcome}):receipt(params));await c.reconcile();await c.submit('next input');assert.equal(c.snapshot().last_outcome,null);c.setContext({target:{...target,journal_id:'other'},targetKey:'host-a:auth-b'});assert.equal(c.snapshot().last_outcome,null);for(const bad of [{...outcome,reason:'x'.repeat(129)},{...outcome,has_final:'yes'},{...outcome,outcome:'guessed_final'},{...outcome,has_final:true}]){const d=make(async()=>ready({last_outcome:bad}));await d.reconcile();assert.equal(d.snapshot().last_outcome,null);assert.equal(d.snapshot().receipt,null);assert.equal(d.snapshot().error,'status_unavailable');}});
 test('normalized dictionary permission details remain literal transient text',async()=>{const details='{"command":"echo <script>synthetic</script>","cwd":"D:/synthetic","reason":"synthetic command approval","requiresNetworkApproval":false}',c=make(async()=>ready({state:'waiting_permission',active_submission:{submission_id:'s',provider_turn_id:'t'},permissions:[{permission_request_id:'p',submission_id:'s',provider_turn_id:'t',state:'pending',choices:['allow_once','deny'],details}]}));await c.reconcile();assert.equal(c.snapshot().permissions[0].details,details);assert.equal(c.snapshot().permissions[0].permission_request_id,'p');assert.equal(c.exportPending(),null);});
+
+const runtimeStatus=(revision,extra={})=>ready({host_installation_id:'installation-a',runtime_epoch:'epoch-a',revision,...extra});
+const cursor=(revision,extra={})=>({host_installation_id:'installation-a',runtime_epoch:'epoch-a',revision,
+  journal_id:target.journal_id,process_generation:target.process_generation,...extra});
+const turn={submission_id:'submission-a',provider_turn_id:'turn-a',cancel_version:0};
+
+test('runtime events require negotiation, the exact target and installation, and a safe revision',async()=>{
+  const legacy=make(async()=>ready());
+  assert.equal(legacy.applyRuntimeEvent(runtimeStatus(1)),'ignored');
+  const c=make(async()=>assert.fail('Unexpected RPC'),{runtimeEvents:true,hostInstallationId:'installation-a'});
+  for(const wrong of [{host_installation_id:'other'},{process_generation:'other'},{window_id:'other'},{revision:-1},{revision:1.5},{revision:0}]){
+    assert.equal(c.applyRuntimeEvent(runtimeStatus(1,wrong)),'ignored');
+  }
+  assert.equal(c.snapshot().canSubmit,false);
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(18)),'applied');
+  assert.equal(c.snapshot().canSubmit,true);
+  assert.deepEqual(c.runtimeCursor(),cursor(18));
+  c.runtimeCursor().revision=0;
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(18,{state:'error'})),'ignored');
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(17,{state:'error'})),'ignored');
+  assert.equal(c.snapshot().state,'ready');
+});
+
+test('a reconnect seed detects gaps and epoch changes and fences controls until a fresh snapshot',async()=>{
+  let status=runtimeStatus(9),requests=0;
+  const c=make(async()=>{requests++;return status;},{runtimeEvents:true,runtimeCursor:cursor(7)});
+  assert.deepEqual(c.runtimeCursor(),cursor(7));
+  assert.equal(c.snapshot().awaiting_runtime,true);
+  await c.submit('seeded state cannot send');
+  assert.equal(requests,0);
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(9)),'reconcile');
+  status=runtimeStatus(8);
+  await c.reconcile();
+  assert.equal(c.snapshot().canSubmit,false);
+  status=runtimeStatus(9);
+  await c.reconcile();
+  assert.equal(c.snapshot().canSubmit,true);
+  assert.equal(c.snapshot().awaiting_runtime,false);
+  const newEpoch={runtime_epoch:'epoch-b'};
+  assert.equal(c.applyRuntimeEvent({...target,...cursor(0,newEpoch),resync:true}),'reconcile');
+  await c.reconcile();
+  assert.equal(c.snapshot().canSubmit,false);
+  status=runtimeStatus(0,newEpoch);
+  await c.reconcile();
+  assert.deepEqual(c.runtimeCursor(),cursor(0,newEpoch));
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(10,{state:'error'})),'ignored');
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(1,{...newEpoch,state:'running',active_submission:turn})),'applied');
+  assert.equal(c.snapshot().state,'running');
+});
+
+test('an ambiguous archived snapshot can settle an exact receipt without regaining process authority',async()=>{
+  const requests=[],accepted=[],nonce='archived-nonce';
+  const c=make(async(action,params)=>{
+    requests.push(action);
+    return runtimeStatus(0,{state:'ambiguous',active_submission:turn,receipt:receipt(params)});
+  },{runtimeEvents:true,onAccepted:value=>accepted.push(value.nonce)});
+  assert.equal(c.restorePending({schema:1,targetKey:'host-a:auth-a',target,nonce,text:'draft',phase:'unknown'}),true);
+  await c.reconcile();
+  assert.deepEqual(accepted,[nonce]);
+  assert.deepEqual(c.runtimeCursor(),cursor(0));
+  assert.equal(c.snapshot().state,'unknown');
+  assert.equal(c.snapshot().awaiting_runtime,false);
+  assert.equal(c.snapshot().active_submission,null);
+  await c.submit('must stay local');
+  await c.closeSession();
+  assert.deepEqual(requests,['managed_status']);
+});
+
+test('a recovery arriving during a query coalesces callers and rechecks once after a stale answer',async()=>{
+  const earlier=deferred(),later=deferred();
+  let requests=0;
+  const c=make(async()=>++requests===1?earlier.promise:later.promise,{runtimeEvents:true});
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(1)),'applied');
+  const running=c.reconcile();
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(3,{permissions:null})),'ignored');
+  assert.equal(c.snapshot().canSubmit,true);
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(3)),'reconcile');
+  const covered=c.reconcile();
+  assert.equal(requests,1);
+  earlier.resolve(runtimeStatus(1));
+  later.resolve(runtimeStatus(3));
+  await Promise.all([running,covered]);
+  assert.equal(requests,2);
+  assert.deepEqual(c.runtimeCursor(),cursor(3));
+  assert.equal(c.snapshot().canSubmit,true);
+});
+
+test('an event wins over an older status while its exact receipt can still settle the draft once',async()=>{
+  const response=deferred(),ack=deferred(),accepted=[];
+  let submitted,queried;
+  const c=make(async(action,params)=>{
+    if(action==='submit_managed'){submitted=params;return ack.promise;}
+    queried=params;return response.promise;
+  },{runtimeEvents:true,onAccepted:(value,record)=>accepted.push(record.text)});
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(1)),'applied');
+  const sending=c.submit('once');
+  const reconciling=c.reconcile();
+  assert.equal(queried.nonce,submitted.nonce);
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(2,{state:'running',active_submission:turn})),'applied');
+  response.resolve(runtimeStatus(1,{receipt:receipt(submitted)}));
+  await reconciling;
+  ack.resolve(receipt(submitted));
+  await sending;
+  assert.deepEqual(accepted,['once']);
+  assert.equal(c.snapshot().state,'running');
+  assert.deepEqual(c.runtimeCursor(),cursor(2));
+});
+
+test('a delayed absent status cannot make an event-ready draft retryable or replace a new outcome',async()=>{
+  const response=deferred();
+  let submitted;
+  const c=make(async(action,params)=>{
+    if(action==='submit_managed'){submitted=params;throw Error('lost ACK');}
+    return response.promise;
+  },{runtimeEvents:true});
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(1)),'applied');
+  await c.submit('once');
+  const reconciling=c.reconcile(),outcome={submission_id:turn.submission_id,outcome:'completed',reason:null,has_final:true};
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(2,{last_outcome:outcome})),'applied');
+  response.resolve(runtimeStatus(1,{receipt:null,last_outcome:null}));
+  await reconciling;
+  assert.equal(c.snapshot().pending.phase,'unknown');
+  assert.equal(c.snapshot().pending.nonce,submitted.nonce);
+  assert.deepEqual(c.snapshot().last_outcome,outcome);
+});
+
+test('a durable receipt on an event wins even if the ACK is lost, and a duplicate cannot notify again',async()=>{
+  const ack=deferred(),accepted=[];
+  let submitted;
+  const c=make(async(action,params)=>{submitted=params;return ack.promise;},
+    {runtimeEvents:true,onAccepted:(value,record)=>accepted.push([value.nonce,record.text])});
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(1)),'applied');
+  const sending=c.submit('immutable draft');
+  const pushed=runtimeStatus(2,{state:'running',active_submission:turn,receipt:receipt(submitted)});
+  assert.equal(c.applyRuntimeEvent(pushed),'applied');
+  assert.equal(c.applyRuntimeEvent(pushed),'ignored');
+  ack.reject(Error('socket lost'));
+  await sending;
+  assert.deepEqual(accepted,[[submitted.nonce,'immutable draft']]);
+  assert.equal(c.snapshot().pending,null);
+  assert.equal(c.snapshot().state,'running');
+});
+
+test('a delayed submit ACK keeps a completed event outcome and does not reopen its turn',async()=>{
+  const ack=deferred(),accepted=[];
+  let submitted;
+  const c=make(async(action,params)=>{submitted=params;return ack.promise;},
+    {runtimeEvents:true,onAccepted:value=>accepted.push(value.submission_id)});
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(1)),'applied');
+  const sending=c.submit('immutable draft');
+  const outcome={submission_id:turn.submission_id,outcome:'completed',reason:null,has_final:true};
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(2,{last_outcome:outcome})),'applied');
+  ack.resolve(receipt(submitted));
+  await sending;
+  assert.deepEqual(accepted,[turn.submission_id]);
+  assert.equal(c.snapshot().state,'ready');
+  assert.equal(c.snapshot().active_submission,null);
+  assert.deepEqual(c.snapshot().last_outcome,outcome);
+});
+
+test('event permission descriptors stay deny-only until an equal-revision status hydrates details',async()=>{
+  const descriptor={permission_request_id:'p',submission_id:turn.submission_id,provider_turn_id:turn.provider_turn_id,
+    tool_name:'synthetic',state:'pending',choices:['allow_once','deny']};
+  const publicStatus={state:'waiting_permission',active_submission:turn,permissions:[descriptor]};
+  const details='{"command":"echo synthetic"}';
+  const calls=[];
+  let permissionStatus=descriptor;
+  const c=make(async(action,params)=>{
+    calls.push(action);
+    if(action==='managed_status')return runtimeStatus(2,{...publicStatus,permissions:[permissionStatus]});
+    return {permission_request_id:'p',state:'decided',decision:params.decision};
+  },{runtimeEvents:true});
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(2,publicStatus)),'applied');
+  assert.deepEqual(c.snapshot().permissions[0].choices,['deny']);
+  assert.equal(c.snapshot().permissions[0].details_required,true);
+  await c.respondPermission('p','allow_once');
+  assert.deepEqual(calls,[]);
+  await c.reconcile();
+  assert.equal(c.snapshot().permissions[0].details_required,true);
+  permissionStatus={...descriptor,details};
+  await c.reconcile();
+  assert.equal(c.snapshot().permissions[0].details,details);
+  assert.equal(c.snapshot().permissions[0].details_required,undefined);
+  await c.respondPermission('p','allow_once');
+  assert.deepEqual(calls,['managed_status','managed_status','respond_managed_permission']);
+});
+
+test('a permission descriptor arriving during a stale query requests fresh details once',async()=>{
+  const older=deferred(),details='synthetic details';
+  const descriptor={permission_request_id:'p',submission_id:turn.submission_id,provider_turn_id:turn.provider_turn_id,
+    tool_name:'synthetic',state:'pending',choices:['allow_once','deny']};
+  const publicStatus={state:'waiting_permission',active_submission:turn,permissions:[descriptor]};
+  let requests=0;
+  const c=make(async()=>++requests===1?older.promise:runtimeStatus(2,{...publicStatus,permissions:[{...descriptor,details}]}),
+    {runtimeEvents:true});
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(1)),'applied');
+  const reconciling=c.reconcile();
+  assert.equal(c.applyRuntimeEvent(runtimeStatus(2,publicStatus)),'applied');
+  const hydrate=c.reconcile();
+  older.resolve(runtimeStatus(1));
+  await Promise.all([reconciling,hydrate]);
+  assert.equal(requests,2);
+  assert.equal(c.snapshot().permissions[0].details,details);
+});

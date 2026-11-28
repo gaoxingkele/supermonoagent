@@ -10,7 +10,7 @@ from urllib.parse import quote
 import pytest
 from websockets.asyncio.server import serve
 
-from android_journal_fixture import Fixture, TOKEN, ROOM, STAMP
+from android_journal_fixture import Fixture, TOKEN, ROOM, STAMP, packed
 
 ROOT = Path(__file__).resolve().parents[1]
 EDGE = Path('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
@@ -135,6 +135,26 @@ class FailedManagedFixture(ManagedFixture):
             self.managed_state = 'ready'; self.active_submission = None; self.permissions = []
             self.last_outcome = dict(submission_id=result['submission_id'], outcome='failed', reason='provider_failed', has_final=False)
         return result
+
+
+class EventManagedFixture(ManagedFixture):
+    def __init__(self):
+        super().__init__()
+        self.cursor = dict(host_installation_id='event-host', runtime_epoch='event-boot', revision=1)
+        self.status_reads = 0
+
+    def catalog(self):
+        value = super().catalog()
+        value['capabilities']['managed_events'] = 1
+        value['host_installation_id'] = self.cursor['host_installation_id']
+        return value
+
+    def query(self, action, params):
+        value = super().query(action, params)
+        if action == 'managed_status':
+            self.status_reads += 1
+            value.update(self.cursor)
+        return value
 
 
 def test_actual_android_managed_creation_submit_permissions_recovery_and_native_input():
@@ -287,6 +307,58 @@ def test_actual_android_prior_provider_failure_keeps_input_and_ready_without_fak
     if not EDGE.exists():
         pytest.skip('Owned headless Edge is unavailable')
     asyncio.run(check_prior_failure(playwright))
+
+
+def test_actual_android_managed_event_uses_authoritative_gap_and_reconnect_cursor():
+    playwright = pytest.importorskip('playwright.async_api')
+    if not EDGE.exists():
+        pytest.skip('Owned headless Edge is unavailable')
+    asyncio.run(check_runtime_events(playwright))
+
+
+async def check_runtime_events(playwright):
+    fixture = EventManagedFixture()
+    async with serve(fixture.socket, '127.0.0.1', 0, process_request=fixture.http) as server:
+        fixture.origin = 'http://127.0.0.1:' + str(server.sockets[0].getsockname()[1])
+        config = dict(endpoint=fixture.origin, code=ROOM, token=TOKEN, renderer='dom', uiRevision='managed-events-synthetic')
+        document = fixture.origin + '/mobile/index.html#' + quote(json.dumps(config))
+        async with playwright.async_playwright() as runtime:
+            browser = await runtime.chromium.launch(executable_path=str(EDGE), headless=True)
+            try:
+                page = await browser.new_page(viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True)
+                outgoing = []
+                page.on('websocket', lambda ws: ws.on('framesent', lambda frame: outgoing.append(frame)))
+                await page.goto(document)
+                await page.wait_for_function('window.MobileTerminal?.ready')
+                await page.locator('#sessions').click()
+                await page.locator('#new-interaction-mode').select_option('managed')
+                await page.locator('#new').click()
+                await page.wait_for_function('MobileTerminal.active === "managed-session" && !document.getElementById("quick-send").disabled')
+                assert fixture.status_reads == 1
+                await page.wait_for_timeout(2200)
+                assert fixture.status_reads == 1
+                target_fields = ('window_id', 'session_id', 'journal_id', 'process_generation')
+                target = {field: fixture.created[field] for field in target_fields}
+                assert any(frame[4] == 1 and json.loads(frame[5:]).get('managed_events') == 1
+                           for frame in outgoing if isinstance(frame, bytes))
+
+                fixture.cursor['revision'] = 3
+                fixture.managed_state = 'running'
+                payload = packed(26, dict(**target, **fixture.cursor, resync=True))
+                for socket in list(fixture.terminals):
+                    await socket.send(payload)
+                await page.wait_for_function('document.getElementById("managed-state").textContent.includes("本轮进行中")')
+                assert fixture.status_reads == 2
+                assert await page.evaluate('MobileTerminal.metrics.managedEventGaps') == 1
+
+                await page.evaluate('MobileTerminal.reconnect()')
+                await page.wait_for_function('MobileTerminal.ready && MobileTerminal.metrics.managedStatusRequests === 3')
+                expected = dict(**fixture.cursor, journal_id=target['journal_id'], process_generation=target['process_generation'])
+                assert any(frame[4] == 16 and json.loads(frame[5:]).get('managed_after', {}).get(target['session_id']) == expected
+                           for frame in outgoing if isinstance(frame, bytes))
+                assert fixture.input_frames == 0
+            finally:
+                await browser.close()
 
 
 async def check_prior_failure(playwright):

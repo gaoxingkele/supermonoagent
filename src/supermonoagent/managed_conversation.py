@@ -16,6 +16,7 @@ from .conversation_contract import JournalError, canonical_json, checked_id
 from .conversation_sources import joined_io
 from .conversation_store import managed_creation_ids
 from .hub import Session
+from .managed_events import ManagedEvents
 from .managed_process import ManagedPty, sanitize_render_text
 
 
@@ -77,6 +78,7 @@ class ManagedConversationService:
         self._operations = set()
         self._closed = False
         self._loop = asyncio.get_running_loop()
+        self.events = ManagedEvents(hub, self._loop, self.store.host_installation_id, self._event_authorized)
         self._shutdown_task = None
 
     @staticmethod
@@ -121,7 +123,8 @@ class ManagedConversationService:
                 checked_id(value, 64 if key == 'nonce' else 512 if key == 'provider_turn_id'
                            else 256 if key == 'permission_request_id' else 128)
 
-    async def handle(self, action, params, *, owner_scope, owner_token, rooms=None, authorize=None):
+    async def handle(self, action, params, *, owner_scope, owner_token, rooms=None, authorize=None,
+                     event_cursor=False):
         """Bounded wire operation; cancellation joins accepted storage work.
 
         The short request fence may depend on a websocket. A controller's stable
@@ -140,7 +143,7 @@ class ManagedConversationService:
                 return False
 
         task = asyncio.create_task(self._handle(action, dict(params), owner_scope, owner_token,
-            None if rooms is None else tuple(rooms), request_authorized))
+            None if rooms is None else tuple(rooms), request_authorized, event_cursor=event_cursor))
         self._operations.add(task)
         task.add_done_callback(self._operations.discard)
         try:
@@ -164,6 +167,11 @@ class ManagedConversationService:
         except Exception:
             return False
 
+    def _event_authorized(self, client, session):
+        conversation = self._conversations.get(session.journal_id)
+        return (conversation is not None and (not client.channel or client.channel == conversation.room)
+                and self._credential(conversation.owner, client.token, conversation.room, session))
+
     def _current(self, c):
         return (self.hub.sessions.get(c.session.id) is c.session
             and c.session.process_generation == c.binding['process_generation']
@@ -176,7 +184,7 @@ class ManagedConversationService:
         if healthy and (c.failed or c.closing or c.ended or c.session.journal_error or self._closed):
             raise JournalError('managed_unavailable')
 
-    async def _handle(self, action, params, owner, token, rooms, authorize):
+    async def _handle(self, action, params, owner, token, rooms, authorize, *, event_cursor=False):
         if not authorize():
             raise JournalError('not_authorized')
         if action == 'create_managed':
@@ -199,7 +207,10 @@ class ManagedConversationService:
                 with c.fence:
                     state = 'error' if c.failed else 'ended' if c.ended else 'ambiguous'
                     last_outcome = c.last_outcome
-            return self._status_result(target, control, state=state, last_outcome=last_outcome)
+            result = self._status_result(target, control, state=state, last_outcome=last_outcome)
+            if event_cursor:
+                result.update(self.events.snapshot_cursor(None, result))
+            return result
         if target != c.target:
             raise JournalError('stale_target')
         self._check(c, owner, token, rooms, authorize)
@@ -210,18 +221,22 @@ class ManagedConversationService:
                 c.closing, c.state = True, 'closing'
                 c.permissions.clear()
                 c.details.clear()
+            self._publish(c)
             self._schedule_close(c, 'closed')
             return dict(c.target, state='ended' if c.close_task.done() else 'closing')
         driver_call = None
         async with c.mutation:
             self._check(c, owner, token, rooms, authorize)
             if action == 'managed_status':
-                control = await self._refresh(c, nonce=params.get('nonce'), rooms=rooms)
+                nonce = params.get('nonce')
+                result_receipt = None
+                if not event_cursor or nonce is not None:
+                    control = await self._refresh(c, nonce=nonce, rooms=rooms)
+                    result_receipt = control['receipt']
                 self._check(c, owner, token, rooms, authorize)
-                result = self._status_result(c.target, control, state=c.state, last_outcome=c.last_outcome)
-                with c.fence:
-                    result['permissions'] = [dict(item, details=c.details.get(identity, ''))
-                        for identity, item in c.permissions.items() if item['state'] == 'pending']
+                result = self._live_status(c, details=True, receipt=result_receipt)
+                if event_cursor:
+                    result.update(self.events.snapshot_cursor(c.session, result))
                 if len(canonical_json(result)) > 192 * 1024 - 4096:
                     raise JournalError('managed_status_limit')
                 return result
@@ -238,7 +253,7 @@ class ManagedConversationService:
                         raise JournalError('managed_unavailable')
                 receipt = await self._store(c, 'accept_managed_submission',
                     nonce=params['nonce'], text=params['text'], rooms=rooms)
-                await self._refresh(c, rooms=rooms)
+                await self._refresh(c, rooms=rooms, accepted=receipt if not receipt['replayed'] else None)
                 if receipt['replayed']:
                     self._check(c, owner, token, rooms, lambda: True)
                     return receipt
@@ -301,6 +316,7 @@ class ManagedConversationService:
                 await self._refresh(c, rooms=rooms)
                 if not receipt['replayed'] and receipt['state'] == 'not_dispatched':
                     self._remember_outcome(c, receipt['submission_id'], 'interrupted', 'not_dispatched', False)
+                    self._publish(c)
                 self._check(c, owner, token, rooms, authorize)
         finally:
             with c.fence:
@@ -393,6 +409,7 @@ class ManagedConversationService:
                 self._conversations[ids['journal_id']] = c
                 self.hub.add_managed_session(session, group_id=window.group_id,
                     title=f"{params['provider']} managed")
+                self._publish(c)
             except Exception:
                 session.pty.feed_eof()
                 self._conversations.pop(ids['journal_id'], None)
@@ -406,7 +423,7 @@ class ManagedConversationService:
         return await joined_io(getattr(self.store, method), c.owner, c.session.journal_id,
             target=c.target, **kwargs)
 
-    async def _refresh(self, c, *, nonce=None, rooms=None):
+    async def _refresh(self, c, *, nonce=None, rooms=None, accepted=None):
         control = await self._store(c, 'read_managed_control', nonce=nonce, rooms=rooms)
         with c.fence:
             c.active = control['active_submission']
@@ -418,7 +435,19 @@ class ManagedConversationService:
                        'closing' if c.closing else 'running' if c.provider_busy and c.active is None
                        else control['state'])
             self._cancel_timers(c, keep=set(c.permissions))
+        self._publish(c, receipt=accepted)
         return control
+
+    def _live_status(self, c, *, details=False, receipt=None):
+        with c.fence:
+            public = self._snapshot(c)
+            permissions = [dict(item, **({'details': c.details.get(identity, '')} if details else {}))
+                for identity, item in c.permissions.items() if item['state'] == 'pending']
+            return dict(c.target, **public, interaction_mode='managed', active_submission=c.active,
+                        permissions=permissions, receipt=receipt)
+
+    def _publish(self, c, *, receipt=None):
+        self.events.observe(c.session, self._live_status(c), receipt)
 
     @staticmethod
     def _status_result(target, control, *, state, last_outcome=None):
@@ -627,6 +656,8 @@ class ManagedConversationService:
                         c.state = 'error' if c.failed else 'ended'
                         c.permissions.clear()
                         c.details.clear()
+                    self.events.end(c.session, self._live_status(c))
+                    await asyncio.sleep(0)
                     c.session.pty.feed_eof()
                 else:
                     raise JournalError('invalid_provider_event')
@@ -676,12 +707,14 @@ class ManagedConversationService:
 
     async def _expire_permission(self, c, identity, expires_at):
         await asyncio.sleep(max(0, expires_at - time.time()))
-        with c.fence:
-            pending, active = c.permissions.get(identity), c.active
-            if (not pending or not active or c.failed or c.closing or c.ended
-                    or pending['submission_id'] != active['submission_id'] or not c.authorized()):
-                return
-            submission, version = active['submission_id'], active['cancel_version']
+        async with c.mutation:
+            with c.fence:
+                pending, active = c.permissions.get(identity), c.active
+                if (not pending or not active or c.failed or c.closing or c.ended
+                        or pending['submission_id'] != active['submission_id'] or not c.authorized()):
+                    return
+                submission, version = active['submission_id'], active['cancel_version']
+            await self._refresh(c)
         try:
             result = await c.driver.respond_permission(identity, 'deny',
                 submission_id=submission, cancel_version=version)
@@ -746,6 +779,7 @@ class ManagedConversationService:
             c.details.clear()
         # capture_failed may originate in a Hub reader thread. Timer mutation
         # stays on the event loop; the RAM fence already revokes positive writes.
+        self._loop.call_soon_threadsafe(self._publish, c)
 
     def capture_failed(self, session_id):
         c = next((item for item in list(self._conversations.values()) if item.session.id == session_id), None)
@@ -766,6 +800,7 @@ class ManagedConversationService:
             c.permissions.clear()
             c.details.clear()
             self._cancel_timers(c)
+        self._publish(c)
         if c.start_task is not None and not c.start_task.done() and c.start_task is not asyncio.current_task():
             c.start_task.cancel()
             await asyncio.gather(c.start_task, return_exceptions=True)
@@ -785,6 +820,10 @@ class ManagedConversationService:
                             metadata={'reason': c.failed}))
                 except Exception:
                     pass  # RAM remains failed; unavailable storage cannot prove recovery.
+            with c.fence:
+                c.state = 'error' if c.failed else 'ended'
+            self.events.end(c.session, self._live_status(c))
+            await asyncio.sleep(0)
             c.session.pty.feed_eof()
         jobs = [task for task in c.jobs if task is not asyncio.current_task() and not task.done()]
         if jobs:
@@ -811,5 +850,6 @@ class ManagedConversationService:
             await asyncio.gather(*list(self._operations), return_exceptions=True)
         tasks = list({*tasks, *(self._schedule_close(c, 'shutdown') for c in self._conversations.values())})
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        self.events.close()
         if any(isinstance(result, BaseException) for result in results):
             raise JournalError('managed_close_failed')

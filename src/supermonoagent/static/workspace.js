@@ -44,7 +44,9 @@
   let accountLogin=null,accountLoginGeneration=0,workspaceAuthorization=null,connectionAuthorization=null;
   const mobile = () => matchMedia('(max-width:600px)').matches;
   const metrics = {socketsOpened:0, receivedBytes:0, transmittedBytes:0, outputFrames:0, snapshots:0, historyResumes:0, historyRecoveries:0,
-    renderMilliseconds:0, parsedBytes:0, reconnects:0, rendererFallbacks:0, lastPongMs:null};
+    renderMilliseconds:0, parsedBytes:0, reconnects:0, rendererFallbacks:0, lastPongMs:null,
+    managedStatusRequests:0,managedStatusBytes:0,managedEventsReceived:0,managedEventGaps:0,
+    managedReconciles:0,managedLastEventLatency:null};
   const key=(host,id)=>JSON.stringify([host.id,id]);
   const currentHost=()=>hosts.get(selectedHost);
   const owner=host=>({host,generation:host.generation});
@@ -57,7 +59,8 @@
       Object.assign(this,{id,name,config:{...settings},ws:null,generation:0,retry:0,retryTimer:0,pingTimer:0,
         connected:false,supported:false,helloSent:false,catalog:[],groups:[],controls:{},capabilities:{},identity:{},activity:new Map(),agents:new Map(),
         selectedGroup:'',collapsed:read(sessionStorage,'sma.workspace.collapsed.'+id)==='true',initialCatalog:true,nextSplit:'',sessionsBeforeOpen:new Set(),subscriptionSignature:'',
-        phase:'offline',error:'',pingSentAt:null,daemonInfo:null,meter:new C.ConnectionMeter(performance.now()),rates:{tx:0,rx:0}});
+        phase:'offline',error:'',pingSentAt:null,daemonInfo:null,meter:new C.ConnectionMeter(performance.now()),rates:{tx:0,rx:0},
+        managedCalibrationTail:Promise.resolve()});
     }
   }
   function aggregateCatalog(){
@@ -156,8 +159,9 @@
       restoreJournalTerminal(pane,false);
     }
   }
-  function receiveJournal(host,value){
+  function receiveJournal(host,value,frameBytes){
     const pending=journalPending.get(value?.request_id);if(!pending||pending.target.host!==host)return;
+    if(pending.action==='managed_status')metrics.managedStatusBytes+=frameBytes;
     clearTimeout(pending.timer);journalPending.delete(value.request_id);
     if(!(pending.isCurrent?pending.isCurrent():journalCurrent(pending.target)))pending.reject(Error('journal_target_changed'));
     else if(value.ok===true)pending.resolve(value.result);else pending.reject(Error('journal_request_failed'));
@@ -283,6 +287,8 @@
   // Managed mode controls always address the live source daemon, never archives.
   const managedPending=new Map(),managedCreates=new Map();
   const managedFields=['window_id','session_id','process_generation','journal_id'];
+  const managedActiveStates=new Set(['unknown','starting','running','waiting_permission','interrupting','closing']);
+  const managedPendingBackoff=[3000,10000,30000];
   const sameManaged=(a,b)=>!!a&&!!b&&managedFields.every(name=>a[name]===b[name]);
   function isManagedPane(pane){return sessionInfo(pane?.sid)?.session.interaction_mode==='managed';}
   function managedTuple(pane){const info=sessionInfo(pane?.sid);return info&&{window_id:info.win.raw,session_id:pane.raw,process_generation:info.session.process_generation,journal_id:info.session.journal_id};}
@@ -306,8 +312,10 @@
     if(!pane.host.connected||!pane.host.supported||pane.host.capabilities.managed_conversation!==1)return Promise.reject(Error('managed_unavailable'));
     return new Promise((resolve,reject)=>{
       const id='desktop-managed-'+(++journalSequence),timer=setTimeout(()=>{journalPending.delete(id);reject(Error('managed_timeout'));},10000);
-      journalPending.set(id,{target:context,resolve,reject,timer});
-      if(!send(pane,24,{request_id:id,action,params:values})){clearTimeout(timer);journalPending.delete(id);reject(Error('managed_unavailable'));}
+      const payload=encoder.encode(JSON.stringify({request_id:id,action,params:values}));
+      journalPending.set(id,{target:context,resolve,reject,timer,action});
+      if(!send(pane,24,payload)){clearTimeout(timer);journalPending.delete(id);reject(Error('managed_unavailable'));}
+      else if(action==='managed_status'){metrics.managedStatusRequests++;metrics.managedStatusBytes+=payload.length+5;}
     });
   }
   async function closeManagedWindow(context,window){
@@ -340,10 +348,68 @@
     const snapshot=controller.snapshot(),target=managedTuple(pane);if(!sameManaged(snapshot.target,target))return null;return {pane,target,targetKey:snapshot.targetKey,auth:pane.managedAuth};
   }
   function managedCaptureCurrent(value){const capture=managedCapture(value?.pane);return !!capture&&capture.targetKey===value.targetKey&&capture.auth===value.auth&&sameManaged(capture.target,value.target);}
+  function supportsManagedEvents(host){return host.capabilities.managed_events===1&&host.capabilities.managed_conversation===1;}
+  function paneRuntimeCursor(pane){
+    const previous=pane.managedEventCursor,target=managedTuple(pane);
+    const cursor=pane.managedController?.runtimeCursor()||(previous?.auth===managedAuth(pane.host)?previous.cursor:null);
+    return cursor&&target&&cursor.journal_id===target.journal_id&&cursor.process_generation===target.process_generation&&
+      (!pane.host.cockpitInstallationId||cursor.host_installation_id===pane.host.cockpitInstallationId)?cursor:null;
+  }
   function pauseManagedPane(pane){
-    if(pane.managedController){const snap=pane.managedController.snapshot();saveManagedPending(snap.targetKey,snap.target,pane.managedController.exportPending());pane.managedController.dispose();pane.managedController=null;}
+    if(pane.managedController){const snap=pane.managedController.snapshot(),cursor=pane.managedController.runtimeCursor();
+      if(cursor)pane.managedEventCursor={auth:pane.managedAuth,cursor};
+      saveManagedPending(snap.targetKey,snap.target,pane.managedController.exportPending());pane.managedController.dispose();pane.managedController=null;}
+    clearTimeout(pane.managedCalibrationTimer);pane.managedCalibrationTimer=null;pane.managedCalibrationPlan=null;
+    pane.managedCalibration=null;
     pane.managedEpoch=(pane.managedEpoch||0)+1;pane.managedStarting=false;
     if(pane.managedStatus)pane.managedStatus.textContent='对话记录模式 · 连接已暂停；未确认提交保留，重连后检查状态。';
+  }
+  function reconcileManaged(pane){
+    const controller=pane.managedController;
+    if(!controller)return;
+    if(!supportsManagedEvents(pane.host))return controller.reconcile();
+    if(pane.managedCalibration?.controller===controller)return pane.managedCalibration.task;
+    const task=pane.host.managedCalibrationTail.then(async()=>{
+      if(controller!==pane.managedController||!managedCapture(pane))return;
+      metrics.managedReconciles++;
+      return controller.reconcile();
+    });
+    pane.managedCalibration={controller,task};
+    pane.host.managedCalibrationTail=task.catch(()=>{});
+    const clear=()=>{if(pane.managedCalibration?.task===task)pane.managedCalibration=null;};
+    task.then(clear,clear);
+    return task;
+  }
+  function planManagedCalibration(pane,snapshot){
+    if(!supportsManagedEvents(pane.host))return;
+    const pending=snapshot.pending&&snapshot.pending.phase!=='absent'?snapshot.pending.nonce:null;
+    const key=pending||(snapshot.awaiting_runtime||managedActiveStates.has(snapshot.state)?'active':null);
+    if(key!==pane.managedCalibrationPlan?.key){
+      clearTimeout(pane.managedCalibrationTimer);pane.managedCalibrationTimer=null;
+      pane.managedCalibrationPlan=key?{key,attempt:0}:null;
+    }
+    const plan=pane.managedCalibrationPlan;
+    if(!plan||pane.managedCalibrationTimer)return;
+    const delay=pending?managedPendingBackoff[Math.min(plan.attempt,managedPendingBackoff.length-1)]:30000;
+    pane.managedCalibrationTimer=setTimeout(()=>{
+      pane.managedCalibrationTimer=null;plan.attempt++;
+      if(managedCapture(pane))void reconcileManaged(pane);
+    },delay);
+  }
+  function receiveManagedEvent(host,value){
+    const pane=panes.get(key(host,value?.session_id)),capture=managedCapture(pane);
+    if(!capture||!sameManaged(capture.target,value)||
+      host.cockpitInstallationId&&value.host_installation_id!==host.cockpitInstallationId)return;
+    const started=performance.now(),controller=pane.managedController;
+    const result=controller.applyRuntimeEvent(value);
+    if(result==='reconcile'){metrics.managedEventGaps++;void reconcileManaged(pane);return;}
+    if(result!=='applied')return;
+    metrics.managedEventsReceived++;metrics.managedLastEventLatency=performance.now()-started;
+    const snapshot=controller.snapshot();
+    if(pane.managedCalibrationPlan?.key==='active'){
+      clearTimeout(pane.managedCalibrationTimer);pane.managedCalibrationTimer=null;planManagedCalibration(pane,snapshot);
+    }
+    if(snapshot.permissions.some(permission=>permission.details_required))void reconcileManaged(pane);
   }
   function managedOutcomeText(snapshot){
     if(snapshot.pending||snapshot.error||snapshot.active_submission)return '';
@@ -389,11 +455,13 @@
       if(!livePane(pane)||!pane.host.connected||pane.managedEpoch!==epoch||auth!==managedAuth(pane.host)||!sameManaged(managedTuple(pane),target))return;
       pane.managedAuth=auth;
       const current=()=>livePane(pane)&&pane.host.connected&&pane.managedEpoch===epoch&&auth===managedAuth(pane.host)&&sameManaged(managedTuple(pane),target);
-      pane.managedController=C.createManagedController({target,targetKey,isCurrent:current,request:(action,values)=>managedRequest(pane,target,action,values),
-        onState:snapshot=>{if(pane.managedEpoch!==epoch)return;saveManagedPending(targetKey,target,snapshot.pending);renderManaged(pane,snapshot);},
+      pane.managedController=C.createManagedController({target,targetKey,runtimeEvents:supportsManagedEvents(pane.host),runtimeCursor:paneRuntimeCursor(pane),
+        hostInstallationId:pane.host.cockpitInstallationId,
+        isCurrent:current,request:(action,values)=>managedRequest(pane,target,action,values),
+        onState:snapshot=>{if(pane.managedEpoch!==epoch)return;saveManagedPending(targetKey,target,snapshot.pending);renderManaged(pane,snapshot);planManagedCalibration(pane,snapshot);},
         onAccepted:(receipt,record)=>{if(current())window.SuperMonoTerminalComposer?.acceptManaged?.(receipt,record);}});
       const pending=managedPending.get(managedRecordKey(targetKey,target));if(pending)pane.managedController.restorePending(pending);
-      await pane.managedController.reconcile();
+      await reconcileManaged(pane);
     }catch{if(pane.managedEpoch===epoch)pane.managedNote.textContent='对话记录控制不可用，请检查状态或升级客户端。';}
     finally{if(pane.managedEpoch===epoch)pane.managedStarting=false;}
   }
@@ -450,12 +518,13 @@
   }
   function handshake(host){
     if(host.helloSent||host.ws?.readyState!==WebSocket.OPEN)return;
-    host.helloSent=true;socketSend(host,C.pack(1,encoder.encode(JSON.stringify({...(tokenlessLocal(host.config)||host.config.authMode==='account'?{}:{token:host.config.token}),multiplex:true,reliable:true,history_context:1,history_resume:1,history_chunks:1,conversation_journal:1,managed_conversation:1,
+    host.helloSent=true;socketSend(host,C.pack(1,encoder.encode(JSON.stringify({...(tokenlessLocal(host.config)||host.config.authMode==='account'?{}:{token:host.config.token}),multiplex:true,reliable:true,history_context:1,history_resume:1,history_chunks:1,conversation_journal:1,managed_conversation:1,managed_events:1,
       channel:host.id==='local'?params.get('channel')||undefined:undefined}))));
   }
   function stopHost(host){
     for(const pane of panes.values())if(pane.host===host)pauseManagedPane(pane);
     rejectJournalHost(host);
+    host.managedCalibrationTail=Promise.resolve();
     host.daemonInfo=null;
     invalidateDaemonMonitorHost(host);
     if(host.id==='local'){runtimeDefaultToken='';if(prefilledTokenTarget){$('relay-profile-token').value='';prefilledTokenTarget='';}}
@@ -497,8 +566,9 @@
         const {op,payload}=C.unpack(new Uint8Array(event.data));
         if(op===2||op===7)sync(host,JSON.parse(decoder.decode(payload)),op===2);
         else if(op===20)receiveDaemonLogs(host,JSON.parse(decoder.decode(payload)));
-        else if(op===24&&([1,true].includes(host.capabilities.conversation_journal)||host.capabilities.managed_conversation===1)&&payload.length<=196608)receiveJournal(host,JSON.parse(decoder.decode(payload)));
+        else if(op===24&&([1,true].includes(host.capabilities.conversation_journal)||host.capabilities.managed_conversation===1)&&payload.length<=196608)receiveJournal(host,JSON.parse(decoder.decode(payload)),event.data.byteLength);
         else if(op===25){const reply=JSON.parse(decoder.decode(payload));if(typeof reply.request==='string'&&urlMenu.pending.delete(reply.request)&&reply.ok!==true)notice(reply.error||'电脑上的默认浏览器未能打开。');}
+        else if(op===26&&supportsManagedEvents(host)&&payload.length<=16384)receiveManagedEvent(host,JSON.parse(decoder.decode(payload)));
         else if(op===3||op===8||op===23){
           if((op===8||op===23)&&payload.length===0)return;
           if(op===23&&host.capabilities.history_context!==1)throw new Error('Unnegotiated history context');
@@ -696,7 +766,7 @@
     pane.managedControlRetry=button('重试原操作','使用原标识重试未确认操作',()=>{const capture=managedCapture(pane),operation=pane.managedController?.snapshot().operation;if(!capture||operation?.phase!=='unknown')return;
       if(operation.action==='respond_managed_permission')pane.managedController.respondPermission(operation.permission_request_id,operation.decision);
       else if(operation.action==='interrupt_managed')pane.managedController.interrupt();else if(operation.action==='close_managed')pane.managedController.closeSession();});pane.managedControlRetry.hidden=true;
-    const managedActions=node('div','managed-actions');managedActions.append(button('编辑消息','编辑此对话记录消息',()=>window.SuperMonoTerminalComposer?.open()),button('检查状态','检查对话记录状态',()=>pane.managedController?.reconcile()),pane.managedInterrupt,pane.managedRetry,pane.managedControlRetry,button('结束记录会话','结束此独立记录会话',()=>pane.managedController?.closeSession()));
+    const managedActions=node('div','managed-actions');managedActions.append(button('编辑消息','编辑此对话记录消息',()=>window.SuperMonoTerminalComposer?.open()),button('检查状态','检查对话记录状态',()=>reconcileManaged(pane)),pane.managedInterrupt,pane.managedRetry,pane.managedControlRetry,button('结束记录会话','结束此独立记录会话',()=>pane.managedController?.closeSession()));
     pane.managedPanel.append(pane.managedStatus,pane.managedPolicy,pane.managedNote,pane.managedOutcome,managedActions,pane.managedPermissions);el.insertBefore(pane.managedPanel,screen);
     setPaneInput(pane);
     pane.followOutput=true;pane.followFrame=0;pane.followGeometry=viewportGeometry(pane);pane.userScrollUntil=0;
@@ -1069,6 +1139,11 @@
         const historyAfter={};
         for(const pane of panesForHost)if(pane.historyInitialized&&pane.historyCursor)historyAfter[pane.raw]={...pane.historyCursor};
         if(Object.keys(historyAfter).length)body.history_after=historyAfter;
+      }
+      if(supportsManagedEvents(host)){
+        const managedAfter={};
+        for(const pane of panesForHost){const cursor=paneRuntimeCursor(pane);if(cursor)managedAfter[pane.raw]=cursor;}
+        if(Object.keys(managedAfter).length)body.managed_after=managedAfter;
       }
       if(signature!==host.subscriptionSignature&&send(owner(host),16,body))host.subscriptionSignature=signature;
     }
@@ -1940,7 +2015,10 @@
     socket.onerror=()=>finish('无法连接电脑目录。');socket.onclose=()=>finish('无法验证此电脑的在线身份。');
   };
   for(const [id,projection] of [['journal-history','history'],['journal-conversation','conversation']])if($(id))$(id).onclick=()=>openPaneJournal(panes.get(active),projection);
-  const journalHealthTimer=setInterval(()=>{for(const pane of panes.values()){void refreshPaneJournal(pane);if(isManagedPane(pane)){void ensureManaged(pane);void pane.managedController?.reconcile();}}},3000);
+  const journalHealthTimer=setInterval(()=>{for(const pane of panes.values()){
+    void refreshPaneJournal(pane);
+    if(isManagedPane(pane)){void ensureManaged(pane);if(!supportsManagedEvents(pane.host))void reconcileManaged(pane);}
+  }},3000);
   addEventListener('beforeunload',()=>clearInterval(journalHealthTimer),{once:true});
   const meterTimer=setInterval(()=>{for(const host of hosts.values())host.rates=host.meter.sample(performance.now());updateConnection();renderHosts();},1000);
   const activityTimer=setInterval(updateSessionDots,300);

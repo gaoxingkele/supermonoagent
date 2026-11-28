@@ -87,6 +87,8 @@ class Client:
     history_chunks: bool = False
     conversation_journal: bool = False
     managed_conversation: bool = False
+    managed_events: bool = False
+    managed_after: dict[str, int | None] = field(default_factory=dict)
     subscriptions: set[str] = field(default_factory=set)
     failure: str = ""
     feed_offsets: dict[str, int] = field(default_factory=dict)
@@ -801,6 +803,9 @@ class Hub:
         if self.sessions.get(session_id) is not session:
             return
         self.sessions.pop(session_id)
+        events = getattr(self.managed_service, 'events', None)
+        if session.interaction_mode == 'managed' and events is not None:
+            events.forget(session)
         session.stop.set()
         window = self.windows.get(session.window_id)
         watchers = []
@@ -814,6 +819,7 @@ class Hub:
                     self.windows.pop(window.id, None)
                 for client in self.clients.values():
                     client.subscriptions.discard(session_id)
+                    client.managed_after.pop(session_id, None)
                     client.pending_replays.discard(session_id)
                     client.resync_pending.discard(session_id)
                     client.feed_offsets.pop(session_id, None)

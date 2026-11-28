@@ -5,7 +5,7 @@
 | 阶段 | 发布目标 | 状态 |
 | --- | --- | --- |
 | P0 基线和回滚 | 0.2.84 界面、0.2.83 原生包的回归与恢复记录 | 通过 |
-| P1 运行时事件 | 0.2.85 后台候选，随后双端界面候选 | 实施中 |
+| P1 运行时事件 | 0.2.85 后台候选，随后双端界面候选 | 跨网试点通过，全量回归中 |
 | P2 统一状态 | 0.2.85 完整候选，验证后逐端升级 | 待 P1 |
 | P3 WebRTC 验证 | 独立 QA 包、状态目录和 Relay 测试房间 | 待 P2 |
 | P4 本地 Bot 与 Worker | 0.2.86 原生候选，完成接管和重启恢复后升级 | 待 P3 |
@@ -79,3 +79,11 @@ Windows 测试 daemon 在现有家庭 Wi‑Fi 的 WLAN 接口上建立 TLS 上�
 ## Ewan 独立诊断
 
 Ewan 的探测继续单列。以 `probe-short.json` 的 HELLO/PONG 和 `server-monitor.json` 的中继队列、daemon 指标为分段证据。证据目录为主工作树 `.omx/artifacts/ewan-latency-20261128/`。
+
+## P1 运行时事件试点
+
+- 新旧端通过 HELLO 协商 OP26。状态事件随 OP16 订阅授权，25 ms 合并，在同一会话保留 128 条修订。缺口走权威状态校准。权限详情按需走 OP24，提交用持久 nonce 回执去重。旧后台保留桌面三秒、Android 两秒轮询。
+- 同款隔离 Edge/Relay/daemon 测试连续 600.016 秒。十个页签各成功校准一次后保持 ready，周期 `managed_status` 从 2,000 次降至零。40 次 PONG 全部返回，p95 由 3.548 ms 降至 3.050 ms，长任务和空闲重连均为零。全部帧字节总量下降 11.8%，下行增长 29.1%，仍有 916 次其他 OP24 请求。对话记录阅读器的查询留给后续验证和优化。证据为主工作树 `.omx/artifacts/orca-p1-performance/p1-performance.json`。
+- 家庭 WLAN 经阿里云 Relay 到实体 Android 5G NR 的独立试点使用真实 Codex 0.167.0。手机发送一次结构化请求，收到三个 OP26 事件。重连带修订 5 的游标，SQLite 读回一条输入和一条符合预期的最终回复。试点房间、临时凭据和手机 QA 数据已清理，QA APK 保留在独立应用中。
+- 在同一真实网络拓扑上用合成 Provider 测两轮，共记录 60 次权限、30 次完成和 30 次失败状态。按最近秩计算的端到端可见 p95 分别为 196.391、186.154 和 217.146 ms，均优于 300 ms。原首轮 462.433 ms 慢样本保留，Windows 到发出 22.251 ms，其余 440.182 ms 发生在发出后至手机可见之间。证据为主工作树 `.omx/artifacts/orca-p1-release/wan-latency-pooled.json`。
+- Windows 0.2.85 签名安装包完成隔离原生安装、daemon 启动和 WebView2 启动。Android 独立 QA 0.2.85（code 86）已安装并读回 APK SHA-256。云端试点目录已接收双端签名界面、Windows 安装包及 Android QA APK，逐项哈希一致。证据在主工作树 `.omx/artifacts/orca-p1-release/`。公开 stable 为界面 0.2.84、原生 0.2.83。
